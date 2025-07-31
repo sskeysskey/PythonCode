@@ -1,0 +1,35 @@
+{
+    "manifest_version": 3,
+    "name": "Bloomberg、WSJ、Reuters、FT Scraper",
+    "version": "2.2",
+    "description": "自动抓取Bloomberg、WSJ、Reuters和FT网站新闻内容并下载HTML文件",
+    "permissions": [
+        "storage",
+        "downloads"
+    ],
+    "host_permissions": [
+        "*://*.bloomberg.com/*",
+        "*://*.wsj.com/*",
+        "*://*.reuters.com/*",
+        "*://*.ft.com/*"
+    ],
+    "action": {},
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.bloomberg.com/",
+                "*://*.bloomberg.com/asia",
+                "*://*.wsj.com/",
+                "*://cn.wsj.com/",
+                "*://*.reuters.com/",
+                "*://*.ft.com/"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ]
+}

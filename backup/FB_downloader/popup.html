@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Facebook视频下载器</title>
+    <style>
+        body {
+            width: 300px;
+            padding: 10px;
+            font-family: Arial, sans-serif;
+        }
+
+        h2 {
+            color: #4267B2;
+            margin-top: 0;
+        }
+
+        button {
+            width: 100%;
+            padding: 8px;
+            background-color: #4267B2;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background-color: #365899;
+        }
+
+        #status {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .loading {
+            color: #777;
+            background-color: #f0f0f0;
+        }
+
+        .success {
+            color: white;
+            background-color: #4CAF50;
+        }
+
+        .error {
+            color: white;
+            background-color: #F44336;
+        }
+
+        .video-link-container {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #f7f7f7;
+            border-radius: 4px;
+        }
+
+        .video-info {
+            margin-bottom: 10px;
+        }
+
+        .url-text {
+            font-size: 12px;
+            color: #777;
+            word-break: break-all;
+        }
+
+        .download-btn {
+            background-color: #4CAF50;
+        }
+
+        .download-btn:hover {
+            background-color: #45a049;
+        }
+
+        .alternative-options {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #fff3cd;
+            border-radius: 4px;
+        }
+
+        #openVideoBtn {
+            background-color: #ff9800;
+        }
+
+        #openVideoBtn:hover {
+            background-color: #e68a00;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Facebook视频下载器</h2>
+    <p>点击下方按钮提取当前页面视频：</p>
+    <button id="extractBtn">提取视频</button>
+    <div id="status"></div>
+    <div id="videoLinks"></div>
+    <script src="popup.js"></script>
+</body>
+
+</html>

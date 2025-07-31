@@ -1,0 +1,42 @@
+{
+    "manifest_version": 3,
+    "name": "Facebook Video Downloader",
+    "version": "1.0",
+    "description": "下载Facebook视频的最高质量版本",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "tabs",
+        "downloads",
+        "storage"
+    ],
+    "host_permissions": [
+        "*://*.facebook.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icon.png",
+            "48": "icon.png",
+            "128": "icon.png"
+        }
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.facebook.com/*"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ],
+    "icons": {
+        "16": "icon.png",
+        "48": "icon.png",
+        "128": "icon.png"
+    }
+}

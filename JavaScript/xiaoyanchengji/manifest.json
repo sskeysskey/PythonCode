@@ -1,0 +1,24 @@
+{
+    "manifest_version": 3,
+    "name": "成绩抓取器",
+    "version": "1.0",
+    "description": "抓取成绩数据并导出CSV",
+    "permissions": [
+        "activeTab",
+        "downloads"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "抓取成绩数据"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ]
+}

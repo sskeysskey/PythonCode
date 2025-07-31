@@ -1,0 +1,37 @@
+{
+    "manifest_version": 3,
+    "name": "Snapchat Video Downloader",
+    "version": "1.0",
+    "description": "下载Snapchat视频，获取最高分辨率版本",
+    "permissions": [
+        "activeTab",
+        "storage",
+        "webRequest",
+        "downloads"
+    ],
+    "host_permissions": [
+        "https://*.snapchat.com/*"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "48": "icons/icon.png"
+        }
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://*.snapchat.com/*"
+            ],
+            "js": [
+                "content.js"
+            ]
+        }
+    ],
+    "icons": {
+        "48": "icons/icon.png"
+    }
+}

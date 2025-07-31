@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Snapchat 视频下载器</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Snapchat 视频下载器</h1>
+
+        <div id="loading" class="loading">
+            <span>正在扫描视频...</span>
+            <div class="spinner"></div>
+        </div>
+
+        <div id="no-videos" class="hidden">
+            <p>未找到视频。请确保页面已完全加载，并且视频已开始播放。</p>
+            <button id="scan-btn">重新扫描</button>
+        </div>
+
+        <div id="videos-container" class="hidden">
+            <h2>找到的视频：<span id="video-count">0</span></h2>
+            <ul id="video-list" class="video-list"></ul>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
