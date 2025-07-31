@@ -35,7 +35,7 @@ class ScreenDetector:
             template_names = [name.strip() for name in template_names.split(',')]
         
         for template_name in template_names:
-            template_path = os.path.join('/Users/yanzhang/Documents/python_code/Resource', template_name)
+            template_path = os.path.join('/Users/yanzhang/Coding/python_code/Resource', template_name)
             try:
                 with self._load_template(template_path) as template:
                     self.templates.append((template_name, template))

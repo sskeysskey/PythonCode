@@ -34,8 +34,8 @@ class ElidedLabel(QLabel):
         # 调用父类画文字
         painter.drawText(self.rect(), self.alignment(), elided)
 
-HISTORY_FILE = "/Users/yanzhang/Documents/python_code/Modules/Prompt_history.json" # 请确保这个路径对您的系统是正确的
-DEFAULT_FILE_SELECTION_PATH = "/Users/yanzhang/Documents" # 定义默认文件选择路径
+HISTORY_FILE = "/Users/yanzhang/Coding/python_code/Modules/Prompt_history.json" # 请确保这个路径对您的系统是正确的
+DEFAULT_FILE_SELECTION_PATH = "/Users/yanzhang/Coding" # 定义默认文件选择路径
 LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
 
 # --- 自定义查找/替换对话框 ---

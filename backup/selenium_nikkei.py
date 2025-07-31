@@ -81,7 +81,7 @@ service = Service(executable_path=chrome_driver_path)
 driver = webdriver.Chrome(service=service)
 driver.get("https://www.nikkei.com/")
 
-old_file_path = "/Users/yanzhang/Documents/News/backup/site/nikkei.html"
+old_file_path = "/Users/yanzhang/Coding/News/backup/site/nikkei.html"
 old_content = get_old_content(old_file_path, 18)
 old_links = [row[2] for row in old_content]
 
@@ -94,16 +94,16 @@ if new_rows:
     except OSError as e:
         print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
 
-    new_html_path = "/Users/yanzhang/Documents/News/backup/site/nikkei.html"
+    new_html_path = "/Users/yanzhang/Coding/News/backup/site/nikkei.html"
     write_html(new_html_path, new_rows, old_content)
 
     new_rows1 = [["Nikkei", row[1], row[2]] for row in new_rows]
 
     # 复制 today_eng.html 到 today_all.html
-    today_eng_path = "/Users/yanzhang/Documents/News/today_eng.html"
-    today_all_path = "/Users/yanzhang/Documents/News/today_all.html"
+    today_eng_path = "/Users/yanzhang/Coding/News/today_eng.html"
+    today_all_path = "/Users/yanzhang/Coding/News/today_all.html"
     if os.path.isfile(today_eng_path):
         shutil.copy(today_eng_path, today_all_path)
 
     append_to_html(today_all_path, new_rows1)
-    append_to_html("/Users/yanzhang/Documents/News/today_jpn.html", new_rows1)
+    append_to_html("/Users/yanzhang/Coding/News/today_jpn.html", new_rows1)

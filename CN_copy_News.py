@@ -13,9 +13,9 @@ from PIL import ImageGrab
 from datetime import datetime
 
 # 常量定义
-TXT_DIRECTORY = '/Users/yanzhang/Documents/News'
-HTML_DIRECTORY = '/Users/yanzhang/Documents/sskeysskey.github.io/news'
-SCRIPT_PATH = '/Users/yanzhang/Documents/ScriptEditor/Close_Tab_News.scpt'
+TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
+HTML_DIRECTORY = '/Users/yanzhang/Coding/sskeysskey.github.io/news'
+SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
 SEGMENT_FILE_PATH = '/tmp/segment.txt'
 SITE_FILE_PATH = '/tmp/site.txt'
 
@@ -39,7 +39,7 @@ def move_and_record_images(url):
     today = datetime.now().strftime("%y%m%d")
     # <--- 修改 2: 目标目录名修正，确保和 AppleScript 中的检查逻辑一致
     target_dir = f"/Users/yanzhang/Downloads/news_images"
-    record_file = f"/Users/yanzhang/Documents/News/article_copier_{today}.txt"
+    record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
     
     # 支持的图片格式
     image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
@@ -197,7 +197,7 @@ def main():
         source_dir = "/Users/yanzhang/Downloads"
         today = datetime.now().strftime("%y%m%d")
         target_dir = f"/Users/yanzhang/Downloads/news_images"
-        record_file = f"/Users/yanzhang/Documents/News/article_copier_{today}.txt"
+        record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
         
         # 支持的图片格式
         image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]

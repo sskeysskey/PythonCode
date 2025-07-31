@@ -145,7 +145,7 @@ def main():
         source_dir = "/Users/yanzhang/Downloads"
         today = datetime.now().strftime("%y%m%d")
         target_dir = f"/Users/yanzhang/Downloads/news_images"
-        record_file = f"/Users/yanzhang/Documents/News/article_copier_{today}.txt"
+        record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
         
         # 支持的图片格式
         image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
@@ -179,9 +179,9 @@ def main():
     html_file_path = ''  # 用空字符串初始化
 
     template_paths = {
-        "success": "/Users/yanzhang/Documents/python_code/Resource/poe_copy_success.png",
-        "thumb": "/Users/yanzhang/Documents/python_code/Resource/poe_thumb.png",
-        "copy": "/Users/yanzhang/Documents/python_code/Resource/poe_copy.png",
+        "success": "/Users/yanzhang/Coding/python_code/Resource/poe_copy_success.png",
+        "thumb": "/Users/yanzhang/Coding/python_code/Resource/poe_thumb.png",
+        "copy": "/Users/yanzhang/Coding/python_code/Resource/poe_copy.png",
     }
 
     # 读取所有模板图片，并存储在字典中
@@ -276,7 +276,7 @@ def main():
     final_content = f"{site_content_with_tags}\n\n{clipboard_content}"
 
     # 设置txt文件的保存目录
-    txt_directory = '/Users/yanzhang/Documents/News'
+    txt_directory = '/Users/yanzhang/Coding/News'
     
     # 设置TXT文件的保存路径
     now = datetime.now()
@@ -307,7 +307,7 @@ def main():
 
     # 根据segment内容获取对应的HTML文件名
     html_file_name = segment_to_html_file.get(segment_content.lower(), "other.html")
-    html_file_path = os.path.join('/Users/yanzhang/Documents/sskeysskey.github.io/news', html_file_name)
+    html_file_path = os.path.join('/Users/yanzhang/Coding/sskeysskey.github.io/news', html_file_name)
 
     # 根据segment内容获取对应的标题
     title = segment_content if segment_content.lower() in segment_to_html_file else "新闻摘要"
@@ -326,7 +326,7 @@ def main():
     if html_skeleton_created and not os.path.isfile(html_file_path):
         close_html_skeleton(html_file_path)
 
-    script_path = '/Users/yanzhang/Documents/ScriptEditor/Close_Tab_News.scpt'
+    script_path = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
     try:
         # 将坐标值作为参数传递给AppleScript
         process = subprocess.run(['osascript', script_path], check=True, text=True, stdout=subprocess.PIPE)

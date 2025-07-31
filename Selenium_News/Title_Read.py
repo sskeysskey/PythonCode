@@ -46,11 +46,11 @@ def show_alert(message):
 # --- 主要逻辑开始 ---
 
 # 文件路径定义
-file_path_eng = '/Users/yanzhang/Documents/News/today_eng.html'
-file_path_wsjcn = '/Users/yanzhang/Documents/News/today_wsjcn.html' # 新增的后备文件路径
-backup_path_eng = '/Users/yanzhang/Documents/News/backup/site/today_eng.html'
-file_path_jpn = '/Users/yanzhang/Documents/News/today_jpn.html'
-backup_path_jpn = '/Users/yanzhang/Documents/News/backup/site/today_jpn.html'
+file_path_eng = '/Users/yanzhang/Coding/News/today_eng.html'
+file_path_wsjcn = '/Users/yanzhang/Coding/News/today_wsjcn.html' # 新增的后备文件路径
+backup_path_eng = '/Users/yanzhang/Coding/News/backup/site/today_eng.html'
+file_path_jpn = '/Users/yanzhang/Coding/News/today_jpn.html'
+backup_path_jpn = '/Users/yanzhang/Coding/News/backup/site/today_jpn.html'
 
 # 检查英文主文件是否存在
 try:
@@ -83,7 +83,7 @@ titles_eng = parser_eng.titles
 
 # 添加行号并写入主文件
 titles_text_eng = add_line_numbers("\n".join(titles_eng))
-with open('/Users/yanzhang/Documents/News/today_eng.txt', 'w', encoding='utf-8') as a_file:
+with open('/Users/yanzhang/Coding/News/today_eng.txt', 'w', encoding='utf-8') as a_file:
     a_file.write(titles_text_eng)
 
 # 计算分割
@@ -129,7 +129,7 @@ try:
 
     # 添加行号并写入主文件
     titles_text_jpn = add_line_numbers("\n".join(titles_jpn))
-    with open('/Users/yanzhang/Documents/News/today_jpn.txt', 'w', encoding='utf-8') as a_file:
+    with open('/Users/yanzhang/Coding/News/today_jpn.txt', 'w', encoding='utf-8') as a_file:
         a_file.write(titles_text_jpn)
 
     # 分割日文文件为两部分

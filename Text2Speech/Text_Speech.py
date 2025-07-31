@@ -6,7 +6,7 @@ def select_file():
     # 创建一个QApplication实例，PyQt5需要有一个全局的事件循环
     app = QApplication.instance() or QApplication(sys.argv)
     
-    default_path = "/Users/yanzhang/Documents/Books"
+    default_path = "/Users/yanzhang/Coding/Books"
     file_path, _ = QFileDialog.getOpenFileName(
         None, 
         "选择要处理的文件", 

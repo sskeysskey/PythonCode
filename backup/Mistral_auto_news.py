@@ -34,7 +34,7 @@ def find_image_on_screen(template_path, threshold=0.9):
 
 # 检查 soldout.png 是否存在于屏幕上
 def check_soldout_image():
-    remaining_template_path = '/Users/yanzhang/Documents/python_code/Resource/claude_soldout1.png'  # 替换为你的remaining.png图片实际路径
+    remaining_template_path = '/Users/yanzhang/Coding/python_code/Resource/claude_soldout1.png'  # 替换为你的remaining.png图片实际路径
     location, shape = find_image_on_screen(remaining_template_path, threshold=0.9)
     return bool(location)
 
@@ -130,8 +130,8 @@ def main():
     html_skeleton_created = False
     html_file_path = ''  # 用空字符串初始化
 
-    template_stop = '/Users/yanzhang/Documents/python_code/Resource/Mistral_stop.png'
-    template_copy = '/Users/yanzhang/Documents/python_code/Resource/Mistral_copy.png'
+    template_stop = '/Users/yanzhang/Coding/python_code/Resource/Mistral_stop.png'
+    template_copy = '/Users/yanzhang/Coding/python_code/Resource/Mistral_copy.png'
 
     found_stop = True
     while found_stop:
@@ -198,7 +198,7 @@ def main():
     final_content = segment_content + '\n' + site_content_with_tags + '\n\n' + modified_content
 
     # 设置txt文件的保存目录
-    txt_directory = '/Users/yanzhang/Documents/News'
+    txt_directory = '/Users/yanzhang/Coding/News'
     
     # 设置TXT文件的保存路径
     now = datetime.now()
@@ -227,7 +227,7 @@ def main():
 
     # 根据segment内容获取对应的HTML文件名
     html_file_name = segment_to_html_file.get(segment_content.lower(), "other.html")
-    html_file_path = os.path.join('/Users/yanzhang/Documents/sskeysskey.github.io/news', html_file_name)
+    html_file_path = os.path.join('/Users/yanzhang/Coding/sskeysskey.github.io/news', html_file_name)
 
     # 根据segment内容获取对应的标题
     title = segment_content if segment_content.lower() in segment_to_html_file else "新闻摘要"

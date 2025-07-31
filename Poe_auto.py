@@ -59,12 +59,12 @@ def refresh_page():
 def main(mode):
     # 定义模板路径字典
     template_paths = {
-        "success": "/Users/yanzhang/Documents/python_code/Resource/poe_copy_success.png",
-        "compare": "/Users/yanzhang/Documents/python_code/Resource/poe_compare.png",
-        "copy": "/Users/yanzhang/Documents/python_code/Resource/poe_copy.png",
-        "thumb": "/Users/yanzhang/Documents/python_code/Resource/poe_thumb.png",
-        "retry": "/Users/yanzhang/Documents/python_code/Resource/poe_retry.png",
-        "retry": "/Users/yanzhang/Documents/python_code/Resource/poe_failure.png",
+        "success": "/Users/yanzhang/Coding/python_code/Resource/poe_copy_success.png",
+        "compare": "/Users/yanzhang/Coding/python_code/Resource/poe_compare.png",
+        "copy": "/Users/yanzhang/Coding/python_code/Resource/poe_copy.png",
+        "thumb": "/Users/yanzhang/Coding/python_code/Resource/poe_thumb.png",
+        "retry": "/Users/yanzhang/Coding/python_code/Resource/poe_retry.png",
+        "retry": "/Users/yanzhang/Coding/python_code/Resource/poe_failure.png",
     }
 
     # 读取所有模板图片，并存储在字典中

@@ -9,7 +9,7 @@ def move_and_record_images():
     source_dir = "/Users/yanzhang/Downloads"
     today = datetime.now().strftime("%y%m%d")
     target_dir = f"/Users/yanzhang/Downloads/news_image_{today}"
-    record_file = f"/Users/yanzhang/Documents/News/article_copier_{today}.txt"
+    record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
     
     # 支持的图片格式
     image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]

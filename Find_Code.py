@@ -8,18 +8,18 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 # 保持原有的搜索目录列表
 searchFolders = [
-    "/Users/yanzhang/Documents/ScriptEditor/",
+    "/Users/yanzhang/Coding/ScriptEditor/",
     "/Users/yanzhang/Library/Services/",
-    "/Users/yanzhang/Documents/Financial_System",
-    "/Users/yanzhang/Documents/python_code",
-    "/Users/yanzhang/Documents/News/backup",
-    "/Users/yanzhang/Documents/sskeysskey.github.io",
-    # "/Users/yanzhang/Documents/LuxuryBox",
+    "/Users/yanzhang/Coding/Financial_System",
+    "/Users/yanzhang/Coding/python_code",
+    "/Users/yanzhang/Coding/News/backup",
+    "/Users/yanzhang/Coding/sskeysskey.github.io",
+    # "/Users/yanzhang/Coding/LuxuryBox",
     "/Users/yanzhang/Downloads/backup/TXT",
-    "/Users/yanzhang/Documents/Books",
-    "/Users/yanzhang/Documents/News/done",
-    "/Users/yanzhang/Documents/Xcode/Indices/Finance",
-    "/Users/yanzhang/Documents/sh"
+    "/Users/yanzhang/Coding/Books",
+    "/Users/yanzhang/Coding/News/done",
+    "/Users/yanzhang/Coding/Xcode/Indices/Finance",
+    "/Users/yanzhang/Coding/sh"
 ]
 
 class CustomTextBrowser(QTextBrowser):

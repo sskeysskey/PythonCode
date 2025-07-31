@@ -4,7 +4,7 @@ import codecs
 import re
 import sys
 import pyperclip
-sys.path.append('/Users/yanzhang/Documents/python_code/Modules')
+sys.path.append('/Users/yanzhang/Coding/python_code/Modules')
 from Rename_segment import rename_first_segment_file
 
 def process_content_with_empty_lines(text):
@@ -82,7 +82,7 @@ def remove_empty_lines(text):
 
 def main():
     directory = "/tmp/"
-    file_path = '/Users/yanzhang/Documents/News/today_chn.txt'
+    file_path = '/Users/yanzhang/Coding/News/today_chn.txt'
     
     try:
         # 获取剪贴板内容并计算非空行数

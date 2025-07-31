@@ -250,7 +250,7 @@ if __name__ == "__main__":
     chrome_driver_path = "/Users/yanzhang/Downloads/backup/chromedriver"
     timeout = 5  # 设置超时时间
 
-    template_path_accept = '/Users/yanzhang/Documents/python_code/Resource/Bloomberg_agree.png'
+    template_path_accept = '/Users/yanzhang/Coding/python_code/Resource/Bloomberg_agree.png'
     service = Service(executable_path=chrome_driver_path)
     driver = webdriver.Chrome(service=service)
     driver.get("https://www.bloomberg.com/")
@@ -275,7 +275,7 @@ if __name__ == "__main__":
         else:
             time.sleep(1)
 
-    old_file_path = "/Users/yanzhang/Documents/News/backup/site/bloomberg.html"
+    old_file_path = "/Users/yanzhang/Coding/News/backup/site/bloomberg.html"
     old_content = get_old_content(old_file_path, 30)
     existing_links = {link for _, _, link in old_content}
 
@@ -314,5 +314,5 @@ if __name__ == "__main__":
 
     # 写入bloomberg.html并追加到today_eng.html
     write_html(old_file_path, new_rows, old_content)
-    append_to_today_html("/Users/yanzhang/Documents/News/today_eng.html", new_rows1)
+    append_to_today_html("/Users/yanzhang/Coding/News/today_eng.html", new_rows1)
     time.sleep(1)

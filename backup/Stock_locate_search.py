@@ -27,7 +27,7 @@ def find_image_on_screen(template, threshold=0.9):
 def main():
     # 定义模板路径字典
     template_paths = {
-        "searchlogo": "/Users/yanzhang/Documents/python_code/Resource/Stock_search_logo.png",
+        "searchlogo": "/Users/yanzhang/Coding/python_code/Resource/Stock_search_logo.png",
     }
 
     # 读取所有模板图片，并存储在字典中

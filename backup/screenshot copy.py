@@ -9,7 +9,7 @@ from PIL import ImageGrab
 
 class ScreenDetector:
     def __init__(self, template_name, clickValue=False, Opposite=False, x_offset=None, y_offset=None, nth_match=1):
-        self.template_path = f'/Users/yanzhang/Documents/python_code/Resource/{template_name}'
+        self.template_path = f'/Users/yanzhang/Coding/python_code/Resource/{template_name}'
         self.template = self.load_template()
         self.clickValue = clickValue
         self.Opposite = Opposite

@@ -37,7 +37,7 @@ SITE_DISPLAY_MAP = {
 # --- 配置区 ---
 # 请根据您的实际情况修改下面的路径
 # 注意：Windows 系统下路径可能需要写成 'C:\\Users\\yanzhang\\Documents\\News\\done' 的形式
-JSON_DIR = '/Users/yanzhang/Documents/News/done'
+JSON_DIR = '/Users/yanzhang/Coding/News/done'
 IMAGE_BACKUP_DIR = '/Users/yanzhang/Downloads/backup'
 
 # --- 你原来的函数保持不变 ---
@@ -846,8 +846,8 @@ def backup_news_assets(local_dir): # <--- 修改函数签名
         print(f"未找到源图片目录: {src_dir}")
     
     # --------- 备份 onews.json 文件 ---------
-    src_file = "/Users/yanzhang/Documents/News/onews.json"
-    backup_file_dir = "/Users/yanzhang/Documents/News/done"
+    src_file = "/Users/yanzhang/Coding/News/onews.json"
+    backup_file_dir = "/Users/yanzhang/Coding/News/done"
     
     os.makedirs(backup_file_dir, exist_ok=True)
     
@@ -1101,8 +1101,8 @@ def prune_old_assets(local_dir, days_to_keep):
 
 if __name__ == "__main__":
     today = datetime.now().strftime("%y%m%d")
-    news_directory = "/Users/yanzhang/Documents/News/"
-    article_copier_path = f"/Users/yanzhang/Documents/News/article_copier_{today}.txt"
+    news_directory = "/Users/yanzhang/Coding/News/"
+    article_copier_path = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
     image_dir = f"/Users/yanzhang/Downloads/news_images"
     downloads_path = '/Users/yanzhang/Downloads'
     # 定义本地服务器资源目录，方便复用

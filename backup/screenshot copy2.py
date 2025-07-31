@@ -16,7 +16,7 @@ class ScreenDetector:
         
         # 加载所有模板
         for template_name in template_names:
-            template_path = f'/Users/yanzhang/Documents/python_code/Resource/{template_name}'
+            template_path = f'/Users/yanzhang/Coding/python_code/Resource/{template_name}'
             template = self.load_template(template_path)
             self.templates.append((template_name, template))
             

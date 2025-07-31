@@ -39,7 +39,7 @@ driver = webdriver.Chrome(service=service, options=chrome_options)  # 在这里�
 driver.get("https://www.technologyreview.com/")
 
 # 查找旧的 html 文件
-file_pattern = "/Users/yanzhang/Documents/News/backup/site/technologyreview.html"
+file_pattern = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
 old_file_list = glob.glob(file_pattern)
 
 old_content = []
@@ -105,7 +105,7 @@ if old_file_list:
         print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
 
 # 创建 site HTML 文件（technologyreview.html）
-new_html_path = f"/Users/yanzhang/Documents/News/backup/site/technologyreview.html"
+new_html_path = f"/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
 with open(new_html_path, 'w', encoding='utf-8') as html_file:
     # 写入 HTML 基础结构和表格开始标签
     html_file.write("<html><body><table border='1'>\n")
@@ -131,7 +131,7 @@ with open(new_html_path, 'w', encoding='utf-8') as html_file:
 # 创建每日新闻总表 HTML（today_eng.html）
 if new_rows1:
     # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
     closing_tag = "</table></body></html>"
     file_exists = os.path.isfile(today_html_path)
 

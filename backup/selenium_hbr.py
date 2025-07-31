@@ -46,7 +46,7 @@ driver = webdriver.Chrome(service=service)
 driver.get("https://hbr.org/")
 
 # 查找旧的 html 文件
-file_pattern = "/Users/yanzhang/Documents/News/backup/site/hbr.html"
+file_pattern = "/Users/yanzhang/Coding/News/backup/site/hbr.html"
 old_file_list = glob.glob(file_pattern)
 
 if not old_file_list:
@@ -123,7 +123,7 @@ except OSError as e:
     print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
 
 # 创建 HTML 文件
-new_html_path = f"/Users/yanzhang/Documents/News/backup/site/hbr.html"
+new_html_path = f"/Users/yanzhang/Coding/News/backup/site/hbr.html"
 with open(new_html_path, 'w', encoding='utf-8') as html_file:
     # 写入 HTML 基础结构和表格开始标签
     html_file.write("<html><body><table border='1'>\n")
@@ -148,7 +148,7 @@ with open(new_html_path, 'w', encoding='utf-8') as html_file:
 
 if new_rows1:
     # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
 
     # 检查文件是否存在
     file_exists = os.path.isfile(today_html_path)

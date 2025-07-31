@@ -2,7 +2,7 @@ import os
 import shutil
 import re
 import sys
-sys.path.append('/Users/yanzhang/Documents/python_code/Modules')
+sys.path.append('/Users/yanzhang/Coding/python_code/Modules')
 from Rename_textspeech import rename_first_segment_file
 
 def find_and_move_mp4(source_dir, target_dir):

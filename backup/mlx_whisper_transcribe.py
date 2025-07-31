@@ -1,5 +1,5 @@
 # 运行指令如下：
-# streamlit run /Users/yanzhang/Documents/python_code/Video/mlx_whisper_transcribe.py
+# streamlit run /Users/yanzhang/Coding/python_code/Video/mlx_whisper_transcribe.py
 
 import streamlit as st
 from streamlit_lottie import st_lottie

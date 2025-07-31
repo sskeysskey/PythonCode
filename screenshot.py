@@ -39,7 +39,7 @@ class ScreenDetector:
     def _load_templates(self, template_names_list: List[str]) -> None: # 参数名修改以更清晰
         """优化的模板加载方法"""
         for template_name in template_names_list:
-            template_path = os.path.join('/Users/yanzhang/Documents/python_code/Resource', template_name)
+            template_path = os.path.join('/Users/yanzhang/Coding/python_code/Resource', template_name)
             try:
                 # 使用 with self._load_template(template_path) as template:
                 # cv2.imread 返回的 numpy 数组不需要特别的资源释放，所以 contextmanager 可能不是必须的

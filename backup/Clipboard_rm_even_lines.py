@@ -1,7 +1,7 @@
 import pyperclip
 
 def remove_even_lines_from_clipboard():
-    blacklist_file_path = "/Users/yanzhang/Documents/python_code/Resource/blacklist_topgainer.txt"
+    blacklist_file_path = "/Users/yanzhang/Coding/python_code/Resource/blacklist_topgainer.txt"
     
     # 从剪贴板获取内容
     clipboard_content = pyperclip.paste()

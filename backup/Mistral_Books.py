@@ -8,7 +8,7 @@ import numpy as np
 from time import sleep
 from PIL import ImageGrab
 import sys
-sys.path.append('/Users/yanzhang/Documents/python_code/Modules')
+sys.path.append('/Users/yanzhang/Coding/python_code/Modules')
 from Rename_segment import rename_first_segment_file
 
 def capture_screen():
@@ -33,8 +33,8 @@ def find_image_on_screen(template, threshold=0.9):
 # 主函数
 def main():
     template_paths = {
-        "stop": "/Users/yanzhang/Documents/python_code/Resource/Mistral_stop.png",
-        "copy": "/Users/yanzhang/Documents/python_code/Resource/Mistral_copy.png",
+        "stop": "/Users/yanzhang/Coding/python_code/Resource/Mistral_stop.png",
+        "copy": "/Users/yanzhang/Coding/python_code/Resource/Mistral_copy.png",
     }
 
     # 读取所有模板图片，并存储在字典中
@@ -136,7 +136,7 @@ def main():
         webbrowser.open('file://' + os.path.realpath(txt_file_path), new=2)
 
     # 设置目录路径
-    directory_path = '/Users/yanzhang/Documents/'
+    directory_path = '/Users/yanzhang/Coding/'
 
     # 寻找目录下的第一个txt文件
     for filename in os.listdir(directory_path):

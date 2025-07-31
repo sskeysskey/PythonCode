@@ -30,13 +30,13 @@ def find_image_on_screen(template, threshold=0.9):
 def main():
     # 定义模板路径字典
     template_paths = {
-        "stop": "/Users/yanzhang/Documents/python_code/Resource/poe_stop.png",
-        "waiting": "/Users/yanzhang/Documents/python_code/Resource/poe_stillwaiting.png",
-        "success": "/Users/yanzhang/Documents/python_code/Resource/poe_copy_success.png",
-        "thumb": "/Users/yanzhang/Documents/python_code/Resource/poe_thumb.png",
-        "failure": "/Users/yanzhang/Documents/python_code/Resource/poe_failure.png",
-        "no": "/Users/yanzhang/Documents/python_code/Resource/poe_no.png",
-        "copy": "/Users/yanzhang/Documents/python_code/Resource/poe_copy.png",
+        "stop": "/Users/yanzhang/Coding/python_code/Resource/poe_stop.png",
+        "waiting": "/Users/yanzhang/Coding/python_code/Resource/poe_stillwaiting.png",
+        "success": "/Users/yanzhang/Coding/python_code/Resource/poe_copy_success.png",
+        "thumb": "/Users/yanzhang/Coding/python_code/Resource/poe_thumb.png",
+        "failure": "/Users/yanzhang/Coding/python_code/Resource/poe_failure.png",
+        "no": "/Users/yanzhang/Coding/python_code/Resource/poe_no.png",
+        "copy": "/Users/yanzhang/Coding/python_code/Resource/poe_copy.png",
     }
 
     # 读取所有模板图片，并存储在字典中

@@ -210,8 +210,8 @@ def open_webpage_and_monitor_bloomberg():
     # 打开第二个页面
     print("Opening Bloomberg Asia page...")
     template_paths = {
-        "asia": "/Users/yanzhang/Documents/python_code/Resource/scraper_asia.png",
-        "us": "/Users/yanzhang/Documents/python_code/Resource/scraper_us.png"
+        "asia": "/Users/yanzhang/Coding/python_code/Resource/scraper_asia.png",
+        "us": "/Users/yanzhang/Coding/python_code/Resource/scraper_us.png"
     }
 
     # 读取所有模板图片，并存储在字典中
@@ -403,14 +403,14 @@ def process_news_source(source_name, old_file_path, today_html_path):
     return new_rows
 
 if __name__ == "__main__":
-    today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
     
     # 新增：处理FT
     print("\nStarting FT processing...")
     open_webpage_and_monitor_ft()
     process_news_source(
         "FT", 
-        "/Users/yanzhang/Documents/News/backup/site/ft.html",
+        "/Users/yanzhang/Coding/News/backup/site/ft.html",
         today_html_path
     )
 
@@ -419,7 +419,7 @@ if __name__ == "__main__":
     open_webpage_and_monitor_wsj()
     process_news_source(
         "WSJ", 
-        "/Users/yanzhang/Documents/News/backup/site/wsj.html",
+        "/Users/yanzhang/Coding/News/backup/site/wsj.html",
         today_html_path
     )
 
@@ -428,7 +428,7 @@ if __name__ == "__main__":
     open_webpage_and_monitor_bloomberg()
     process_news_source(
         "Bloomberg", 
-        "/Users/yanzhang/Documents/News/backup/site/bloomberg.html",
+        "/Users/yanzhang/Coding/News/backup/site/bloomberg.html",
         today_html_path
     )
 
@@ -437,7 +437,7 @@ if __name__ == "__main__":
     open_webpage_and_monitor_reuters()
     process_news_source(
         "Reuters", 
-        "/Users/yanzhang/Documents/News/backup/site/reuters.html",
+        "/Users/yanzhang/Coding/News/backup/site/reuters.html",
         today_html_path
     )
 

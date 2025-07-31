@@ -2,13 +2,13 @@ import re
 import os
 import pyperclip
 import sys
-sys.path.append('/Users/yanzhang/Documents/python_code/Modules')
+sys.path.append('/Users/yanzhang/Coding/python_code/Modules')
 from Rename_segment import rename_first_segment_file
 
 # 主函数
 def main():
     # 设置目录路径
-    directory_path = '/Users/yanzhang/Documents/'
+    directory_path = '/Users/yanzhang/Coding/'
 
     # 寻找目录下的第一个txt文件
     for filename in os.listdir(directory_path):

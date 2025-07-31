@@ -54,7 +54,7 @@ pyautogui.moveTo(653, 614)
 driver.get("https://asia.nikkei.com/")
 
 # 查找旧的 html 文件
-file_pattern = "/Users/yanzhang/Documents/News/backup/site/nikkei_asia.html"
+file_pattern = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
 old_file_list = glob.glob(file_pattern)
 
 old_content = []
@@ -163,7 +163,7 @@ if old_file_list:
         print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
 
 # 创建 HTML 文件
-new_html_path = f"/Users/yanzhang/Documents/News/backup/site/nikkei_asia.html"
+new_html_path = f"/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
 with open(new_html_path, 'w', encoding='utf-8') as html_file:
     # 写入 HTML 基础结构和表格开始标签
     html_file.write("<html><body><table border='1'>\n")
@@ -188,7 +188,7 @@ with open(new_html_path, 'w', encoding='utf-8') as html_file:
 
 if new_rows1:
     # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
     file_exists = os.path.isfile(today_html_path)
 
     # 准备要追加的内容

@@ -77,7 +77,7 @@ if __name__ == "__main__":
         
         # 重命名 MP3 文件并删除临时文件
         tmp_dir = "/tmp/"
-        book_dir = "/Users/yanzhang/Documents/Books/"
+        book_dir = "/Users/yanzhang/Coding/Books/"
         mp3name_file_path = os.path.join(tmp_dir, 'mp3name.txt')
         output_mp3 = os.path.join(directory, "output.mp3")
         
@@ -102,7 +102,7 @@ if __name__ == "__main__":
                 print(f"删除临时文件失败: {e}")
             
             # 移动 book_path 文件到 mp3 目录
-            read_dir = "/Users/yanzhang/Documents/Books/mp3/"
+            read_dir = "/Users/yanzhang/Coding/Books/mp3/"
             if os.path.exists(book_path):
                 try:
                     shutil.move(book_path, read_dir)

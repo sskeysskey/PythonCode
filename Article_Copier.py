@@ -30,7 +30,7 @@ def write_to_failure_file(url):
     """
     将URL写入失败记录文件
     """
-    file_path = "/Users/yanzhang/Documents/News/Copier_failure.txt"
+    file_path = "/Users/yanzhang/Coding/News/Copier_failure.txt"
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     content = f"[{current_time}] {url}\n"
@@ -42,7 +42,7 @@ def main():
     url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
     
     # 读取模板图片
-    template_path = "/Users/yanzhang/Documents/python_code/Resource/copier_text_failure.png"
+    template_path = "/Users/yanzhang/Coding/python_code/Resource/copier_text_failure.png"
     template = cv2.imread(template_path, cv2.IMREAD_COLOR)
     if template is None:
         raise FileNotFoundError(f"模板图片未能正确读取于路径 {template_path}")

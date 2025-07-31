@@ -65,7 +65,7 @@ def print_comparison_results(results: Dict[str, Set[str]], dir1: str, dir2: str)
 def main():
     # 示例使用
     dir1 = '/Users/yanzhang/Downloads/backup/TXT/Done/'
-    dir2 = '/Users/yanzhang/Documents/Books/mp3/'
+    dir2 = '/Users/yanzhang/Coding/Books/mp3/'
     
     if not os.path.exists(dir1) or not os.path.exists(dir2):
         print("错误：一个或两个目录路径不存在")

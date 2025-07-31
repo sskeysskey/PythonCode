@@ -16,10 +16,10 @@ from selenium.webdriver.chrome.options import Options
 
 # 定义一些全局变量
 chrome_driver_path = "/Users/yanzhang/Downloads/backup/chromedriver"
-template_path_accept = '/Users/yanzhang/Documents/python_code/Resource/economist_accept.png'
-file_pattern = "/Users/yanzhang/Documents/News/backup/site/economist.html"
-new_html_path = "/Users/yanzhang/Documents/News/backup/site/economist.html"
-today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+template_path_accept = '/Users/yanzhang/Coding/python_code/Resource/economist_accept.png'
+file_pattern = "/Users/yanzhang/Coding/News/backup/site/economist.html"
+new_html_path = "/Users/yanzhang/Coding/News/backup/site/economist.html"
+today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
 timeout = 10  # 设置超时时间
 
 # 打开 HTML 文件

@@ -71,7 +71,7 @@ current_datetime = datetime.now()
 formatted_date = current_datetime.strftime("%Y_%m_%d")  # 用于检查日期匹配
 
 # 查找旧的 HTML 文件
-file_pattern = "/Users/yanzhang/Documents/News/backup/site/economist.html"
+file_pattern = "/Users/yanzhang/Coding/News/backup/site/economist.html"
 old_file_list = glob.glob(file_pattern)
 date_found = False
 
@@ -120,7 +120,7 @@ driver = webdriver.Chrome(service=service)
 # 打开 Economist 网站
 driver.get("https://www.economist.com/")
 
-template_path_accept = '/Users/yanzhang/Documents/python_code/Resource/economist_accept.png'  # 替换为你PNG图片的实际路径
+template_path_accept = '/Users/yanzhang/Coding/python_code/Resource/economist_accept.png'  # 替换为你PNG图片的实际路径
 template_accept = cv2.imread(template_path_accept, cv2.IMREAD_COLOR)
 
 if template_accept is None:
@@ -220,7 +220,7 @@ except OSError as e:
     print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
 
 # 创建 HTML 文件
-new_html_path = f"/Users/yanzhang/Documents/News/backup/site/economist.html"
+new_html_path = f"/Users/yanzhang/Coding/News/backup/site/economist.html"
 
 with open(new_html_path, 'w', encoding='utf-8') as html_file:
     # 写入 HTML 基础结构和表格开始标签
@@ -246,7 +246,7 @@ with open(new_html_path, 'w', encoding='utf-8') as html_file:
 
 if new_rows1:
     # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Documents/News/today_eng.html"
+    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
 
     # 检查文件是否存在
     file_exists = os.path.isfile(today_html_path)

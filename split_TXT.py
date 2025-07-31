@@ -176,7 +176,7 @@ if __name__ == '__main__':
     app.exec_()
 
     if 'segment' not in os.path.basename(source_file_path):
-        new_file_directory = "/Users/yanzhang/Documents/"
+        new_file_directory = "/Users/yanzhang/Coding/"
         new_file_path = os.path.join(new_file_directory, os.path.basename(source_file_path))
 
         try:

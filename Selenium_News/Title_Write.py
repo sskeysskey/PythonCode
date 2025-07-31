@@ -184,7 +184,7 @@ class MyHTMLParser(HTMLParser):
             self.result_html += data
 
 # 文件路径
-file_path = "/Users/yanzhang/Documents/News/today_chn.txt"
+file_path = "/Users/yanzhang/Coding/News/today_chn.txt"
 
 # 读取文件内容，并去除空行
 with open(file_path, 'r', encoding='utf-8') as file:
@@ -205,12 +205,12 @@ translated_texts = [line for line in translated_texts if line.strip() != '']
 
 # 读取HTML文件内容
 try:
-    with open('/Users/yanzhang/Documents/News/today_all.html', 'r', encoding='utf-8') as file:
+    with open('/Users/yanzhang/Coding/News/today_all.html', 'r', encoding='utf-8') as file:
         html_content = file.read()
 except FileNotFoundError:
     try:
         print("未找到 today_all.html，尝试打开 today_eng.html")
-        with open('/Users/yanzhang/Documents/News/today_eng.html', 'r', encoding='utf-8') as file:
+        with open('/Users/yanzhang/Coding/News/today_eng.html', 'r', encoding='utf-8') as file:
             html_content = file.read()
     except FileNotFoundError:
         print("未找到 today_eng.html，无法继续处理。")
@@ -226,11 +226,11 @@ try:
     # 如果新文本数量与原始链接数量相同，则写回文件
     if parser.current_index == len(translated_texts):
         # 定义原始和目标文件路径
-        original_file_path = '/Users/yanzhang/Documents/News/today_all.html'
-        process_eng_txt = '/Users/yanzhang/Documents/News/today_eng.txt'
-        process_jpn_txt = '/Users/yanzhang/Documents/News/today_jpn.txt'
-        result_eng_html = '/Users/yanzhang/Documents/News/today_eng.html'
-        result_jpn_html = '/Users/yanzhang/Documents/News/today_jpn.html'
+        original_file_path = '/Users/yanzhang/Coding/News/today_all.html'
+        process_eng_txt = '/Users/yanzhang/Coding/News/today_eng.txt'
+        process_jpn_txt = '/Users/yanzhang/Coding/News/today_jpn.txt'
+        result_eng_html = '/Users/yanzhang/Coding/News/today_eng.html'
+        result_jpn_html = '/Users/yanzhang/Coding/News/today_jpn.html'
         
         # 使用BeautifulSoup修改HTML结构，添加<head>内容
         soup = BeautifulSoup(parser.result_html, 'html.parser')
@@ -257,7 +257,7 @@ try:
         # 文件扩展名
         file_extension = ".html"
         # 目标目录
-        txt_directory = '/Users/yanzhang/Documents/News'
+        txt_directory = '/Users/yanzhang/Coding/News'
 
         # 调用新函数来获取一个唯一的文件路径
         txt_file_path = get_unique_filepath(txt_directory, base_filename, file_extension)
@@ -283,7 +283,7 @@ except IndexError as e:
     root.destroy()
 
 # 定义文件路径
-wsj_file = '/Users/yanzhang/Documents/News/today_wsjcn.html'
+wsj_file = '/Users/yanzhang/Coding/News/today_wsjcn.html'
 
 # 确保 txt_file_path 变量已定义并且对应的文件存在
 if 'txt_file_path' in locals() and os.path.exists(txt_file_path):

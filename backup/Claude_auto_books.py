@@ -33,14 +33,14 @@ def find_image_on_screen(template_path, threshold=0.9):
 
 # 检查 soldout.png 是否存在于屏幕上
 def check_soldout_image():
-    remaining_template_path = '/Users/yanzhang/Documents/python_code/Resource/claude_soldout1.png'  # 替换为你的remaining.png图片实际路径
+    remaining_template_path = '/Users/yanzhang/Coding/python_code/Resource/claude_soldout1.png'  # 替换为你的remaining.png图片实际路径
     location, shape = find_image_on_screen(remaining_template_path, threshold=0.9)
     return bool(location)
 
 # 主函数
 def main():
-    template_path1 = '/Users/yanzhang/Documents/python_code/Resource/claude_done_125.png'
-    template_path2 = '/Users/yanzhang/Documents/python_code/Resource/claude_soldout2.png'
+    template_path1 = '/Users/yanzhang/Coding/python_code/Resource/claude_done_125.png'
+    template_path2 = '/Users/yanzhang/Coding/python_code/Resource/claude_soldout2.png'
     sleep(2)
 
     while True:
@@ -72,7 +72,7 @@ def main():
             pyautogui.click(center_x, center_y)
 
             # 设置TXT文件的保存路径
-            txt_file_path = '/Users/yanzhang/Documents/book.txt'
+            txt_file_path = '/Users/yanzhang/Coding/book.txt'
 
             # 读取剪贴板内容
             clipboard_content = pyperclip.paste()

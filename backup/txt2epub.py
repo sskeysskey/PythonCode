@@ -235,8 +235,8 @@ def move_cnh_file(source_dir):
         return False
 
 if __name__ == "__main__":
-    news_directory = "/Users/yanzhang/Documents/News/"
-    # news_directory = "/Users/yanzhang/Documents"
+    news_directory = "/Users/yanzhang/Coding/News/"
+    # news_directory = "/Users/yanzhang/Coding"
     
     # 处理epub转换
     process_all_files(news_directory)
