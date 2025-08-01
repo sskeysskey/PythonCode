@@ -14,7 +14,7 @@ from datetime import datetime
 
 # 常量定义
 TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
-HTML_DIRECTORY = '/Users/yanzhang/Coding/sskeysskey.github.io/news'
+HTML_DIRECTORY = '/Users/yanzhang/Coding/Website/news'
 SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
 SEGMENT_FILE_PATH = '/tmp/segment.txt'
 SITE_FILE_PATH = '/tmp/site.txt'

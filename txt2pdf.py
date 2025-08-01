@@ -36,7 +36,7 @@ SITE_DISPLAY_MAP = {
 
 # --- 配置区 ---
 # 请根据您的实际情况修改下面的路径
-# 注意：Windows 系统下路径可能需要写成 'C:\\Users\\yanzhang\\Documents\\News\\done' 的形式
+# 注意：Windows 系统下路径可能需要写成 'C:\\Users\\yanzhang\\Coding\\News\\done' 的形式
 JSON_DIR = '/Users/yanzhang/Coding/News/done'
 IMAGE_BACKUP_DIR = '/Users/yanzhang/Downloads/backup'
 
@@ -852,7 +852,7 @@ def backup_news_assets(local_dir): # <--- 修改函数签名
     os.makedirs(backup_file_dir, exist_ok=True)
     
     if os.path.exists(src_file):
-        # 1) 备份到 Documents/News/done
+        # 1) 备份到 Coding/News/done
         backup_file_target = os.path.join(backup_file_dir, f"onews_{timestamp}.json")
         shutil.copy2(src_file, backup_file_target)
         print(f"JSON文件已备份到: {backup_file_target}")

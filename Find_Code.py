@@ -13,12 +13,14 @@ searchFolders = [
     "/Users/yanzhang/Coding/Financial_System",
     "/Users/yanzhang/Coding/python_code",
     "/Users/yanzhang/Coding/News/backup",
-    "/Users/yanzhang/Coding/sskeysskey.github.io",
+    "/Users/yanzhang/Coding/Website",
     # "/Users/yanzhang/Coding/LuxuryBox",
     "/Users/yanzhang/Downloads/backup/TXT",
     "/Users/yanzhang/Coding/Books",
     "/Users/yanzhang/Coding/News/done",
     "/Users/yanzhang/Coding/Xcode/Indices/Finance",
+    "/Users/yanzhang/Coding/Xcode/ONews/ONews",
+    "/Users/yanzhang/.hammerspoon",
     "/Users/yanzhang/Coding/sh"
 ]
 

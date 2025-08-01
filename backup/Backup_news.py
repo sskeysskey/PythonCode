@@ -3,8 +3,8 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 
 # 定义文件路径
-source_dir_path = '/Users/yanzhang/Coding/sskeysskey.github.io/news'
-backup_dir_path = '/Users/yanzhang/Coding/sskeysskey.github.io/news/backup'
+source_dir_path = '/Users/yanzhang/Coding/Website/news'
+backup_dir_path = '/Users/yanzhang/Coding/Website/news/backup'
 
 # 定义目标文件列表
 target_files = [

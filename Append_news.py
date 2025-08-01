@@ -307,7 +307,7 @@ def main():
 
     # 根据segment内容获取对应的HTML文件名
     html_file_name = segment_to_html_file.get(segment_content.lower(), "other.html")
-    html_file_path = os.path.join('/Users/yanzhang/Coding/sskeysskey.github.io/news', html_file_name)
+    html_file_path = os.path.join('/Users/yanzhang/Coding/Website/news', html_file_name)
 
     # 根据segment内容获取对应的标题
     title = segment_content if segment_content.lower() in segment_to_html_file else "新闻摘要"
