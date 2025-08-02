@@ -19,7 +19,7 @@ MAJOR_SITES = {s.upper() for s in (
     'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'OTHER'
 )}
 
-# ---- 站点显示名称映射（不区分大小写） ----
+# ---- 站点显示名称映射（不区分大小写） ----测试
 SITE_DISPLAY_MAP = {
     'ft':             '伦敦金融时报',
     'nytimes':        '纽约时报',
