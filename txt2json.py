@@ -558,7 +558,7 @@ if __name__ == "__main__":
     backup_news_assets(local_server_dir)
     print("="*10 + " 完成备份核心资产 " + "="*10)
 
-    # 8. 新增：清理超过3天的旧文件和目录
+    # 8. 新增：清理超过4天的旧文件和目录
     print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
-    prune_old_assets(local_server_dir, days_to_keep=3)
+    prune_old_assets(local_server_dir, days_to_keep=4)
     print("="*10 + " 完成清理旧资产 " + "="*10)
