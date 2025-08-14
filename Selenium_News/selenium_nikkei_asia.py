@@ -4,17 +4,21 @@ import time
 import pyautogui
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from urllib.parse import urlparse
-from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from urllib.parse import urlparse
+from datetime import datetime, timedelta
 
 def is_similar(url1, url2):
     """
     比较两个 URL 的相似度，如果相似度超过阈值则返回 True，否则返回 False。
     主要比较 URL 的协议、主机名和路径。
     """
+    if not url1 or not url2:
+        return False
     parsed_url1 = urlparse(url1)
     parsed_url2 = urlparse(url2)
 
@@ -33,13 +37,14 @@ chrome_driver_path = "/Users/yanzhang/Downloads/backup/chromedriver"
 # 设置 ChromeDriver
 chrome_options = Options()
 service = Service(executable_path=chrome_driver_path)
-driver = webdriver.Chrome(service=service, options=chrome_options)
 
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.115" # 你可以更新为一个最新的Chrome User-Agent
+# --- 增强的浏览器设置 ---
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 chrome_options.add_argument(f'user-agent={user_agent}')
 chrome_options.add_argument('--disable-blink-features=AutomationControlled')
 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 chrome_options.add_experimental_option('useAutomationExtension', False)
+# chrome_options.add_argument("--start-maximized") # 启动时最大化窗口
 
 # --- 性能相关设置 ---
 chrome_options.add_argument("--disable-extensions")
@@ -49,9 +54,23 @@ chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
 
 pyautogui.moveTo(653, 614)
+driver = webdriver.Chrome(service=service, options=chrome_options)
 
 # 打开 nikkei asia 网站
 driver.get("https://asia.nikkei.com/")
+
+# 等待页面主要内容加载
+# 这是一个好的实践，可以等待某个关键元素出现，例如页脚
+try:
+    WebDriverWait(driver, 15).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-trackable='home']"))
+    )
+    print("页面主要内容已加载。")
+except Exception as e:
+    print(f"等待页面加载超时: {e}")
+    driver.quit()
+    exit()
+
 
 # 查找旧的 html 文件
 file_pattern = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
@@ -85,25 +104,42 @@ if old_file_list:
 # 抓取新内容
 new_rows = []
 new_rows1 = []
-all_links = [old_link for _, _, old_link in old_content]  # 既有的所有链接
+all_links = [old_link for _, _, old_link in old_content if old_link]
 
-for _ in range(4):
-    pyautogui.scroll(-80)
-    time.sleep(0.2)
+# **【修改点 1】: 使用JavaScript进行滚动，替代pyautogui**
+print("开始滚动页面以加载更多内容...")
+for i in range(4):
+    driver.execute_script("window.scrollBy(0, 800);") # 每次向下滚动800像素
+    print(f"滚动次数: {i+1}/4")
+    time.sleep(0.5) # 每次滚动后等待0.5秒让内容加载
 
-# 1. 需要特殊处理的版块
+print("滚动完成，开始抓取内容。")
+
+# 1. 需要特殊处理的版块，但在选择器中实现不区分大小写
 SECTIONS = ["Spotlight", "Business", "Economy"]
 
+# **【修改点 3】: 修改CSS选择器，在属性选择器中添加 ' i' 标志使其不区分大小写**
 css_selector = ", ".join(
-    f"a[href*='/{section}/']:not(.label-link)" for section in SECTIONS
+    f"a[href*='/{section}/' i]:not(.label-link)" for section in SECTIONS
 )
 
 try:
+    # 增加显式等待，确保滚动加载出的元素可以被找到
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
+    )
+    
     titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
+    print(f"找到了 {len(titles_elements)} 个符合条件的链接元素。")
 
     for title_element in titles_elements:
         href = title_element.get_attribute('href')
-        title_text = title_element.text.strip()
+        # 尝试获取 `h2` 或 `h3` 标签内的文本，如果找不到，再获取 `<a>` 标签自身的文本
+        try:
+            # 网站结构可能会将标题放在子元素中，如<h2>
+            title_text = title_element.find_element(By.CSS_SELECTOR, "h2, h3").text.strip()
+        except:
+            title_text = title_element.text.strip()
 
         if not (href and title_text):
             continue
@@ -113,7 +149,7 @@ try:
             'Podcast', 'sports', '/music/', 'weather', '/books/', 'food',
             'The-Future-of-Asia', 'Your-Week-in-Asia'
         ]
-        if any(keyword in href for keyword in general_keywords_to_exclude):
+        if any(keyword.lower() in href.lower() for keyword in general_keywords_to_exclude):
             continue
 
         # Spotlight/Business 结构判断
@@ -129,12 +165,11 @@ try:
                 # 如果第一个 segment 在 SECTIONS 里，并且恰好只有两个 segment
                 # （即 /Spotlight/分类 or /Business/分类），就跳过
                 if (
-                    path_segments
-                    and path_segments[0] in SECTIONS
-                    and len(path_segments) == 2
+                    path_segments and
+                    path_segments[0].lower() in [s.lower() for s in SECTIONS] and
+                    len(path_segments) == 2
                 ):
                     skip_due_to_structure = True
-
         except ValueError:
             # URL 格式异常也跳过
             skip_due_to_structure = True
@@ -142,18 +177,26 @@ try:
         if skip_due_to_structure:
             continue
 
-        # 滤重逻辑：和 old_content、new_rows 里已有的链接比较相似度
-        if not any(is_similar(href, old_link) for _, _, old_link in old_content):
-            if not any(is_similar(href, new_link) for _, _, new_link in new_rows):
-                new_rows.append([formatted_datetime, title_text, href])
-                new_rows1.append(["NikkeiAsia", title_text, href])
-                all_links.append(href)
+        # 滤重逻辑
+        if not any(is_similar(href, existing_link) for existing_link in all_links):
+            new_rows.append([formatted_datetime, title_text, href])
+            new_rows1.append(["NikkeiAsia", title_text, href])
+            all_links.append(href)
+            print(f"发现新文章: {title_text}")
+
 
 except Exception as e:
     print("抓取过程中出现错误:", e)
 
 # 关闭驱动
 driver.quit()
+
+if not new_rows:
+    print("未能抓取到任何新内容。")
+else:
+    print(f"成功抓取到 {len(new_rows)} 条新内容。")
+
+# --- 后续文件处理逻辑保持不变 ---
 
 if old_file_list:
     try:
