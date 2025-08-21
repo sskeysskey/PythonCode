@@ -12,7 +12,6 @@ import shutil
 import math
 import json
 from urllib.parse import urlsplit, urlunsplit
-from collections import defaultdict
 
 MAJOR_SITES = {s.upper() for s in (
     'FT','WSJ','BLOOMBERG','REUTERS','NYTIMES',
