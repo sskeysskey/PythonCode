@@ -46,7 +46,10 @@ def count_words_and_create_file():
     # 计算英文单词数量
     num_english_words = len(re.findall(r'\b[A-Za-z]+\b', processed_content))
     
-    if num_english_words > 500:
+    if num_english_words >= 2001:
+        print(f"单词数量为 {num_english_words}，属于超长文章，正在创建 superlongarticle.txt...")
+        save_content_to_file(processed_content, '/tmp/superlongarticle.txt')
+    elif 500 <= num_english_words <= 2000:
         print(f"单词数量为 {num_english_words}，属于长文章，正在创建 longarticle.txt...")
         save_content_to_file(processed_content, '/tmp/longarticle.txt')
     elif num_english_words >= 1:  # 此条件覆盖了 1 到 500 的范围
