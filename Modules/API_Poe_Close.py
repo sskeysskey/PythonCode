@@ -171,6 +171,9 @@ class ResponseWindow(QMainWindow):
                     # 2. 打印成功标记到标准输出
                     # flush=True 确保信息被立即发送，而不是被缓冲
                     print(SUCCESS_MARKER, flush=True)
+                    
+                    # 3. 自动关闭应用程序
+                    QApplication.instance().quit()
 
                 except Exception as e:
                     self.stream_timer.stop()
