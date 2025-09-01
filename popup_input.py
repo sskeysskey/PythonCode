@@ -28,10 +28,17 @@ class MyWindow(QWidget):
         elif event.key() == Qt.Key_Escape:
             clear_clipboard()
             self.close()
+            # 添加这一行，使程序返回状态码 1
+            sys.exit(1)
 
+# MyTextEdit 类也需要添加 ESC 处理
 class MyTextEdit(QTextEdit):
     def keyPressEvent(self, event):
-        if event.modifiers() & Qt.AltModifier and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+        if event.key() == Qt.Key_Escape:
+            clear_clipboard()
+            self.parent().close()
+            sys.exit(1)
+        elif event.modifiers() & Qt.AltModifier and event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.insertPlainText('\n')
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
             copy_to_clipboard(self.toPlainText())

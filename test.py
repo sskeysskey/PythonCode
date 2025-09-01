@@ -1,15 +1,10 @@
-import openai
-import os
+import fastapi_poe as fp
 
-client = openai.OpenAI(
-    # api_key=os.getenv("POE_API_KEY"),
-    api_key="F9SywF8ZA8B3Ju-1Swd7ooD3uMLSlc6EjBU3nP8IDmM",  # 替换成你的实际API密钥
-    base_url="https://api.poe.com/v1"
-)
+message = fp.ProtocolMessage(role="user", content="Hello world")
 
-chat = client.chat.completions.create(
-    model="Claude-Sonnet-3.5",
-    messages=[{"role": "user", "content": "Man waters pigeons during heatwave——完整翻译成地道的中文"}],
-)
+api_key = "YOUR_POE_API_KEY"  # or os.getenv("POE_API_KEY")
 
-print(chat.choices[0].message.content)
+for partial in fp.get_bot_response_sync(
+    messages=[message], bot_name="Claude-Sonnet-3.5", api_key=api_key
+):
+    print(partial)

@@ -78,14 +78,15 @@ stop_button.pack(pady=20, padx=20, ipady=10) # ipady 增加按钮内部垂直填
 root.bind('<Return>', stop_program)
 root.bind('<space>', stop_program)
 
-# 7. 将窗口居中显示
+# 7. 将窗口显示在右下角
 root.update_idletasks() # 更新窗口信息以获取准确尺寸
 window_width = root.winfo_width()
 window_height = root.winfo_height()
 screen_width = root.winfo_screenwidth()
 screen_height = root.winfo_screenheight()
-x_coordinate = int((screen_width / 2) - (window_width / 2))
-y_coordinate = int((screen_height / 2) - (window_height / 2))
+# 计算右下角的坐标
+x_coordinate = screen_width - window_width - 20  # 20是与屏幕右边的间距
+y_coordinate = screen_height - window_height - 40  # 40是与屏幕底部的间距
 root.geometry(f"{window_width}x{window_height}+{x_coordinate}+{y_coordinate}")
 
 # 8. 【修改部分】将窗口强制置于最前台并激活

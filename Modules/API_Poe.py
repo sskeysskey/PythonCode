@@ -1,14 +1,11 @@
 import openai
 import argparse
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QPushButton, QVBoxLayout, QWidget, QDesktopWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QVBoxLayout, QWidget, QDesktopWidget
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QTextCursor, QFont
+from PyQt5.QtWidgets import QClipboard
 
-# =============================================================================
-# 现代化的界面样式表 (QSS - 类似于 CSS)
-# 我们在这里定义了整个应用的深色主题外观
-# =============================================================================
 MODERN_STYLESHEET = """
     /* 全局窗口样式 */
     QMainWindow {
@@ -75,14 +72,28 @@ MODERN_STYLESHEET = """
 """
 
 class ResponseWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, model, content):
         super().__init__()
-        self.is_first_chunk = True  # 新增标志位，用于判断是否是第一个数据块
+        self.is_first_chunk = True
+        self.model = model
+        self.content = content
+        self.waiting_dots = 0
+        self.waiting_timer = None
+        # 添加一个变量来存储完整的响应文本
+        self.full_response = ""
         self.init_ui()
+        
+        # 创建一个定时器来启动API请求
+        QTimer.singleShot(100, self.start_api_request)
+        
+        # 创建并启动等待动画定时器
+        self.waiting_timer = QTimer()
+        self.waiting_timer.timeout.connect(self.update_waiting_animation)
+        self.waiting_timer.start(500)  # 每500毫秒更新一次
 
     def init_ui(self):
         """初始化UI界面"""
-        self.setWindowTitle("POE API 响应")
+        self.setWindowTitle("POE API")
         self.setGeometry(0, 0, 800, 600)  # 初始尺寸
         self.center_on_screen()  # 将窗口居中
 
@@ -100,14 +111,65 @@ class ResponseWindow(QMainWindow):
         self.text_area.setLineWrapMode(QTextEdit.WidgetWidth)
         # 【优化】程序启动时显示的等待信息
         self.text_area.setTextColor(Qt.lightGray)
-        self.text_area.setText("⏳ 正在连接到 POE API，请稍候...")
+        self.text_area.setText("正在连接 Poe API，请稍候...")
         layout.addWidget(self.text_area)
-        
-        # 创建关闭按钮
-        close_button = QPushButton("关闭窗口")
-        close_button.setCursor(Qt.PointingHandCursor) # 鼠标悬停时显示手型
-        close_button.clicked.connect(self.close)
-        layout.addWidget(close_button)
+
+    def keyPressEvent(self, event):
+        """处理按键事件"""
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
+
+    def update_waiting_animation(self):
+        """更新等待动画"""
+        if self.is_first_chunk:
+            self.waiting_dots = (self.waiting_dots + 1) % 4
+            dots = "." * self.waiting_dots
+            self.text_area.setText(f"正在等待服务器响应{dots.ljust(3)}")
+
+    def start_api_request(self):
+        """启动API请求"""
+        try:
+            client = openai.OpenAI(
+                api_key="F9SywF8ZA8B3Ju-1Swd7ooD3uMLSlc6EjBU3nP8IDmM",
+                base_url="https://api.poe.com/v1"
+            )
+            
+            stream = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": self.content}],
+                stream=True
+            )
+
+            timer = QTimer()
+            stream_iter = iter(stream)
+
+            def process_stream():
+                try:
+                    chunk = next(stream_iter)
+                    if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                        if self.is_first_chunk:
+                            self.waiting_timer.stop()  # 停止等待动画
+                            self.text_area.clear()
+                            self.text_area.setTextColor(Qt.white)
+                            self.is_first_chunk = False
+                        text = chunk.choices[0].delta.content
+                        self.full_response += text  # 累积完整响应
+                        self.stream_in_text(text)
+                except StopIteration:
+                    # 流结束时，将完整响应复制到剪贴板
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(self.full_response)
+                    timer.stop()
+                except Exception as e:
+                    self.display_error(f"流处理错误：{str(e)}")
+                    timer.stop()
+
+            timer.timeout.connect(process_stream)
+            timer.start(10)
+            
+        except Exception as e:
+            self.display_error(f"启动API请求时出错：{str(e)}")
 
     def center_on_screen(self):
         """【新增】将窗口在屏幕上居中显示"""
@@ -118,12 +180,6 @@ class ResponseWindow(QMainWindow):
 
     def stream_in_text(self, text):
         """将流式文本块插入到文本区域"""
-        # 【优化】如果是第一个数据块，先清空等待信息
-        if self.is_first_chunk:
-            self.text_area.clear()
-            self.text_area.setTextColor(Qt.white) # 恢复正常文本颜色
-            self.is_first_chunk = False
-
         self.text_area.moveCursor(QTextCursor.End)
         # 插入纯文本
         self.text_area.insertPlainText(text)
@@ -157,49 +213,8 @@ def main():
     # 【优化】应用我们定义的现代化样式
     app.setStyleSheet(MODERN_STYLESHEET)
 
-    # 【优化】先创建并显示窗口
-    window = ResponseWindow()
+    window = ResponseWindow(args.model, args.content)
     window.show()
-
-    # 在窗口显示后，再开始执行API请求
-    try:
-        # 【安全提示】直接在代码中写入API密钥是不安全的。
-        # 推荐使用环境变量、配置文件或更安全的密钥管理方式。
-        client = openai.OpenAI(
-            api_key="F9SywF8ZA8B3Ju-1Swd7ooD3uMLSlc6EjBU3nP8IDmM",  # 替换成你的实际API密钥
-            base_url="https://api.poe.com/v1"
-        )
-        
-        # 使用流式API
-        stream = client.chat.completions.create(
-            model=args.model,
-            messages=[{"role": "user", "content": args.content}],
-            stream=True  # 启用流式传输
-        )
-
-        timer = QTimer()
-        stream_iter = iter(stream)
-
-        def process_stream():
-            try:
-                chunk = next(stream_iter)
-                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                    text = chunk.choices[0].delta.content
-                    # 【已修改】调用新的方法来处理流式文本
-                    window.stream_in_text(text)
-            except StopIteration:
-                # 流结束，停止定时器
-                timer.stop()
-            except Exception as e:
-                window.display_error(f"流处理错误：{str(e)}")
-                timer.stop()
-
-        timer.timeout.connect(process_stream)
-        timer.start(10)  # 每10毫秒检查一次新内容
-        
-    except Exception as e:
-        # 在启动API请求时就发生错误
-        window.display_error(f"启动API请求时出错：{str(e)}")
 
     sys.exit(app.exec_())
 
