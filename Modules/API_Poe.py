@@ -4,7 +4,6 @@ import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QVBoxLayout, QWidget, QDesktopWidget
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QTextCursor, QFont
-from PyQt5.QtWidgets import QClipboard
 
 MODERN_STYLESHEET = """
     /* 全局窗口样式 */
@@ -160,7 +159,12 @@ class ResponseWindow(QMainWindow):
                     # 流结束时，将完整响应复制到剪贴板
                     clipboard = QApplication.clipboard()
                     clipboard.setText(self.full_response)
+                    # 添加结束标记
+                    print("###COMPLETION_FINISHED###")
+                    sys.stdout.flush()  # 确保输出立即发送
                     timer.stop()
+                    # 添加一个短暂延时后关闭窗口
+                    QTimer.singleShot(100, QApplication.instance().quit) # 延迟3秒后退出
                 except Exception as e:
                     self.display_error(f"流处理错误：{str(e)}")
                     timer.stop()
