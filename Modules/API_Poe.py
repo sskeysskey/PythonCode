@@ -115,7 +115,7 @@ class ResponseWindow(QMainWindow):
         self.text_area.setLineWrapMode(QTextEdit.WidgetWidth)
         # 【优化】程序启动时显示的等待信息
         self.text_area.setTextColor(Qt.lightGray)
-        self.text_area.setText("正在连接 Poe API，请稍候...")
+        self.text_area.setText("请稍候...")
         layout.addWidget(self.text_area)
 
     def keyPressEvent(self, event):
