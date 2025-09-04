@@ -1231,229 +1231,298 @@ function extractAndCopy() {
 
   // 处理 reuters.com
   else if (window.location.hostname.includes("reuters.com")) {
-    const articleBody = document.querySelector('[data-testid="ArticleBody"]');
-    const article = document.querySelector('article[data-testid="Article"]');
-    if (articleBody && article) {
-      // 1. 按 DOM 顺序一次性抓取所有 Heading 和 段落
-      const contentNodes = articleBody.querySelectorAll(
-        'h2[data-testid="Heading"], [data-testid^="paragraph-"]'
-      );
-      const textLines = Array.from(contentNodes)
-        .map(el => el.textContent.trim())
-        .filter(t => t.length > 0);
-      textContent = textLines.join('\n\n');
+    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    // ★★★ START: NEW LOGIC FOR SVELTE-BASED (GRAPHICS) REUTERS PAGES ★★★
+    // ★★★ 开始：为基于Svelte的新版（图文）路透社页面添加的新逻辑 ★★★
+    const svelteArticle = document.querySelector('main#main-content article[class*="svelte-"]');
 
-      // 2. 如果有正文，再去抓图片
-      if (textContent) { // 或者可以改为 if (true) 来总是尝试抓取图片，即使文本内容为空
+    if (svelteArticle) {
+      // 确认是新版Svelte页面结构
+      imagesFoundForDownload = true; // 标记我们将要处理内容
+
+      // 1. 提取文本 (段落和标题)
+      const contentNodes = svelteArticle.querySelectorAll('p, h2');
+      textContent = Array.from(contentNodes)
+        .map(node => node.textContent.trim())
+        .filter(text => text && text.length > 1 && !['@', '•', '∞', 'flex'].includes(text))
+        .join('\n\n');
+
+      // 2. 提取图片
+      const figures = svelteArticle.querySelectorAll('figure');
+      const processedUrls = new Set();
+
+      if (figures.length === 0) {
+        chrome.runtime.sendMessage({ action: 'noImages' });
+      } else {
+        figures.forEach((figure, idx) => {
+          const img = figure.querySelector('img');
+          if (!img || !img.src) return;
+
+          let url = img.src;
+          try {
+            // 确保URL是绝对路径
+            url = new URL(url, window.location.href).href;
+          } catch (e) {
+            console.error("无效的图片URL:", url);
+            return; // 跳过无效的URL
+          }
+
+          if (processedUrls.has(url)) return;
+          processedUrls.add(url);
+
+          // 提取图片描述
+          let caption = '';
+          const figcaptionEl = figure.querySelector('figcaption');
+          if (figcaptionEl) {
+            caption = figcaptionEl.textContent.trim();
+          }
+          // 如果没有figcaption，则使用alt属性
+          if (!caption && img.alt) {
+            caption = img.alt.trim();
+          }
+
+          // 清理描述文本，移除 "REUTERS/..." 等信息
+          caption = caption.replace(/REUTERS\/.*/i, '')
+            .replace(/^["“]+|["”]+$/g, '')
+            .trim();
+
+          // 从URL中提取文件扩展名，默认为 'jpg'
+          const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+          const ext = extMatch ? extMatch[1] : 'jpg';
+
+          // 生成文件名
+          let filename = caption ?
+            caption.replace(/[/\\?%*:|"<>+]/g, '-').substring(0, 180) :
+            `reuters-interactive-${Date.now()}-${idx}`;
+          filename = filename + '.' + ext;
+
+          // 发送下载消息
+          chrome.runtime.sendMessage({
+            action: 'downloadImage',
+            url: url,
+            filename: filename
+          });
+        });
+      }
+    }
+    // ★★★ END: NEW LOGIC ★★★
+    // ★★★ 结束：新逻辑 ★★★
+    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    else {
+      // --- 如果不是新版Svelte页面，则执行原有的旧版页面逻辑 ---
+      const articleBody = document.querySelector('[data-testid="ArticleBody"]');
+      const article = document.querySelector('article[data-testid="Article"]');
+      if (articleBody && article) {
+        // 1. 按 DOM 顺序一次性抓取所有 Heading 和 段落
+        const contentNodes = articleBody.querySelectorAll(
+          'h2[data-testid="Heading"], [data-testid^="paragraph-"]'
+        );
+        const textLines = Array.from(contentNodes)
+          .map(el => el.textContent.trim())
+          .filter(t => t.length > 0);
+        textContent = textLines.join('\n\n');
+
+        // 2. 如果有正文，再去抓图片
+        if (textContent) { // 或者可以改为 if (true) 来总是尝试抓取图片，即使文本内容为空
+          imagesFoundForDownload = true;
+          const processedUrls = new Set();
+          // 更精确地选择图片，可以先尝试轮播图图片，再尝试其他文章图片
+          // 或者直接使用一个通用选择器，如果页面结构不保证所有图片都在 ArticleBody 下
+          const images = Array.from(
+            articleBody.querySelectorAll('img:not([sizes="110px"])')
+          );
+
+          if (images.length === 0) {
+            chrome.runtime.sendMessage({ action: 'noImages' }); // 更明确的消息
+          } else {
+            images.forEach((img, idx) => {
+              let url = '';
+              // 优先直接的 src (如果它不是一个小的内联数据URI)
+              if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
+                url = img.src;
+              }
+
+              // 尝试 data attributes (常见的懒加载模式)
+              if (!url || url.startsWith('data:image/')) {
+                url = img.dataset.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
+              }
+
+              // 从 srcset 中选最高分辨率 (这个逻辑通常是最可靠的)
+              if (img.srcset) {
+                const candidates = img.srcset
+                  .trim().split(',')
+                  .map(entry => {
+                    const parts = entry.trim().split(/\s+/);
+                    const u = parts[0];
+                    const w = parts[1] ? parts[1].replace('w', '') : '0';
+                    if (!u || u.startsWith('data:image/')) return { url: u, width: 0 };
+                    return { url: u, width: parseInt(w) || 0 };
+                  })
+                  .filter(c => c.width > 0 && c.url && !c.url.startsWith('data:image/'))
+                  .sort((a, b) => b.width - a.width);
+                if (candidates.length > 0 && candidates[0].url) {
+                  url = candidates[0].url; // srcset 的高优先级
+                }
+              }
+
+              // 如果 URL 是相对路径, 转换为绝对路径
+              if (url && url.startsWith('/')) {
+                try {
+                  url = new URL(url, window.location.origin).href;
+                } catch (e) {
+                  console.error('Error creating absolute URL:', e);
+                  url = ''; // 无效的相对URL
+                }
+              }
+
+              url = url.replace(/\s+/g, ''); // 清理URL中的任何空格 (理论上不应存在)
+
+              if (!url || url.startsWith('data:image/') || url === window.location.href) { // 最终检查
+                return; // 跳过这个图片
+              }
+
+              if (processedUrls.has(url)) {
+                return;
+              }
+              processedUrls.add(url);
+
+              // --- 改进的标题提取逻辑 ---
+              let caption = '';
+              // 优先尝试 Figure > Figcaption 结构 (常见于主图)
+              const figureElement = img.closest('figure[data-testid="Figure"]');
+              if (figureElement) {
+                const captionSpan = figureElement.querySelector('[data-testid="Caption"] span, figcaption span'); // 更通用的选择器
+                if (captionSpan && captionSpan.textContent) {
+                  caption = captionSpan.textContent;
+                }
+              }
+
+              if (!caption) {
+                const primaryImageDiv = img.closest('[data-testid="primary-image"]');
+                const figForPrimary = primaryImageDiv ? primaryImageDiv.closest('figure') : null; // primary-image 可能在 figure 内
+                const actualFig = figForPrimary || img.closest('figure'); // 回退到任意 figure
+
+                if (actualFig) {
+                }
+              }
+
+              if (caption) { // 清理提取到的 caption
+                caption = caption.replace(/REUTERS\/.*/i, '')
+                  .replace(/^["“]+|["”]+$/g, '')
+                  .trim();
+              }
+
+              // Fallback to alt text
+              if (!caption && img.alt) {
+                caption = img.alt.trim();
+              }
+              // --- 结束标题提取 ---
+
+              const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+              const ext = extMatch ? extMatch[1] : 'jpg';
+
+              let filename = caption ?
+                caption.replace(/[/\\?%*:|"<>+]/g, '-').substring(0, 180) // 缩短一点以防路径过长
+                :
+                `reuters-image-${Date.now()}-${idx}`;
+              filename = filename + '.' + ext;
+
+              chrome.runtime.sendMessage({
+                action: 'downloadImage',
+                url: url,
+                filename: filename
+              });
+            });
+          }
+        }
+      } else if (window.location.pathname.includes('/pictures/')) {
+        imagesFoundForDownload = true;
+        // 2.1 抓文字描述（SingleImageHero 顶部描述）
+        let textContent = '';
+        const heroDesc = document.querySelector(
+          'div[data-testid="SingleImageHeroSubSection"] p[data-testid="Body"]'
+        );
+        if (heroDesc) {
+          textContent = heroDesc.textContent.trim();
+          // 如果你要把文字传给 background，再发一条消息
+          chrome.runtime.sendMessage({ action: 'sendText', text: textContent });
+        }
+
+        // 2.2 抓所有图片
         const processedUrls = new Set();
-        // 更精确地选择图片，可以先尝试轮播图图片，再尝试其他文章图片
-        // 或者直接使用一个通用选择器，如果页面结构不保证所有图片都在 ArticleBody 下
+        // 选出 hero 图 和 event-gallery 图集里的 <img>
         const images = Array.from(
-          articleBody.querySelectorAll('img:not([sizes="110px"])')
+          document.querySelectorAll(
+            'div[data-testid="SingleImageHero"] img, ' +
+            'div[data-testid="EventGalleryImageImage"] img'
+          )
         );
 
-        if (images.length === 0) {
-          chrome.runtime.sendMessage({ action: 'noImages' }); // 更明确的消息
-        } else {
-          images.forEach((img, idx) => {
-            let url = '';
-            // 优先直接的 src (如果它不是一个小的内联数据URI)
-            if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
-              url = img.src;
-            }
+        images.forEach((img, idx) => {
+          let url = '';
+          if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
+            url = img.src;
+          }
+          if ((!url || url.startsWith('data:image/')) && img.dataset.src) {
+            url = img.dataset.src;
+          }
+          if (img.srcset) {
+            const candidates = img.srcset.trim().split(',')
+              .map(entry => {
+                const [u, w] = entry.trim().split(/\s+/);
+                return { url: u, width: parseInt(w) || 0 };
+              })
+              .filter(c => c.url && c.width > 0 && !c.url.startsWith('data:image/'))
+              .sort((a, b) => b.width - a.width);
+            if (candidates.length) url = candidates[0].url;
+          }
+          if (url.startsWith('/')) {
+            try { url = new URL(url, location.origin).href; } catch (e) { url = ''; }
+          }
+          url = url.replace(/\s+/g, '');
 
-            // 尝试 data attributes (常见的懒加载模式)
-            if (!url || url.startsWith('data:image/')) {
-              url = img.dataset.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
-            }
+          if (!url || url.startsWith('data:image/') || url === location.href) {
+            return;
+          }
+          if (processedUrls.has(url)) {
+            return;
+          }
+          processedUrls.add(url);
 
-            // 从 srcset 中选最高分辨率 (这个逻辑通常是最可靠的)
-            if (img.srcset) {
-              const candidates = img.srcset
-                .trim().split(',')
-                .map(entry => {
-                  const parts = entry.trim().split(/\s+/);
-                  const u = parts[0];
-                  const w = parts[1] ? parts[1].replace('w', '') : '0';
-                  if (!u || u.startsWith('data:image/')) return { url: u, width: 0 };
-                  return { url: u, width: parseInt(w) || 0 };
-                })
-                .filter(c => c.width > 0 && c.url && !c.url.startsWith('data:image/'))
-                .sort((a, b) => b.width - a.width);
-              if (candidates.length > 0 && candidates[0].url) {
-                url = candidates[0].url; // srcset 的高优先级
-              }
-            }
+          // ---- 针对图集页面的 Caption 提取 ------------------------------------------
+          let caption = '';
+          // 先找 figcaption 里的 span
+          const fig = img.closest('figure');
+          if (fig) {
+            const span = fig.querySelector('figcaption span, [data-testid="ImageCaption"] span');
+            if (span) caption = span.textContent.trim();
+          }
+          // 再 fallback 用 alt
+          if (!caption && img.alt) caption = img.alt.trim();
 
-            // 如果 URL 是相对路径, 转换为绝对路径
-            if (url && url.startsWith('/')) {
-              try {
-                url = new URL(url, window.location.origin).href;
-              } catch (e) {
-                console.error('Error creating absolute URL:', e);
-                url = ''; // 无效的相对URL
-              }
-            }
+          // 清洗 caption
+          caption = caption.replace(/REUTERS\/.*/i, '')
+            .replace(/^["“]+|["”]+$/g, '')
+            .trim();
 
-            url = url.replace(/\s+/g, ''); // 清理URL中的任何空格 (理论上不应存在)
+          // 构造文件名
+          const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+          const ext = extMatch ? extMatch[1] : 'jpg';
+          let filename = caption ?
+            caption.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180) :
+            `reuters-pic-${Date.now()}-${idx}`;
+          filename += '.' + ext;
 
-            if (!url || url.startsWith('data:image/') || url === window.location.href) { // 最终检查
-              return; // 跳过这个图片
-            }
-
-            if (processedUrls.has(url)) {
-              return;
-            }
-            processedUrls.add(url);
-
-            // --- 改进的标题提取逻辑 ---
-            let caption = '';
-            // 优先尝试 Figure > Figcaption 结构 (常见于主图)
-            const figureElement = img.closest('figure[data-testid="Figure"]');
-            if (figureElement) {
-              const captionSpan = figureElement.querySelector('[data-testid="Caption"] span, figcaption span'); // 更通用的选择器
-              if (captionSpan && captionSpan.textContent) {
-                caption = captionSpan.textContent;
-              }
-            }
-
-            // 如果上述未找到，尝试原始代码中的逻辑 (可能针对特定但不太标准的结构)
-            // 但要注意 img.closest('[data-testid="primary-image"]') 的用法
-            // primary-image 通常是图片容器，其父元素未必是标题的直接容器
-            if (!caption) {
-              const primaryImageDiv = img.closest('[data-testid="primary-image"]');
-              const figForPrimary = primaryImageDiv ? primaryImageDiv.closest('figure') : null; // primary-image 可能在 figure 内
-              const actualFig = figForPrimary || img.closest('figure'); // 回退到任意 figure
-
-              if (actualFig) {
-                // 尝试从 actualFig 的父元素或兄弟元素找 span (如原始逻辑，但要小心)
-                // 或者更可能是 actualFig 的子元素 (如 figcaption)
-                const spanInParent = actualFig.parentElement ? actualFig.parentElement.querySelector('span') : null;
-                // 这里需要更精确的判断，这个 span 是否真的是标题
-                // 这是一个非常脆弱的选择器，除非 DOM 结构非常固定且已知
-                // if (spanInParent && spanInParent.textContent.length > 10 && !spanInParent.querySelector('a, button')) { // 粗略判断
-                //    caption = spanInParent.textContent;
-                // }
-                // 更安全的还是依赖 figcaption 或 alt
-              }
-            }
-
-            if (caption) { // 清理提取到的 caption
-              caption = caption.replace(/REUTERS\/.*/i, '')
-                .replace(/^["“]+|["”]+$/g, '')
-                .trim();
-            }
-
-            // Fallback to alt text
-            if (!caption && img.alt) {
-              caption = img.alt.trim();
-            }
-            // --- 结束标题提取 ---
-
-            const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
-            const ext = extMatch ? extMatch[1] : 'jpg';
-
-            let filename = caption
-              ? caption.replace(/[/\\?%*:|"<>+]/g, '-').substring(0, 180) // 缩短一点以防路径过长
-              : `reuters-image-${Date.now()}-${idx}`;
-            filename = filename + '.' + ext;
-
-            chrome.runtime.sendMessage({
-              action: 'downloadImage',
-              url: url,
-              filename: filename
-            });
+          chrome.runtime.sendMessage({
+            action: 'downloadImage',
+            url,
+            filename
           });
-        }
-      }
-    } else if (window.location.pathname.includes('/pictures/')) {
-      // 2.1 抓文字描述（SingleImageHero 顶部描述）
-      let textContent = '';
-      const heroDesc = document.querySelector(
-        'div[data-testid="SingleImageHeroSubSection"] p[data-testid="Body"]'
-      );
-      if (heroDesc) {
-        textContent = heroDesc.textContent.trim();
-        // 如果你要把文字传给 background，再发一条消息
-        chrome.runtime.sendMessage({ action: 'sendText', text: textContent });
-      }
-
-      // 2.2 抓所有图片
-      const processedUrls = new Set();
-      // 选出 hero 图 和 event-gallery 图集里的 <img>
-      const images = Array.from(
-        document.querySelectorAll(
-          'div[data-testid="SingleImageHero"] img, ' +
-          'div[data-testid="EventGalleryImageImage"] img'
-        )
-      );
-
-      images.forEach((img, idx) => {
-        let url = '';
-        if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
-          url = img.src;
-        }
-        if ((!url || url.startsWith('data:image/')) && img.dataset.src) {
-          url = img.dataset.src;
-        }
-        if (img.srcset) {
-          const candidates = img.srcset.trim().split(',')
-            .map(entry => {
-              const [u, w] = entry.trim().split(/\s+/);
-              return { url: u, width: parseInt(w) || 0 };
-            })
-            .filter(c => c.url && c.width > 0 && !c.url.startsWith('data:image/'))
-            .sort((a, b) => b.width - a.width);
-          if (candidates.length) url = candidates[0].url;
-        }
-        if (url.startsWith('/')) {
-          try { url = new URL(url, location.origin).href; }
-          catch (e) { url = ''; }
-        }
-        url = url.replace(/\s+/g, '');
-
-        if (!url || url.startsWith('data:image/') || url === location.href) {
-          return;
-        }
-        if (processedUrls.has(url)) {
-          return;
-        }
-        processedUrls.add(url);
-
-        // ---- 针对图集页面的 Caption 提取 ------------------------------------------
-        let caption = '';
-        // 先找 figcaption 里的 span
-        const fig = img.closest('figure');
-        if (fig) {
-          const span = fig.querySelector('figcaption span, [data-testid="ImageCaption"] span');
-          if (span) caption = span.textContent.trim();
-        }
-        // 再 fallback 用 alt
-        if (!caption && img.alt) caption = img.alt.trim();
-
-        // 清洗 caption
-        caption = caption.replace(/REUTERS\/.*/i, '')
-          .replace(/^["“]+|["”]+$/g, '')
-          .trim();
-
-        // 构造文件名
-        const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
-        const ext = extMatch ? extMatch[1] : 'jpg';
-        let filename = caption
-          ? caption.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180)
-          : `reuters-pic-${Date.now()}-${idx}`;
-        filename += '.' + ext;
-
-        chrome.runtime.sendMessage({
-          action: 'downloadImage',
-          url,
-          filename
         });
-      });
-    }
-    else {
-      // 如果未找到 articleBody 或 article
-      chrome.runtime.sendMessage({ action: 'noImages' });
+      } else {
+        // 如果未找到 articleBody 或 article
+        chrome.runtime.sendMessage({ action: 'noImages' });
+      }
     }
   }
 
@@ -1533,15 +1602,15 @@ function extractAndCopy() {
           const img = block.querySelector('picture img, img');
           if (!img) return;
           // 最高分辨率 URL
-          let url = img.srcset
-            ? img.srcset.trim().split(',').map(s => s.trim().split(' ')[0]).pop()
-            : img.src;
+          let url = img.srcset ?
+            img.srcset.trim().split(',').map(s => s.trim().split(' ')[0]).pop() :
+            img.src;
           if (!url || seenUrls.has(url)) return;
           seenUrls.add(url);
           // 取 caption
-          let cap = block.querySelector('figcaption span')?.textContent
-            || img.alt
-            || `nytimes-${Date.now()}-${i}`;
+          let cap = block.querySelector('figcaption span')?.textContent ||
+            img.alt ||
+            `nytimes-${Date.now()}-${i}`;
           cap = cap.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180).trim();
           let filename = `${cap}.jpg`;
           // 防重名
