@@ -190,11 +190,12 @@ class ResponseWindow(QMainWindow):
             self.display_error(f"启动API请求时出错：{str(e)}\n\n详细信息:\n{detailed_error}")
 
     def center_on_screen(self):
-        """【新增】将窗口在屏幕上居中显示"""
+        """将窗口在屏幕上居中显示，并向下偏移一点"""
         frame_geometry = self.frameGeometry()
         center_point = QDesktopWidget().availableGeometry().center()
         frame_geometry.moveCenter(center_point)
-        self.move(frame_geometry.topLeft())
+        offset_y = 80  # 向下偏移的像素数，可按需调整
+        self.move(frame_geometry.topLeft().x(), frame_geometry.topLeft().y() + offset_y)
 
     def stream_in_text(self, text):
         """将流式文本块插入到文本区域"""
