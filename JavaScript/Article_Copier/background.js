@@ -424,6 +424,11 @@ function extractAndCopy() {
   else if (window.location.hostname.includes("bloomberg.com")) {
     // 定义主要内容选择器
     const mainSelectors = [
+      // ★★★ 新增/修改 ① ★★★
+      // 优先匹配你提供的新版 "feature_article" 页面的正文段落。
+      // 这个选择器通过模糊匹配类名来确保稳定性。
+      'p[class*="ArticleBodyText_articleBodyContent"]',
+      // --- 以下为原有选择器，保持不变 ---
       '.body-content p[class*="media-ui-Paragraph_text"]',
       'p.media-ui-Paragraph_text-SqIsdNjhOtO-',
       'p[class*="media-ui-Paragraph_text"]',
@@ -551,12 +556,22 @@ function extractAndCopy() {
               if (!highestResUrl && img.src) highestResUrl = img.src;
 
               const figcaptionElement = figure.querySelector('figcaption');
+              // ★★★ 新增/修改 ② ★★★
+              // 优化了标题提取逻辑。优先查找包含 "Caption_caption" 类名的 `<span>`，
+              // 这样可以精确获取描述文本，避免包含 "Source: ..." 等信息。
+              // 如果找不到，则回退到原来的逻辑，确保兼容旧版页面。
               if (figcaptionElement) {
-                const captionSpans = figcaptionElement.querySelectorAll('span');
-                if (captionSpans && captionSpans.length > 0) {
-                  caption = Array.from(captionSpans).map(span => span.textContent.trim()).filter(text => text).join(' ');
+                const specificCaptionSpan = figcaptionElement.querySelector('span[class*="Caption_caption"]');
+                if (specificCaptionSpan) {
+                  caption = specificCaptionSpan.textContent.trim();
                 } else {
-                  caption = figcaptionElement.textContent.trim();
+                  // Fallback to original logic
+                  const captionSpans = figcaptionElement.querySelectorAll('span');
+                  if (captionSpans && captionSpans.length > 0) {
+                    caption = Array.from(captionSpans).map(span => span.textContent.trim()).filter(text => text).join(' ');
+                  } else {
+                    caption = figcaptionElement.textContent.trim();
+                  }
                 }
               }
             }
@@ -1146,7 +1161,6 @@ function extractAndCopy() {
             .replace(/[\u200B-\u200D\uFEFF]/g, '') // 移除零宽字符
             .replace(/&nbsp;/g, ' ') // 处理HTML空格
             .replace(/<!--[\s\S]*?-->/g, '') // 移除HTML注释
-            // .replace(/\[.*?\]/g, '') // 移除方括号内容
             .trim();
 
           return text;
@@ -1375,7 +1389,6 @@ function extractAndCopy() {
       );
 
       images.forEach((img, idx) => {
-        // —— 复用你原来的 URL 提取逻辑 —————————————————————
         let url = '';
         if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
           url = img.src;
