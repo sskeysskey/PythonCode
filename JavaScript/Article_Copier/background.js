@@ -954,6 +954,192 @@ function extractAndCopy() {
 
   // 处理 economist.com
   else if (window.location.hostname.includes("economist.com")) {
+    // ===== 新结构优先：Next.js 模板 (你给的示例) =====
+    // 识别：<article data-test-id="Article" id="new-article-template"> 下
+    // 正文段落：p[data-component="paragraph"]
+    // 图片：figure.css-3mn275 > img （caption: figcaption > span.css-1st60ou）
+    (function handleEconomistNewTemplate() {
+      try {
+        const newArticle = document.querySelector('article#new-article-template[data-test-id="Article"]') ||
+          document.querySelector('article[data-test-id="Article"]');
+        const mainContainer = document.querySelector('main#content') || document.querySelector('main[role="main"]') || document;
+
+        if (!newArticle) {
+          return; // 不命中新模板，交给旧逻辑
+        }
+
+        // 1) 提取正文
+        const paragraphNodes = Array.from(newArticle.querySelectorAll('p[data-component="paragraph"]'));
+        const joinNormalizedSpaces = (s) => s.replace(/\s+/g, ' ').replace(/&nbsp;/g, ' ').trim();
+
+        const getParagraphText = (p) => {
+          // 合并首字 + small + 其余文本
+          // 示例结构：
+          // <p>
+          //   <span data-caps="initial">D</span>
+          //   <small>ONALD TRUMP'S</small>
+          //   后续文本节点/元素...
+          // </p>
+          let head = '';
+          const firstCap = p.querySelector('span[data-caps="initial"]');
+          const small = firstCap ? firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL' ? firstCap.nextElementSibling : null : null;
+
+          if (firstCap) head += firstCap.textContent || '';
+          if (small) head += small.textContent || '';
+
+          // 收集剩余文本：从 p 的所有子节点顺序遍历，跳过 firstCap 与 small，各种元素递归取文本
+          const textFromNode = (node) => {
+            if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              if (node === firstCap || node === small) return '';
+              // 对于 span/i/small/a 等，都递归
+              let acc = '';
+              node.childNodes.forEach(ch => acc += textFromNode(ch));
+              return acc;
+            }
+            return '';
+          };
+
+          let tail = '';
+          p.childNodes.forEach(node => {
+            if (node === firstCap || node === small) return;
+            tail += textFromNode(node);
+          });
+
+          let full = (head + ' ' + tail);
+          full = joinNormalizedSpaces(full)
+            .replace(/[•∞@]/g, '')
+            .trim();
+
+          return full;
+        };
+
+        let extractedParas = paragraphNodes.map(getParagraphText).filter(t => {
+          if (!t) return false;
+          if (t.length < 5) return false;
+          if (/^(Advertisement|Sponsored)$/i.test(t)) return false;
+          if (/^[.\s•@∞]+$/.test(t)) return false;
+          return true;
+        });
+
+        const newTextContent = extractedParas.join('\n\n');
+
+        // 2) 如果正文抓到了，再抓图片
+        if (newTextContent) {
+          // 找图片 figure
+          const figures = Array.from(newArticle.querySelectorAll('figure.css-3mn275, figure[class*="css-3mn275"]'));
+          const processedUrls = new Set();
+
+          if (figures.length === 0) {
+            // 没有图片，仍然复制正文
+          } else {
+            figures.forEach((figure, idx) => {
+              const img = figure.querySelector('img');
+              if (!img) return;
+
+              // 选 srcset 最大宽度
+              let bestUrl = '';
+              if (img.srcset) {
+                const entries = img.srcset
+                  .replace(/\s+/g, ' ')
+                  .split(',')
+                  .map(e => e.trim())
+                  .filter(Boolean)
+                  .map(e => {
+                    const parts = e.split(' ');
+                    const url = parts[0];
+                    const wStr = parts[1] || '';
+                    const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
+                    return { url, w };
+                  })
+                  .sort((a, b) => b.w - a.w);
+                if (entries.length > 0) bestUrl = entries[0].url;
+              }
+              if (!bestUrl && img.src) bestUrl = img.src;
+
+              if (!bestUrl) return;
+
+              // 规范化到高分辨率 Cloudflare cdn-cgi/image URL
+              // 如果已经是 cdn-cgi/image，就替换参数；否则保持原样（或后面可加更多兜底逻辑）
+              try {
+                const u = new URL(bestUrl, window.location.href);
+
+                if (u.pathname.startsWith('/cdn-cgi/image')) {
+                  // 形式: /cdn-cgi/image/width=...,quality=...,format=auto/content-assets/...
+                  // 我们把 width 固定到 1424，quality=80，format=auto
+                  // 把 "/cdn-cgi/image/xxx/content-assets/..." 拆分并重组
+                  // 直接用字符串处理更稳妥
+                  const rebuilt = u.origin + '/cdn-cgi/image/width=1424,quality=80,format=auto' +
+                    u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
+                  bestUrl = rebuilt + (u.search || '');
+                } else {
+                  // 如果不是 cdn-cgi，保持 bestUrl 不变
+                  bestUrl = u.href;
+                }
+              } catch (e) {
+                // 如果 URL 解析失败，保持原字符串
+              }
+
+              if (processedUrls.has(bestUrl)) return;
+              processedUrls.add(bestUrl);
+
+              // 取 caption
+              let caption = '';
+              const capSpan = figure.querySelector('figcaption span.css-1st60ou, figcaption span[class*="css-1st60ou"]');
+              if (capSpan && capSpan.textContent) {
+                caption = capSpan.textContent.trim();
+              } else if (img.alt) {
+                caption = img.alt.trim();
+              }
+
+              // 文件扩展名
+              let ext = 'jpg';
+              try {
+                const pathname = new URL(bestUrl, window.location.href).pathname;
+                const m = pathname.match(/\.(jpg|jpeg|png|webp|gif|svg)(?:$|\?)/i);
+                if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+              } catch (_) { }
+
+              // 生成文件名
+              const clean = (s) => (s || '')
+                .replace(/&nbsp;/g, ' ')
+                .replace(/[/\\?%*:|"<>+]/g, '-')
+                .replace(/\s+/g, ' ')
+                .trim();
+              let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
+              if (baseName.length > 180) baseName = baseName.slice(0, 180);
+              const filename = `${baseName}.${ext}`;
+
+              chrome.runtime.sendMessage({
+                action: 'downloadImage',
+                url: bestUrl,
+                filename
+              });
+            });
+          }
+
+          // 复制正文
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = newTextContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+
+          // 覆盖外层变量 textContent，使上层返回 true
+          textContent = newTextContent;
+        }
+
+        // 若 newTextContent 为空，交给旧逻辑继续尝试
+      } catch (e) {
+        // 新模板分支出错也不要影响旧逻辑
+        console.warn('[Economist New Template] parsing failed:', e);
+      }
+    })();
+
+    // ===== 旧结构逻辑（你现有的逻辑）放在下面，保持不动 =====
     // 首先尝试获取原有的文章结构
     let article = document.querySelector('[data-test-id="Article"]');
     let paragraphs;
@@ -969,49 +1155,28 @@ function extractAndCopy() {
       }
     }
 
-    if (paragraphs && paragraphs.length > 0) {
+    if (paragraphs && paragraphs.length > 0 && !textContent) {
       textContent = Array.from(paragraphs)
         .map(p => {
-          // 递归获取所有文本内容的函数
           function getAllText(node) {
             let text = '';
-
-            // 处理所有子节点
             Array.from(node.childNodes).forEach(child => {
-              if (child.nodeType === Node.TEXT_NODE) {
-                text += child.textContent;
-              } else if (child.nodeType === Node.ELEMENT_NODE) {
-                // 特殊处理大写字母开头
-                if (child.tagName === 'SPAN' && child.getAttribute('data-caps') === 'initial') {
-                  text += child.textContent;
-                }
-                // 处理 small 标签，保持大写
-                else if (child.tagName === 'SMALL') {
-                  text += child.textContent;
-                }
-                // 处理斜体
-                else if (child.tagName === 'I') {
-                  text += child.textContent;
-                }
-                // 处理链接和其他元素
-                else if (child.tagName === 'A' || child.children.length > 0) {
-                  text += getAllText(child);
-                }
-                else {
-                  text += child.textContent;
-                }
+              if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
+              else if (child.nodeType === Node.ELEMENT_NODE) {
+                if (child.tagName === 'SPAN' && child.getAttribute('data-caps') === 'initial') text += child.textContent;
+                else if (child.tagName === 'SMALL') text += child.textContent;
+                else if (child.tagName === 'I') text += child.textContent;
+                else if (child.tagName === 'A' || child.children.length > 0) text += getAllText(child);
+                else text += child.textContent;
               }
             });
             return text;
           }
-
-          // 获取并清理文本
           let text = getAllText(p)
-            .replace(/\s+/g, ' ') // 规范化空白
-            .replace(/[•∞@]/g, '') // 移除特殊字符
-            .replace(/&nbsp;/g, ' ') // 处理HTML空格
+            .replace(/\s+/g, ' ')
+            .replace(/[•∞@]/g, '')
+            .replace(/&nbsp;/g, ' ')
             .trim();
-
           return text;
         })
         .filter(text => {
@@ -1024,49 +1189,36 @@ function extractAndCopy() {
         })
         .join('\n\n');
 
-      // 如果成功提取到文本，则处理图片下载
       if (textContent) {
-        // 查找所有图片，但排除特定区域的图片
         const figures = Array.from(article.querySelectorAll('figure.css-3mn275'))
           .filter(figure => {
-            // 检查父元素，排除相关文章区域的图片
-            return !figure.closest('[data-optimizely="onward-articles-component"]') && // 排除相关文章组件
-              !figure.closest('[data-optimizely="related-articles-section"]') && // 排除相关文章区域
-              !figure.closest('[data-tracking-id="content-well-chapter-list"]') && // 排除章节列表
-              !figure.closest('.css-1qaigru') && // 排除水平布局区域
-              !figure.closest('.css-12lyffs') && // 排除推荐文章卡片
-              !figure.closest('.css-1xfkcl4'); // 排除onward-articles区域
+            return !figure.closest('[data-optimizely="onward-articles-component"]') &&
+              !figure.closest('[data-optimizely="related-articles-section"]') &&
+              !figure.closest('[data-tracking-id="content-well-chapter-list"]') &&
+              !figure.closest('.css-1qaigru') &&
+              !figure.closest('.css-12lyffs') &&
+              !figure.closest('.css-1xfkcl4');
           });
 
         if (figures.length === 0) {
-          chrome.runtime.sendMessage({
-            action: 'noImages'
-          });
+          chrome.runtime.sendMessage({ action: 'noImages' });
         } else {
           figures.forEach(figure => {
             const img = figure.querySelector('img');
             if (img) {
-              // 检查图片格式
               let fileExtension = 'jpg';
               const srcUrl = img.src || '';
               if (srcUrl.includes('format=auto')) {
-                // 从原始URL中提取实际文件扩展名
                 const originalPath = srcUrl.split('/').pop().split('_')[1];
                 if (originalPath) {
                   const match = originalPath.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-                  if (match) {
-                    fileExtension = match[1].toLowerCase();
-                  }
+                  if (match) fileExtension = match[1].toLowerCase();
                 }
               }
-
-              // 构建最高质量的图片URL
-              // 移除现有的width参数，使用1424作为最大宽度
               const baseUrl = srcUrl.split('/content-assets/')[0] + '/content-assets/';
               const imagePath = srcUrl.split('/content-assets/')[1].split('?')[0];
               const highResUrl = `${baseUrl}${imagePath}?width=1424&quality=80&format=auto`;
 
-              // 优先获取figcaption中的span标签内容作为描述
               let imageDescription = '';
               const figcaptionSpan = figure.querySelector('figcaption span.css-1st60ou');
               if (figcaptionSpan && figcaptionSpan.textContent.trim()) {
@@ -1075,34 +1227,24 @@ function extractAndCopy() {
                 imageDescription = img.alt.trim();
               }
 
-              // 生成文件名
               let filename;
               const now = new Date();
               const timestamp = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}`;
-
               if (imageDescription) {
-                // 使用图片描述作为文件名,替换非法字符,并加上时间戳
                 filename = `${imageDescription.replace(/[/\\?%*:|"<>+]/g, '-')}.${fileExtension}`;
-
-                // 【新增逻辑】检查文件名是否以特定前缀开头，如果是，则添加秒数时间戳
                 if (filename.startsWith('Photograph- ') || filename.startsWith('Chart- ')) {
                   const seconds = now.getSeconds();
                   const namePart = filename.substring(0, filename.lastIndexOf('.'));
                   const extensionPart = filename.substring(filename.lastIndexOf('.'));
                   filename = `${namePart}-${seconds}${extensionPart}`;
                 }
-
               } else {
-                // 如果没有描述,使用image加时间戳
                 filename = `economist-image-${timestamp}.${fileExtension}`;
               }
-
-              // 确保文件名不会太长
               if (filename.length > 200) {
                 filename = filename.substring(0, 196) + '.' + fileExtension;
               }
 
-              // 发送下载消息到background script
               chrome.runtime.sendMessage({
                 action: 'downloadImage',
                 url: highResUrl,
