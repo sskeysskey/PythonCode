@@ -1938,11 +1938,11 @@ function extractAndCopy() {
     }
   }
 
-  // ★★★★★ START: MODIFIED NIKKEI ASIA LOGIC ★★★★★
-  // 新增：Nikkei Asia 处理 (支持两种页面结构)
+  // 修改：Nikkei Asia 处理 (支持三种页面结构)
   else if (window.location.hostname.includes("asia.nikkei.com")) {
-    // 检查是否存在新的 "Shorthand" 页面结构
+    // 检查页面结构类型
     const shorthandArticle = document.querySelector('article.Theme-Story');
+    const newStructureArticle = document.querySelector('.NewsArticleWrapper_newsArticleWrapper_SWTIa');
 
     if (shorthandArticle) {
       // 1. 提取正文
@@ -1958,8 +1958,7 @@ function extractAndCopy() {
         );
       textContent = paras.join('\n\n');
 
-
-      // 2. 提取图片及描述
+      // 提取图片及描述
       if (textContent) {
         imagesFoundForDownload = true;
         // 选择所有图片所在的 figure 容器
@@ -2031,8 +2030,74 @@ function extractAndCopy() {
       } else {
         chrome.runtime.sendMessage({ action: 'noImages' });
       }
+    } else if (newStructureArticle) {
+      // --- 2. 新版文章页面结构处理 (针对您反馈的页面) ---
+      const bodyContainer = newStructureArticle.querySelector('[data-trackable="bodytext"]');
+      if (bodyContainer) {
+        const paras = Array.from(bodyContainer.querySelectorAll('p'))
+          .map(p => p.textContent.trim().replace(/&nbsp;/g, ' '))
+          .filter(t => t.length > 0);
+        textContent = paras.join('\n\n');
+      }
+
+      if (textContent) {
+        imagesFoundForDownload = true;
+        const imageBlocks = Array.from(
+          newStructureArticle.querySelectorAll(
+            'div[data-trackable="image-main"], div[data-trackable="image-inline"]'
+          )
+        );
+
+        if (imageBlocks.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const seenUrls = new Set();
+          imageBlocks.forEach((block, idx) => {
+            const img = block.querySelector('img');
+            if (!img) return;
+
+            let url = img.src || '';
+            url = url.trim();
+            if (!url) return;
+
+            if (url.startsWith('//')) url = location.protocol + url;
+            else if (url.startsWith('/')) url = new URL(url, location.origin).href;
+
+            if (seenUrls.has(url)) return;
+            seenUrls.add(url);
+
+            let captionText = '';
+            // 在新结构中，caption 是 image block 的下一个兄弟元素
+            const nextEl = block.nextElementSibling;
+            if (nextEl && nextEl.matches('p[data-trackable="caption"]')) {
+              captionText = nextEl.textContent.trim();
+            }
+
+            // 如果没有找到兄弟caption，回退到图片的alt属性
+            if (!captionText) {
+              captionText = img.alt.trim();
+            }
+
+            let baseName = captionText || `nikkei-image-${Date.now()}-${idx}`;
+            baseName = baseName
+              .replace(/[/\\?%*:|"<>+]/g, '-')
+              .replace(/\s+/g, ' ')
+              .substring(0, 180)
+              .trim();
+            const filename = (baseName || `image-${Date.now()}-${idx}`) + '.jpg';
+
+            chrome.runtime.sendMessage({
+              action: 'downloadImage',
+              url,
+              filename
+            });
+          });
+        }
+      } else {
+        chrome.runtime.sendMessage({ action: 'noImages' });
+      }
     } else {
-      // --- 原有页面结构的处理逻辑 (作为后备) ---
+      // --- 3. 原有旧版页面结构的处理逻辑 (作为最终后备) ---
       const bodyContainer = document.querySelector('[data-trackable="bodytext"]');
       if (bodyContainer) {
         const paras = Array.from(bodyContainer.querySelectorAll('p'))
@@ -2097,7 +2162,6 @@ function extractAndCopy() {
       }
     }
   }
-  // ★★★★★ END: MODIFIED NIKKEI ASIA LOGIC ★★★★★
 
   if (textContent) {
     // 创建一个隐藏的 textarea 元素以复制文本
