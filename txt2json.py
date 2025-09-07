@@ -4,6 +4,7 @@ import hashlib
 import glob
 import shutil
 import json
+import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 # ------  整个pdf逻辑部分开始  ------#
@@ -15,12 +16,47 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib import colors
 from PIL import Image
 import math
-import time
 
 MAJOR_SITES = {s.upper() for s in (
     'FT','WSJ','BLOOMBERG','REUTERS','NYTIMES',
     'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'OTHER'
 )}
+
+def alert_and_exit(message):
+    """
+    尝试用 macOS 弹窗提醒；若失败则退回到打印。随后立即退出程序。
+    """
+    try:
+        # 仅在 macOS 有效；其他平台会抛错
+        subprocess.run([
+            "osascript", "-e",
+            f'display alert "缺少必要文件" message "{message}" as critical'
+        ], check=False)
+    except Exception:
+        pass
+    print(message)
+    raise SystemExit(1)
+
+def find_today_cnh_html(today, news_directory):
+    """
+    优先在 backup/backup 目录查找 TodayCNH_<today>.html，
+    找不到再回退到 news_directory 根目录查找。
+    返回找到的文件路径列表（通常是长度为 1 的列表）。
+    若都没找到，返回空列表。
+    """
+    # 优先目录：News/backup/backup
+    backup_dir = os.path.join(news_directory, "backup", "backup")
+    candidate1 = os.path.join(backup_dir, f"TodayCNH_{today}.html")
+    # 回退目录：News/
+    candidate2 = os.path.join(news_directory, f"TodayCNH_{today}.html")
+
+    paths = []
+    if os.path.exists(candidate1):
+        paths.append(candidate1)
+    elif os.path.exists(candidate2):
+        paths.append(candidate2)
+
+    return paths
 
 def get_pdf_path(txt_path):
     directory = os.path.dirname(txt_path)
@@ -739,15 +775,25 @@ def normalize_url(u):
     new = urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
     return new
 
-def generate_news_json(news_directory, today):
+def generate_news_json(news_directory, today, cnh_html_paths=None):
     """
     扫描 News_*.txt、TodayCNH_*.html、article_copier_{today}.txt，
     生成分组的 JSON 并写入 news_<timestamp>.json。
+
+    新增: 若 cnh_html_paths 提供，则仅使用这些 HTML（通常是当天的唯一文件）。
     """
     # 1. 解析 TodayCNH_*.html -> { norm_url: (site, topic, original_url) }
-    #    **改动**: cnh_map 中增加存储原始 URL
+    #    **改动**: cnh_map 中增加存储原始 URL（保持原逻辑）
     cnh_map = {}
-    for html_path in glob.glob(os.path.join(news_directory, f"TodayCNH_*.html")):
+
+    if cnh_html_paths is None:
+        # 兼容旧逻辑：遍历目录中所有 TodayCNH_*.html
+        html_files = glob.glob(os.path.join(news_directory, f"TodayCNH_*.html"))
+    else:
+        # 只使用传入的（已确认存在的）路径
+        html_files = cnh_html_paths
+
+    for html_path in html_files:
         with open(html_path, 'r', encoding='utf-8') as f:
             text = f.read()
         # 匹配 <tr>…<td>SITE</td>…<a href="URL">TITLE</a>
@@ -757,7 +803,7 @@ def generate_news_json(news_directory, today):
             original_url = url.strip()
             nu = normalize_url(original_url)
             site = site.strip()
-            # 这里把全/半角数字+逗号都去掉
+            # 去掉全/半角数字+逗号
             topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title.strip())
             cnh_map[nu] = (site, topic, original_url) # 保存站点、主题和原始URL
 
@@ -784,7 +830,6 @@ def generate_news_json(news_directory, today):
         for line in content.splitlines():
             raw = line.strip().lstrip('\ufeff')
             if raw.startswith("http"):
-                # 碰到新 URL，先把上一个 append
                 if current_url is not None:
                     entries.append((current_url, "\n".join(buf).strip()))
                 current_url = raw
@@ -792,11 +837,9 @@ def generate_news_json(news_directory, today):
             else:
                 if current_url and raw:
                     buf.append(raw)
-        # 最后一条
         if current_url is not None:
             entries.append((current_url, "\n".join(buf).strip()))
 
-        # 每条 entry 去匹配 site/topic/images
         for url, article_text in entries:
             nu = normalize_url(url)
             if nu not in cnh_map:
@@ -804,8 +847,6 @@ def generate_news_json(news_directory, today):
 
             site_code, topic, original_url_from_map = cnh_map[nu]
             imgs = url_images.get(nu, [])
-
-            # 查表，取映射后的显示名称，默认回退到原 site_code
             display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
 
             data.setdefault(display_site, []).append({
@@ -815,7 +856,6 @@ def generate_news_json(news_directory, today):
                 "images":  imgs
             })
 
-    # 4. 写 JSON
     out_path = os.path.join(news_directory, f"onews.json")
     with open(out_path, 'w', encoding='utf-8') as fp:
         json.dump(data, fp, ensure_ascii=False, indent=4)
@@ -1078,7 +1118,18 @@ if __name__ == "__main__":
     # 定义本地服务器资源目录，方便复用
     local_server_dir = "/Users/yanzhang/Coding/LocalServer/Resources/ONews"
 
-    # 1. 主要处理流程：TXT 转 PDF
+    # 0. 先查找当天的 TodayCNH_<today>.html，优先 backup/backup，再回退到 News 根目录
+    cnh_html_paths = find_today_cnh_html(today, news_directory)
+    if not cnh_html_paths:
+        # 两处都找不到 -> 弹窗并终止
+        alert_and_exit(
+            f"未找到当天的 TodayCNH_{today}.html。\n"
+            f"请检查以下路径：\n"
+            f"1) {os.path.join(news_directory, 'backup', 'backup')}\n"
+            f"2) {news_directory}\n"
+            f"找到后再重试。"
+        )
+
     print("="*10 + " 1. 开始 TXT 转 PDF 处理 " + "="*10)
     # <--- 修改部分：捕获返回值 ---
     pdf_conversion_successful = process_all_files(news_directory, article_copier_path, image_dir)
@@ -1088,9 +1139,9 @@ if __name__ == "__main__":
     if pdf_conversion_successful:
         print("\nPDF转换成功，继续执行后续步骤...")
 
-        # 2. 生成 JSON 汇总
+        # 2. 生成 JSON 汇总（使用已确认存在的当天 TodayCNH HTML 文件）
         print("\n" + "="*10 + " 2. 开始生成 JSON 汇总 " + "="*10)
-        generate_news_json(news_directory, today)
+        generate_news_json(news_directory, today, cnh_html_paths=cnh_html_paths)
         print("="*10 + " 完成生成 JSON 汇总 " + "="*10)
 
         # 3. 移动 TodayCNH 文件 (如果需要)
@@ -1128,7 +1179,7 @@ if __name__ == "__main__":
         backup_news_assets(local_server_dir)
         print("="*10 + " 完成备份核心资产 " + "="*10)
 
-        # 8. 新增：清理超过10天的旧文件和目录
+        # 8. 清理超过10天的旧文件和目录
         print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
         prune_old_assets(local_server_dir, days_to_keep=10)
         print("="*10 + " 完成清理旧资产 " + "="*10)
