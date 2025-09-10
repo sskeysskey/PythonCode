@@ -1139,6 +1139,222 @@ function extractAndCopy() {
       }
     })();
 
+    // ===== 兼容补丁分支：适配 data-testid + 混入引号文本的新变体（不影响上面的新模板与旧逻辑） =====
+    (function handleEconomistPatchedVariant() {
+      try {
+        if (textContent) return; // 上面的新模板已成功提取则跳过
+
+        // 命中更宽松的 Article 选择器：兼容 data-testid 与 data-test-id
+        const articleNode =
+          document.querySelector('article#new-article-template[data-testid="Article"]') ||
+          document.querySelector('article[data-testid="Article"]') ||
+          document.querySelector('article#new-article-template[data-test-id="Article"]') ||
+          document.querySelector('article[data-test-id="Article"]');
+
+        if (!articleNode) return;
+
+        // 抓取正文段落：仍以 p[data-component="paragraph"] 为主
+        const pList = Array.from(articleNode.querySelectorAll('p[data-component="paragraph"]'));
+        if (pList.length === 0) return;
+
+        const normalizeSpaces = (s) =>
+          (s || '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const getTextDeep = (node, skipSet) => {
+          // 深度收集文本，保留 a/small/i/span 中内容，跳过 skipSet 指定的节点
+          if (!node) return '';
+          if (skipSet && skipSet.has(node)) return '';
+          if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent || '';
+          }
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            let acc = '';
+            node.childNodes.forEach(ch => {
+              acc += getTextDeep(ch, skipSet);
+            });
+            return acc;
+          }
+          return '';
+        };
+
+        const extractParagraph = (p) => {
+          // 合并首字与 small，然后把其余文本节点也拼进去，兼容被引号包裹的裸文本
+          const firstCap = p.querySelector('span[data-caps="initial"]');
+          const smallAfter =
+            firstCap && firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL'
+              ? firstCap.nextElementSibling
+              : null;
+
+          let head = '';
+          if (firstCap && firstCap.textContent) head += firstCap.textContent;
+          if (smallAfter && smallAfter.textContent) head += smallAfter.textContent;
+
+          const skip = new Set();
+          if (firstCap) skip.add(firstCap);
+          if (smallAfter) skip.add(smallAfter);
+
+          // tail 包含 p 中剩余所有文本（包括被 " 包起来的裸文本）
+          let tail = getTextDeep(p, skip);
+
+          // 某些页面把英文引号当作文本节点保留：剔除成对的左右引号中的多余空格与孤立引号
+          // 先合并 head 与 tail
+          let full = `${head} ${tail}`;
+
+          // 清理奇怪符号（你原先的规则保留）
+          full = full
+            .replace(/[•∞@]/g, ' ')
+            .replace(/“|”|‘|’/g, '"') // 将弯引号转直引号，便于统一处理
+            .replace(/\s*"\s*/g, '"'); // 引号两侧空白归一
+
+          // 处理被引号包裹且被拆开的片段（例如 " 1942 "）：
+          // 1) 把连续的 "word" 合并为 word；2) 保留句内必要的引号
+          // 简单启发式：去掉落单的引号；保留成对引号内部的文本
+          // 先收敛多余空格
+          full = normalizeSpaces(full);
+
+          // 去除多数“孤立引号”：比如以空格分隔的独立 " 直接去掉
+          full = full.replace(/\s"\s/g, ' ');
+
+          // 常见模式：" 1942 " => 1942
+          full = full.replace(/"\s*([^\"]+?)\s*"/g, '$1');
+
+          // 再做总体空白与杂质清理
+          full = normalizeSpaces(full)
+            .replace(/[•∞@]/g, '')
+            .trim();
+
+          return full;
+        };
+
+        let paras = pList
+          .map(extractParagraph)
+          .filter(t => {
+            if (!t) return false;
+            if (t.length < 5) return false;
+            if (/^(Advertisement|Sponsored)$/i.test(t)) return false;
+            if (/^[.\s•@∞]+$/.test(t)) return false;
+            return true;
+          });
+
+        const patchedText = paras.join('\n\n');
+
+        // 若取到正文，再处理图片
+        if (patchedText) {
+          // 更宽松的 figure 选择器（class 名后缀可能变动）
+          const figures = Array.from(
+            articleNode.querySelectorAll(
+              'figure.css-3mn275, figure[class*="css-3mn275"], figure[class*="e1197rjj0"]'
+            )
+          );
+
+          const processed = new Set();
+
+          figures.forEach((figure, idx) => {
+            const img = figure.querySelector('img');
+            if (!img) return;
+
+            // 选 srcset 中最大宽度，或回退到 src
+            let bestUrl = '';
+            const rawSrcset = (img.getAttribute('srcset') || '').replace(/\s+/g, ' ').trim();
+
+            if (rawSrcset) {
+              const entries = rawSrcset
+                .split(',')
+                .map(s => s.trim())
+                .filter(Boolean)
+                .map(e => {
+                  const parts = e.split(' ');
+                  const url = parts[0];
+                  const wStr = parts[1] || '';
+                  const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
+                  return { url, w };
+                })
+                .sort((a, b) => b.w - a.w);
+              if (entries.length > 0) bestUrl = entries[0].url;
+            }
+            if (!bestUrl && img.src) bestUrl = img.src;
+
+            if (!bestUrl) return;
+
+            // 规范化 Cloudflare cdn-cgi/image 到高分辨率
+            try {
+              const u = new URL(bestUrl, window.location.href);
+              if (u.pathname.startsWith('/cdn-cgi/image')) {
+                const rebuilt =
+                  u.origin +
+                  '/cdn-cgi/image/width=1424,quality=80,format=auto' +
+                  u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
+                bestUrl = rebuilt + (u.search || '');
+              } else {
+                bestUrl = u.href;
+              }
+            } catch (_) {
+              // 保持原样
+            }
+
+            if (processed.has(bestUrl)) return;
+            processed.add(bestUrl);
+
+            // 取 caption：兼容 class 变体
+            let caption = '';
+            const capSpan =
+              figure.querySelector('figcaption span.css-1st60ou') ||
+              figure.querySelector('figcaption span[class*="css-1st60ou"]') ||
+              figure.querySelector('figcaption') ||
+              null;
+            if (capSpan && capSpan.textContent) {
+              caption = capSpan.textContent.trim();
+            } else if (img.alt) {
+              caption = img.alt.trim();
+            }
+
+            // 文件扩展名推断
+            let ext = 'jpg';
+            try {
+              const pathname = new URL(bestUrl, window.location.href).pathname;
+              const m = pathname.match(/\.(jpg|jpeg|png|webp|gif|svg)(?:$|\?)/i);
+              if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+            } catch (_) { /* ignore */ }
+
+            // 生成文件名
+            const clean = (s) =>
+              (s || '')
+                .replace(/&nbsp;/g, ' ')
+                .replace(/[/\\?%*:|"<>+]/g, '-')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
+            if (baseName.length > 180) baseName = baseName.slice(0, 180);
+            const filename = `${baseName}.${ext}`;
+
+            chrome.runtime.sendMessage({
+              action: 'downloadImage',
+              url: bestUrl,
+              filename
+            });
+          });
+
+          // 复制正文到剪贴板，并设置 textContent 以便上层判断
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = patchedText;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+
+          textContent = patchedText;
+        }
+      } catch (err) {
+        console.warn('[Economist Patched Variant] parsing failed:', err);
+      }
+    })();
+
     // ===== 旧结构逻辑（你现有的逻辑）放在下面，保持不动 =====
     // 首先尝试获取原有的文章结构
     let article = document.querySelector('[data-test-id="Article"]');
