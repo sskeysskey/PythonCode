@@ -841,12 +841,27 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
 
         for url, article_text in entries:
             nu = normalize_url(url)
-            if nu not in cnh_map:
-                continue
-
-            site_code, topic, original_url_from_map = cnh_map[nu]
-            imgs = url_images.get(nu, [])
-            display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
+            
+            # 修改：优先使用 cnh_map 中的信息，如果没有则从 URL 推断
+            if nu in cnh_map:
+                site_code, topic, original_url_from_map = cnh_map[nu]
+                imgs = url_images.get(nu, [])
+                display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
+            else:
+                # 如果在 HTML 中找不到，尝试从 URL 推断站点信息
+                site_code = extract_site_name(url)
+                # 尝试从文章内容的第一行提取标题作为主题
+                first_line = article_text.split('\n')[0].strip() if article_text else ""
+                # 如果第一行太长，截取前100个字符
+                topic = first_line[:100] + "..." if len(first_line) > 100 else first_line
+                if not topic:
+                    topic = "未知主题"
+                
+                original_url_from_map = url
+                imgs = url_images.get(nu, [])
+                display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
+                
+                print(f"注意：URL {url} 未在 HTML 中找到，使用推断信息: 站点={site_code}, 主题={topic[:50]}...")
 
             data.setdefault(display_site, []).append({
                 "topic":   topic,
@@ -1143,45 +1158,45 @@ if __name__ == "__main__":
         generate_news_json(news_directory, today, cnh_html_paths=cnh_html_paths)
         print("="*10 + " 完成生成 JSON 汇总 " + "="*10)
 
-        # # 3. 移动 TodayCNH 文件 (如果需要)
-        # print("\n" + "="*10 + " 3. 开始移动 TodayCNH 文件 " + "="*10)
-        # move_cnh_file(news_directory)
-        # print("="*10 + " 完成移动 TodayCNH 文件 " + "="*10)
+        # 3. 移动 TodayCNH 文件 (如果需要)
+        print("\n" + "="*10 + " 3. 开始移动 TodayCNH 文件 " + "="*10)
+        move_cnh_file(news_directory)
+        print("="*10 + " 完成移动 TodayCNH 文件 " + "="*10)
 
-        # # 4. 清理 Downloads 目录下的 .html 文件
-        # print("\n" + "="*10 + " 4. 开始清理 Downloads 中的 HTML 文件 " + "="*10)
-        # html_files = [f for f in os.listdir(downloads_path) if f.endswith('.html')]
-        # if html_files:
-        #     for file in html_files:
-        #         file_path = os.path.join(downloads_path, file)
-        #         try:
-        #             os.remove(file_path)
-        #             print(f'成功删除 HTML 文件: {file}')
-        #         except OSError as e:
-        #             print(f'删除 HTML 文件失败 {file}: {e}')
-        # else:
-        #     print("Downloads 目录下没有找到 .html 文件。")
-        # print("="*10 + " 完成清理 Downloads 中的 HTML 文件 " + "="*10)
+        # 4. 清理 Downloads 目录下的 .html 文件
+        print("\n" + "="*10 + " 4. 开始清理 Downloads 中的 HTML 文件 " + "="*10)
+        html_files = [f for f in os.listdir(downloads_path) if f.endswith('.html')]
+        if html_files:
+            for file in html_files:
+                file_path = os.path.join(downloads_path, file)
+                try:
+                    os.remove(file_path)
+                    print(f'成功删除 HTML 文件: {file}')
+                except OSError as e:
+                    print(f'删除 HTML 文件失败 {file}: {e}')
+        else:
+            print("Downloads 目录下没有找到 .html 文件。")
+        print("="*10 + " 完成清理 Downloads 中的 HTML 文件 " + "="*10)
 
-        # # 5. 移动 article_copier 文件到 backup
-        # print("\n" + "="*10 + " 5. 开始移动 article_copier 文件 " + "="*10)
-        # move_article_copier_files(news_directory, news_directory)
-        # print("="*10 + " 完成移动 article_copier 文件 " + "="*10)
+        # 5. 移动 article_copier 文件到 backup
+        print("\n" + "="*10 + " 5. 开始移动 article_copier 文件 " + "="*10)
+        move_article_copier_files(news_directory, news_directory)
+        print("="*10 + " 完成移动 article_copier 文件 " + "="*10)
 
-        # # 6. 将所有处理过的 TXT 文件移动到 done 目录
-        # print("\n" + "="*10 + " 6. 开始移动已处理的 TXT 文件 " + "="*10)
-        # move_processed_txt_files(news_directory)
-        # print("="*10 + " 完成移动已处理的 TXT 文件 " + "="*10)
+        # 6. 将所有处理过的 TXT 文件移动到 done 目录
+        print("\n" + "="*10 + " 6. 开始移动已处理的 TXT 文件 " + "="*10)
+        move_processed_txt_files(news_directory)
+        print("="*10 + " 完成移动已处理的 TXT 文件 " + "="*10)
 
-        # # 7. 将news_images和onews.json备份到相应目录下并更新version.json
-        # print("\n" + "="*10 + " 7. 开始备份核心资产 " + "="*10)
-        # backup_news_assets(local_server_dir)
-        # print("="*10 + " 完成备份核心资产 " + "="*10)
+        # 7. 将news_images和onews.json备份到相应目录下并更新version.json
+        print("\n" + "="*10 + " 7. 开始备份核心资产 " + "="*10)
+        backup_news_assets(local_server_dir)
+        print("="*10 + " 完成备份核心资产 " + "="*10)
 
-        # # 8. 清理超过10天的旧文件和目录
-        # print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
-        # prune_old_assets(local_server_dir, days_to_keep=5)
-        # print("="*10 + " 完成清理旧资产 " + "="*10)
+        # 8. 清理超过10天的旧文件和目录
+        print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
+        prune_old_assets(local_server_dir, days_to_keep=5)
+        print("="*10 + " 完成清理旧资产 " + "="*10)
 
     else:
         print("\n错误：PDF转换过程中出现失败，已终止后续所有任务。")
