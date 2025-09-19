@@ -1884,192 +1884,299 @@ function extractAndCopy() {
 
   // 处理 nytimes.com
   else if (window.location.hostname.includes("nytimes.com")) {
-    // ---- 去掉 paywall overlay ----
-    const gate = document.querySelector('[data-testid="vi-gateway-container"]');
-    if (gate) gate.style.display = 'none';
+    try {
+      // ---- 去掉 paywall overlay ----
+      const gate = document.querySelector('[data-testid="vi-gateway-container"]');
+      if (gate) gate.style.display = 'none';
 
-    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    // ★★★ 修改开始：增加对新版“互动文章”页面的支持 ★★★
-    // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
-    // 首先，尝试识别新版互动文章的独特容器
-    const interactiveArticle = document.querySelector('article#interactive.interactive');
-
-    if (interactiveArticle) {
-      // --- 如果是新版互动文章，执行以下专用逻辑 ---
-
-      // 1. 提取正文
-      // 新版文章的正文段落是带有 'g-text' 类的 <p> 标签
-      const paras = Array.from(interactiveArticle.querySelectorAll('p.g-text'));
-      textContent = paras
-        .map(p => p.textContent.trim().replace(/\s+/g, ' '))
-        .filter(t => t && t.length > 1)
-        .join('\n\n');
-
-      // 2. 提取图片
-      // 新版文章的图片容器是带有 'g-wrapper' 类的 <figure> 标签
-      const imageFigures = Array.from(interactiveArticle.querySelectorAll('figure.g-wrapper'));
-      if (imageFigures.length === 0) {
-        chrome.runtime.sendMessage({ action: 'noImages' });
-      } else {
-        const seenUrls = new Set();
-        const seenNames = new Set();
-        imageFigures.forEach((figure, i) => {
-          const img = figure.querySelector('picture img, img');
-          if (!img) return;
-
-          // 使用与旧逻辑相同的策略获取最高分辨率图片URL
-          let url = img.srcset ?
-            img.srcset.trim().split(',').map(s => s.trim().split(' ')[0]).pop() :
-            img.src;
-          if (!url || seenUrls.has(url)) return;
-          seenUrls.add(url);
-
-          // 提取图片描述 (新版描述在 'p.g-caption' 中)
-          let cap = figure.querySelector('p.g-caption')?.textContent ||
-            img.alt ||
-            `nytimes-interactive-${Date.now()}-${i}`;
-
-          // 清理并生成文件名
-          cap = cap.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180).trim();
-          let filename = `${cap}.jpg`;
-
-          // 防止重名
-          let k = 1;
-          while (seenNames.has(filename)) {
-            filename = `${cap}(${k++}).jpg`;
-          }
-          seenNames.add(filename);
-
-          chrome.runtime.sendMessage({ action: 'downloadImage', url, filename });
-        });
-      }
-
-      // 3. 复制文本（如果找到）并返回
-      if (textContent) {
-        const ta = document.createElement('textarea');
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        ta.value = textContent;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        return true; // 文本复制成功
-      } else {
-        // 即使没有文本，图片下载也可能已启动
-        return false; // 表示没有文本被复制
-      }
-    } else {
-      // --- 如果不是新版互动文章，则执行您原有的、运行正常的旧版逻辑 ---
-
-      // 找到文章主节点
-      const article = document.querySelector('main#site-content article, article#story');
-      if (!article) {
-        chrome.runtime.sendMessage({ action: 'noImages' });
-        return false; // 明确返回false
-      }
-
-      // ---- 等待正文段落载入 ----
-      const waitFor = (selector, timeout = 2000) => {
-        return new Promise(resolve => {
-          const start = Date.now();
-          (function check() {
-            if (document.querySelector(selector) || Date.now() - start > timeout) {
-              return resolve();
-            }
-            requestAnimationFrame(check);
-          })();
-        });
-      };
-      waitFor('section[name="articleBody"] p.css-at9mcl');
-
-      // ---- 提取正文 ----
-      const bodySection = article.querySelector('section[name="articleBody"]');
-      if (!bodySection) {
-        chrome.runtime.sendMessage({ action: 'noImages' });
-        return false; // 明确返回false
-      }
-      // 把两栏都选进来
-      const paras = Array.from(
-        bodySection.querySelectorAll([
-          'p.css-at9mcl',
-          'p.css-at9mc1',
-          'div.StoryBodyCompanionColumn p',
-          'h2',
-          'p[data-testid="drop-cap-letter"] + p'
-        ].join(','))
-      );
-      textContent = paras
-        .map(p => p.textContent.trim().replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' '))
-        .filter(t =>
-          t.length > 1 &&
-          !/^[@•∞]/.test(t) &&
-          !/^[\s\W]*$/.test(t) &&
-          t !== "Editors’ Picks"
-        )
-        .join('\n\n');
-
-      // ---- 只有正文抓到才处理图片 ----
-      if (textContent) {
-        // 原始图片块 selector
-        const rawBlocks = Array.from(
-          article.querySelectorAll(
-            '[data-testid^="ImageBlock"], [data-testid="imageblock-wrapper"], figure'
-          )
-        );
-        // 过滤掉 recirculation / bottom-sheet-sensor 区域内的 block
-        const imageBlocks = rawBlocks.filter(block =>
-          !block.closest('[data-testid="recirculation"], #bottom-sheet-sensor')
+      // ★★★★★ 新增分支：适配 inline-interactive + adventure 项目结构 ★★★★★
+      // 识别：section[data-testid="inline-interactive"].interactive-content 内部有 .interactive-body、#adventure-project-container、#adventure-target
+      (function () {
+        const inlineSection = document.querySelector(
+          'section[data-testid="inline-interactive"].interactive-content'
         );
 
-        if (imageBlocks.length === 0) {
+        const looksLikeAdventure =
+          inlineSection &&
+          inlineSection.querySelector('.interactive-body') &&
+          inlineSection.querySelector('#adventure-project-container') &&
+          inlineSection.querySelector('#adventure-target');
+
+        if (!looksLikeAdventure) return; // 不符合则放行给后续分支
+
+        const scope = inlineSection;
+
+        // 1) 提取正文：.text-block p
+        const paragraphNodes = Array.from(scope.querySelectorAll('.text-block p'));
+        let textContent = paragraphNodes
+          .map(p => {
+            let t = (p.textContent || '').trim();
+            t = t.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ');
+            // 去掉整段被成对英文引号包裹的情况："... ..."
+            t = t.replace(/^"\s*(.*?)\s*"$/, '$1');
+            return t;
+          })
+          .filter(t => t && t.length > 1 && !/^[\s\W]*$/.test(t))
+          .join('\n\n');
+
+        // 2) 提取图片：限定在 scope 内
+        const rawFigures = Array.from(
+          scope.querySelectorAll('figure.full-width.media, figure')
+        );
+        const figures = rawFigures.filter(fig => fig.querySelector('picture img, img'));
+
+        if (figures.length === 0) {
           chrome.runtime.sendMessage({ action: 'noImages' });
         } else {
           const seenUrls = new Set();
           const seenNames = new Set();
-          imageBlocks.forEach((block, i) => {
-            // 找到 img
-            const img = block.querySelector('picture img, img');
+
+          figures.forEach((figure, i) => {
+            const img = figure.querySelector('picture img, img');
             if (!img) return;
-            // 最高分辨率 URL
+
+            let url = '';
+            if (img.srcset && img.srcset.trim()) {
+              const parts = img.srcset
+                .split(',')
+                .map(s => s.trim().split(' ')[0])
+                .filter(Boolean);
+              if (parts.length) url = parts[parts.length - 1];
+            }
+            if (!url && img.src) url = img.src;
+
+            if (!url || seenUrls.has(url)) return;
+            seenUrls.add(url);
+
+            let cap =
+              figure.querySelector('figcaption .caption-text')?.textContent?.trim() ||
+              img.alt?.trim() ||
+              `nytimes-inline-interactive-${Date.now()}-${i}`;
+
+            cap = cap
+              .replace(/[\r\n]+/g, ' ')
+              .replace(/\s+/g, ' ')
+              .replace(/[/\\?%*:|"<>+]/g, '-')
+              .slice(0, 180)
+              .trim();
+
+            let filename = `${cap || 'image'}.jpg`;
+            let k = 1;
+            while (seenNames.has(filename)) {
+              filename = `${cap || 'image'}(${k++}).jpg`;
+            }
+            seenNames.add(filename);
+
+            chrome.runtime.sendMessage({ action: 'downloadImage', url, filename });
+          });
+        }
+
+        // 3) 复制文本并阻断后续分支
+        if (textContent) {
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = textContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          throw { __NYT_HANDLED_INLINE_INTERACTIVE__: true }; // 返回 true
+        } else {
+          // 没有文本但可能已触发图片下载
+          throw { __NYT_HANDLED_INLINE_INTERACTIVE__: false }; // 返回 false
+        }
+      })();
+
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      // ★★★ 修改开始：你之前已添加的“新版互动文章”页面支持（保持不动）★★★
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+      // 首先，尝试识别新版互动文章的独特容器
+      const interactiveArticle = document.querySelector('article#interactive.interactive');
+
+      if (interactiveArticle) {
+        // --- 如果是新版互动文章，执行以下专用逻辑 ---
+
+        // 1. 提取正文
+        // 新版文章的正文段落是带有 'g-text' 类的 <p> 标签
+        const paras = Array.from(interactiveArticle.querySelectorAll('p.g-text'));
+        let textContent = paras
+          .map(p => p.textContent.trim().replace(/\s+/g, ' '))
+          .filter(t => t && t.length > 1)
+          .join('\n\n');
+
+        // 2. 提取图片
+        // 新版文章的图片容器是带有 'g-wrapper' 类的 <figure> 标签
+        const imageFigures = Array.from(interactiveArticle.querySelectorAll('figure.g-wrapper'));
+        if (imageFigures.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const seenUrls = new Set();
+          const seenNames = new Set();
+          imageFigures.forEach((figure, i) => {
+            const img = figure.querySelector('picture img, img');
+            if (!img) return;
+
+            // 使用与旧逻辑相同的策略获取最高分辨率图片URL
             let url = img.srcset ?
               img.srcset.trim().split(',').map(s => s.trim().split(' ')[0]).pop() :
               img.src;
             if (!url || seenUrls.has(url)) return;
             seenUrls.add(url);
-            // 取 caption
-            let cap = block.querySelector('figcaption span')?.textContent ||
+
+            // 提取图片描述 (新版描述在 'p.g-caption' 中)
+            let cap = figure.querySelector('p.g-caption')?.textContent ||
               img.alt ||
-              `nytimes-${Date.now()}-${i}`;
+              `nytimes-interactive-${Date.now()}-${i}`;
+
+            // 清理并生成文件名
             cap = cap.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180).trim();
             let filename = `${cap}.jpg`;
-            // 防重名
+
+            // 防止重名
             let k = 1;
             while (seenNames.has(filename)) {
               filename = `${cap}(${k++}).jpg`;
             }
             seenNames.add(filename);
+
             chrome.runtime.sendMessage({ action: 'downloadImage', url, filename });
           });
         }
 
-        // ---- 复制正文 并返回 true ----
-        const ta = document.createElement('textarea');
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        ta.value = textContent;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        return true;
+        // 3. 复制文本（如果找到）并返回
+        if (textContent) {
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = textContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          return true; // 文本复制成功
+        } else {
+          // 即使没有文本，图片下载也可能已启动
+          return false; // 表示没有文本被复制
+        }
       } else {
-        chrome.runtime.sendMessage({ action: 'noImages' });
-        return false;
-      }
-    }
+        // --- 如果不是新版互动文章，则执行您原有的、运行正常的旧版逻辑 ---
 
+        // 找到文章主节点
+        const article = document.querySelector('main#site-content article, article#story');
+        if (!article) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+          return false; // 明确返回false
+        }
+
+        // ---- 等待正文段落载入 ----
+        const waitFor = (selector, timeout = 2000) => {
+          return new Promise(resolve => {
+            const start = Date.now();
+            (function check() {
+              if (document.querySelector(selector) || Date.now() - start > timeout) {
+                return resolve();
+              }
+              requestAnimationFrame(check);
+            })();
+          });
+        };
+        waitFor('section[name="articleBody"] p.css-at9mcl');
+
+        // ---- 提取正文 ----
+        const bodySection = article.querySelector('section[name="articleBody"]');
+        if (!bodySection) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+          return false; // 明确返回false
+        }
+        // 把两栏都选进来
+        const paras = Array.from(
+          bodySection.querySelectorAll([
+            'p.css-at9mcl',
+            'p.css-at9mc1',
+            'div.StoryBodyCompanionColumn p',
+            'h2',
+            'p[data-testid="drop-cap-letter"] + p'
+          ].join(','))
+        );
+        let textContent = paras
+          .map(p => p.textContent.trim().replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' '))
+          .filter(t =>
+            t.length > 1 &&
+            !/^[@•∞]/.test(t) &&
+            !/^[\s\W]*$/.test(t) &&
+            t !== "Editors’ Picks"
+          )
+          .join('\n\n');
+
+        // ---- 只有正文抓到才处理图片 ----
+        if (textContent) {
+          // 原始图片块 selector
+          const rawBlocks = Array.from(
+            article.querySelectorAll(
+              '[data-testid^="ImageBlock"], [data-testid="imageblock-wrapper"], figure'
+            )
+          );
+          // 过滤掉 recirculation / bottom-sheet-sensor 区域内的 block
+          const imageBlocks = rawBlocks.filter(block =>
+            !block.closest('[data-testid="recirculation"], #bottom-sheet-sensor')
+          );
+
+          if (imageBlocks.length === 0) {
+            chrome.runtime.sendMessage({ action: 'noImages' });
+          } else {
+            const seenUrls = new Set();
+            const seenNames = new Set();
+            imageBlocks.forEach((block, i) => {
+              // 找到 img
+              const img = block.querySelector('picture img, img');
+              if (!img) return;
+              // 最高分辨率 URL
+              let url = img.srcset ?
+                img.srcset.trim().split(',').map(s => s.trim().split(' ')[0]).pop() :
+                img.src;
+              if (!url || seenUrls.has(url)) return;
+              seenUrls.add(url);
+              // 取 caption
+              let cap = block.querySelector('figcaption span')?.textContent ||
+                img.alt ||
+                `nytimes-${Date.now()}-${i}`;
+              cap = cap.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180).trim();
+              let filename = `${cap}.jpg`;
+              // 防重名
+              let k = 1;
+              while (seenNames.has(filename)) {
+                filename = `${cap}(${k++}).jpg`;
+              }
+              seenNames.add(filename);
+              chrome.runtime.sendMessage({ action: 'downloadImage', url, filename });
+            });
+          }
+
+          // ---- 复制正文 并返回 true ----
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = textContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          return true;
+        } else {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+          return false;
+        }
+      }
+    } catch (e) {
+      // 处理新增分支的控制流中断
+      if (e && e.__NYT_HANDLED_INLINE_INTERACTIVE__ !== undefined) {
+        return !!e.__NYT_HANDLED_INLINE_INTERACTIVE__;
+      }
+      // 其它异常继续抛出，便于调试
+      throw e;
+    }
   }
 
   // 新增：Washington Post 处理
