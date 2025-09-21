@@ -823,6 +823,20 @@ class MainWindow(QWidget):
         if num_to_add > 0:
             for _ in range(num_to_add): self._add_file_block_widget(add_to_list_ref=True)
 
+    # --- 新增代码开始 ---
+    def keyPressEvent(self, event):
+        """
+        重写 keyPressEvent 方法以捕获键盘事件。
+        """
+        # 检查按下的键是否是 Esc 键
+        if event.key() == Qt.Key_Escape:
+            # 如果是，则关闭主窗口，这将终止整个应用程序
+            self.close()
+        else:
+            # 对于所有其他按键，调用父类的默认实现
+            super().keyPressEvent(event)
+    # --- 新增代码结束 ---
+
     def generate_and_save_output(self):
         project_name = self.project_name_input.text().strip()
         
