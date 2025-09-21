@@ -4,6 +4,7 @@ import hashlib
 import glob
 import shutil
 import json
+import html
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
@@ -802,8 +803,9 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
             original_url = url.strip()
             nu = normalize_url(original_url)
             site = site.strip()
-            # 去掉全/半角数字+逗号
-            topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title.strip())
+            # 先 HTML 反解码，再去掉全/半角数字+逗号
+            title_decoded = html.unescape(title.strip())  # 关键修改：反解码 &amp; -> &
+            topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title_decoded)
             cnh_map[nu] = (site, topic, original_url) # 保存站点、主题和原始URL
 
     # 2. 解析 article_copier_{today}.txt -> { norm_url: [img1, img2, ...] }

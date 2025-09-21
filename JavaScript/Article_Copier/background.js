@@ -750,6 +750,9 @@ function extractAndCopy() {
     if (article) {
       // 【1】先提取文本，而不进行图片下载
       const possibleSelectors = [
+        // 【新增】针对新版页面布局的段落选择器
+        'p.css-1009hy1-StyledNewsKitParagraph',
+        // --- 以下为原有选择器，保持不变 ---
         'p[class*="emoc1hq1"][class*="css-1jdwmf4-StyledNewsKitParagraph"][font-size="17"]',
         'p[class*="css-k3zb61-Paragraph"]',
         'p[data-type="paragraph"]',
@@ -761,7 +764,8 @@ function extractAndCopy() {
 
       let allParagraphs = [];
       possibleSelectors.forEach(selector => {
-        const paragraphs = article.querySelectorAll(selector);
+        // 【修改】将文本搜索范围从 article 扩展到 document，以应对某些正文内容也在 article 标签外的情况
+        const paragraphs = document.querySelectorAll(selector);
         allParagraphs = [...allParagraphs, ...Array.from(paragraphs)];
       });
 
@@ -811,13 +815,19 @@ function extractAndCopy() {
         // 查找"Show Conversation"元素
         const showConversationElement = document.querySelector('.css-1nc85ca-Show0rHideCommentsSpan');
 
-        // 扩展图片查找范围
+        // 【修改】扩展图片查找范围，增加对 <article> 标签外部头图的抓取
         let allImages = [
-          ...Array.from(article.querySelectorAll('picture.css-u314cv img')), // 原有的选择器
-          ...Array.from(article.querySelectorAll('.origami-item img')), // 新增：origami布局中的图片
-          ...Array.from(article.querySelectorAll('[data-type="inset"] img')), // 新增：inset中的图片
-          ...Array.from(article.querySelectorAll('figure img')) // 新增：figure中的图片
+          // 【新增】抓取位于 <main> 标签下、<article> 标签外的头图
+          ...Array.from(document.querySelectorAll('main > .bigTop picture img')),
+          // --- 以下为原有选择器，保持不变，但搜索范围从 article 改为 document 以确保全面 ---
+          ...Array.from(document.querySelectorAll('article picture.css-u314cv img')),
+          ...Array.from(document.querySelectorAll('article .origami-item img')),
+          ...Array.from(document.querySelectorAll('article [data-type="inset"] img')),
+          ...Array.from(document.querySelectorAll('article figure img'))
         ];
+
+        // 【新增】对抓取到的图片进行去重，防止因为选择器重叠而重复下载
+        allImages = [...new Set(allImages)];
 
         // --- 新增过滤逻辑 ---
         // 过滤掉 "What to Read Next" 等推荐区域的图片
@@ -905,8 +915,11 @@ function extractAndCopy() {
                 const figureEl = img.closest('figure');
                 let captionSpan;
                 if (figureEl) {
-                  const figcaptionEl = figureEl.nextElementSibling;
-                  if (figcaptionEl && figcaptionEl.tagName.toLowerCase() === 'figcaption') {
+                  // 【修改】修正了对 figcaption 的查找逻辑，使其更健壮
+                  const figcaptionEl = figureEl.nextElementSibling?.tagName.toLowerCase() === 'figcaption'
+                    ? figureEl.nextElementSibling
+                    : figureEl.querySelector('figcaption');
+                  if (figcaptionEl) {
                     captionSpan = figcaptionEl.querySelector('.css-426zcb-CaptionSpan');
                   }
                 }
