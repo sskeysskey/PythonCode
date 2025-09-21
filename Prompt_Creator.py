@@ -594,23 +594,16 @@ class MainWindow(QWidget):
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(5) 
 
-        # --- MODIFICATION START ---
         # “加载历史记录”按钮的创建移到这里，但暂时不添加到任何布局
         self.load_history_button = QPushButton("加载历史记录")
         self.load_history_button.clicked.connect(self.show_history_dialog)
-        # 原 top_buttons_layout 已被移除
-        # --- MODIFICATION END ---
 
         top_section_layout = QHBoxLayout()
-        project_name_group_layout = QVBoxLayout()
-        project_name_group_layout.addWidget(QLabel("项目名称:"))
-        self.project_name_input = QLineEdit()
-        self.project_name_input.setStyleSheet("font-size:20pt;")
-        self.project_name_input.setPlaceholderText("例如：Finance")
-        project_name_group_layout.addWidget(self.project_name_input)
-        top_section_layout.addLayout(project_name_group_layout, 1)
 
-        # --- 项目介绍部分修改 ---
+        # ==================== 代码修改开始 ====================
+        # 将“项目介绍”部分的代码块移到前面，使其显示在左边。
+
+        # --- 项目介绍部分 (现在在左边) ---
         project_desc_groupbox = QGroupBox("项目介绍:")
         project_desc_main_layout = QVBoxLayout() # GroupBox内部的主布局
 
@@ -649,11 +642,23 @@ class MainWindow(QWidget):
         self.project_desc_button_group.addButton(self.custom_desc_radio_button, custom_radio_id)
         
         project_desc_groupbox.setLayout(project_desc_main_layout)
+        # 将项目介绍部分先添加到布局中，拉伸因子为2
         top_section_layout.addWidget(project_desc_groupbox, 2)
         
         # 连接按钮组的信号，以处理自定义输入框的启用/禁用和文本填充
         self.project_desc_button_group.buttonClicked[int].connect(self._handle_project_desc_selection_changed)
-        # --- 结束项目介绍部分修改 ---
+        
+        # --- 项目名称部分 (现在在右边) ---
+        project_name_group_layout = QVBoxLayout()
+        project_name_group_layout.addWidget(QLabel("项目名称:"))
+        self.project_name_input = QLineEdit()
+        self.project_name_input.setStyleSheet("font-size:20pt;")
+        self.project_name_input.setPlaceholderText("例如：Finance")
+        project_name_group_layout.addWidget(self.project_name_input)
+        # 后添加项目名称部分到布局中，拉伸因子为1
+        top_section_layout.addLayout(project_name_group_layout, 1)
+
+        # ==================== 代码修改结束 ====================
         
         main_layout.addLayout(top_section_layout)
 
