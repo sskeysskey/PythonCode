@@ -172,7 +172,6 @@ class FileContentTextEdit(QTextEdit):
 # --- 单个文件块控件 ---
 class FileBlockWidget(QWidget):
     delete_requested = pyqtSignal(QWidget)
-    # --- 修改点 1: 新增信号，用于在选择文件后，将文件路径列表发送给主窗口 ---
     files_selected = pyqtSignal(list)
 
     def __init__(self, parent=None):
@@ -185,25 +184,17 @@ class FileBlockWidget(QWidget):
         self.path_button = QPushButton("选择文件")
         self.path_button.clicked.connect(self.select_file)
 
-        # --- 修改开始: 将 ElidedLabel 替换为 QLineEdit ---
-        # 原来的 ElidedLabel 只能显示文本，无法编辑。
-        # 新的 QLineEdit 允许用户直接输入或粘贴文件路径。
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("输入/粘贴路径后按Enter加载, 或直接编辑下方内容")
-        # 当用户在 QLineEdit 中完成编辑（按Enter或失去焦点）时，会触发 editingFinished 信号。
-        # 我们将这个信号连接到一个新的处理函数 _on_path_manually_entered。
         self.path_input.editingFinished.connect(self._on_path_manually_entered)
-        # --- 修改结束 ---
-
+        
         self.delete_button = QPushButton("X")
         self.delete_button.setFixedSize(32, 22)
         self.delete_button.setToolTip("删除此文件块")
         self.delete_button.clicked.connect(self._request_delete_self)
         path_layout.addWidget(self.path_button)
         
-        # --- 修改开始: 将新的 path_input 添加到布局中 ---
-        path_layout.addWidget(self.path_input, 1) # 使用 self.path_input 替代 self.path_label
-        # --- 修改结束 ---
+        path_layout.addWidget(self.path_input, 1)
 
         path_layout.addWidget(self.delete_button)
         layout.addLayout(path_layout)
@@ -217,26 +208,20 @@ class FileBlockWidget(QWidget):
     def _request_delete_self(self):
         self.delete_requested.emit(self)
 
-    # --- 修改开始: 新增方法，处理手动输入的路径 ---
     def _on_path_manually_entered(self):
         """
         当用户在路径输入框中完成编辑时（例如按回车），此方法被调用。
         """
         path = self.path_input.text().strip()
-        # 移除可能存在于macOS路径粘贴中的 "file://" 前缀
         if path.startswith("file://"):
             path = path[7:]
             
-        # 检查路径是否为一个有效的文件
         if path and os.path.isfile(path):
-            # 如果是有效文件，则调用现有的 populate_with_file 方法加载其内容
             self.populate_with_file(path)
         elif not path:
-            # 如果用户清空了路径，我们也清空文件路径和内容
             self.file_path = None
             self.content_edit.clear()
             self.original_content_on_load = ""
-    # --- 修改结束 ---
 
     def select_file(self):
         global LAST_FILE_SELECTION_PATH
@@ -248,19 +233,13 @@ class FileBlockWidget(QWidget):
         f_paths, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个文件", start_path, f"支持的文件 ({formats});;所有文件 (*)")
         
         if f_paths:
-            # 更新全局变量
             LAST_FILE_SELECTION_PATH = os.path.dirname(f_paths[0])
             
-            # --- 新增代码：保存新路径到设置 ---
-            # 同样使用之前定义的名字来获取同一个 QSettings 对象
             settings = QSettings("MyCustomTools", "PromptGeneratorApp")
             settings.setValue("last_path", LAST_FILE_SELECTION_PATH)
-            # --- 新增代码结束 ---
 
-            # 发射信号
             self.files_selected.emit(f_paths)
 
-    # --- 修改点 3: 新增方法，用于根据单个文件路径填充本控件的内容 ---
     def populate_with_file(self, f_path):
         """
         用给定的文件路径 f_path 来加载和显示文件信息。
@@ -268,25 +247,19 @@ class FileBlockWidget(QWidget):
         global LAST_FILE_SELECTION_PATH
         if not f_path: return
 
-        # 注意：这里的更新是可选的了，因为 select_file 已经更新了。
-        # 但保留它也无害，当从历史记录加载文件时，它能确保路径正确更新。
         LAST_FILE_SELECTION_PATH = os.path.dirname(f_path)
         self.file_path = f_path
         
-        # --- 修改开始: 更新 QLineEdit 的文本而不是 ElidedLabel ---
         self.path_input.setText(f_path)
         self.path_input.setToolTip(f_path)
-        # --- 修改结束 ---
         
         _, file_extension = os.path.splitext(f_path)
         
-        # 对于特定二进制文件，只显示占位符
         if file_extension.lower() in (".db", ".scpt"):
             self.content_edit.clear()
             self.content_edit.setPlaceholderText(f"这是一个 {file_extension} 二进制文件，内容未加载。\n您可以在此手动输入或编辑与该数据库文件相关的信息或说明。")
             self.original_content_on_load = ""
         else:
-            # 尝试读取和显示文本文件内容
             try:
                 with open(f_path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -299,33 +272,21 @@ class FileBlockWidget(QWidget):
 
     def get_file_info(self):
         filename = "未知文件"
-        # --- 修改开始: 从 QLineEdit 获取路径文本 ---
         current_path_text = self.path_input.text().strip()
-        # --- 修改结束 ---
 
         if self.file_path:
             filename = os.path.basename(self.file_path)
-        # --- 修改开始: 调整逻辑以适应 QLineEdit ---
-        # 如果 self.file_path 未设置（例如，用户手动输入但未加载成功，或直接粘贴内容），
-        # 我们尝试从输入框的文本中推断文件名。
         elif current_path_text:
             filename = os.path.basename(current_path_text)
-        # --- 修改结束 ---
 
         content = self.content_edit.toPlainText()
-        # --- 修改开始: 确定实际路径 ---
-        # actual_path 优先使用 self.file_path (通过成功加载文件设置)
-        # 否则，使用用户在输入框中输入的文本
         actual_path = self.file_path if self.file_path else current_path_text
-        # --- 修改结束 ---
         return actual_path, filename, content
 
     def load_data(self, path_text, content_text):
         self.file_path = path_text
-        # --- 修改开始: 加载历史记录时，填充 QLineEdit ---
         self.path_input.setText(path_text if path_text else "")
         self.path_input.setToolTip(path_text if path_text else "")
-        # --- 修改结束 ---
         self.content_edit.setPlainText(content_text)
         self.original_content_on_load = content_text
 
@@ -339,10 +300,8 @@ class OutputDialog(QDialog):
         self.setMinimumSize(600, 400)
         layout = QVBoxLayout(self)
 
-        # 修改部分开始
-        self.text_edit = QTextEdit()  # 先创建一个空的 QTextEdit
-        self.text_edit.setPlainText(text_content) # 然后显式地将内容设置为纯文本
-        # 修改部分结束
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText(text_content)
 
         self.text_edit.setReadOnly(True)
         layout.addWidget(self.text_edit)
@@ -353,20 +312,18 @@ class OutputDialog(QDialog):
         self.button_box.accepted.connect(self.accept)
 
         self.copy_btn = QPushButton("复制到剪贴板")
-        # --- 修改点 1: 为“复制”按钮添加'C'快捷键 ---
         self.copy_btn.setShortcut("C")
         self.copy_btn.clicked.connect(self.copy_to_clipboard)
         self.button_box.addButton(self.copy_btn, QDialogButtonBox.ActionRole)
 
         layout.addWidget(self.button_box)
 
-    # --- 修改点 2: 重写 copy_to_clipboard 方法 ---
     def copy_to_clipboard(self):
         """复制内容到剪贴板，然后立即关闭对话框。"""
         QApplication.clipboard().setText(self.text_edit.toPlainText())
         self.setWindowTitle("已复制到剪贴板!")
         QTimer.singleShot(2000, self.restore_title)
-        self.accept() # 调用accept()来关闭对话框
+        self.accept()
 
     def restore_title(self):
         self.setWindowTitle(self.original_title)
@@ -452,7 +409,6 @@ class HistoryDialog(QDialog):
         if files_in_record:
             preview_lines.append("--- 文件列表 ---")
             for file_entry in files_in_record:
-                # --- 修改开始: 预览时优先显示文件名，其次是路径 ---
                 filename = file_entry.get("filename")
                 if not filename or filename == "未知文件":
                      path = file_entry.get("path")
@@ -460,7 +416,6 @@ class HistoryDialog(QDialog):
                 
                 if filename != "未知文件" or file_entry.get("content","").strip():
                     preview_lines.append(f"  • {filename}")
-                # --- 修改结束 ---
             preview_lines.append("")
         prompt_content = selected_record_data.get("final_prompt", "").strip()
         preview_lines.append("--- 最终Prompt指令 ---")
@@ -514,36 +469,25 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        # --- 新增代码：程序启动时加载设置 ---
         global LAST_FILE_SELECTION_PATH
-        # 创建一个 QSettings 对象。建议提供公司/组织名和应用名，以创建唯一的存储位置。
         settings = QSettings("MyCustomTools", "PromptGeneratorApp") 
-        
-        # 读取名为 "last_path" 的设置项。如果不存在，则使用 DEFAULT_FILE_SELECTION_PATH 作为默认值。
         saved_path = settings.value("last_path", DEFAULT_FILE_SELECTION_PATH)
 
-        # 检查保存的路径是否仍然有效（例如，文件夹未被删除）
         if os.path.isdir(saved_path):
             LAST_FILE_SELECTION_PATH = saved_path
         else:
-            # 如果路径无效，则退回到默认路径
             LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
-        # --- 新增代码结束 ---
 
         self.file_blocks = []
         self.project_desc_button_group = QButtonGroup(self)
-        # 预设的项目介绍选项
         self.project_desc_options = [
             "我有一个Xcode开发的iPhone手机应用程序.",
             "我有一个JavaScript和html发的chrome插件程序",
             "我有一个AppleScript开发的自动化脚本",
             "我有一个Python开发的程序"
         ]
-        # 用于映射预设 QRadioButton 对象到其对应的文本
         self.project_desc_radio_buttons_map = {}
-        # “自定义”选项的 QRadioButton
         self.custom_desc_radio_button = None
-        # 自定义项目介绍的输入框
         self.custom_desc_input = None
 
         self.init_ui()
@@ -581,7 +525,6 @@ class MainWindow(QWidget):
         if is_custom_selected:
             self.custom_desc_input.setFocus()
         else:
-            # 如果选择的是预设选项，将其文本复制到自定义输入框中，方便用户修改
             if selected_button in self.project_desc_radio_buttons_map:
                 preset_text = self.project_desc_radio_buttons_map[selected_button]
                 self.custom_desc_input.setText(preset_text)
@@ -589,86 +532,70 @@ class MainWindow(QWidget):
     def init_ui(self):
         self.setWindowTitle("代码与Prompt整合工具")
         self.setGeometry(100, 100, 1600, 900)
-        # 1. 创建主垂直布局，并减小默认边距和控件间距
+        
+        # 主布局将只包含一个主分割器
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(5) 
 
-        # “加载历史记录”按钮的创建移到这里，但暂时不添加到任何布局
-        self.load_history_button = QPushButton("加载历史记录")
-        self.load_history_button.clicked.connect(self.show_history_dialog)
+        # 1. 创建主垂直分割器，用于分隔上、中、下三个主要区域
+        main_splitter = QSplitter(Qt.Vertical)
 
-        top_section_layout = QHBoxLayout()
+        # --- 2. 创建上部区域 (项目介绍和项目名称) ---
+        # 使用水平分割器使这两部分可以左右拖动
+        top_splitter = QSplitter(Qt.Horizontal)
 
-        # ==================== 代码修改开始 ====================
-        # 将“项目介绍”部分的代码块移到前面，使其显示在左边。
-
-        # --- 项目介绍部分 (现在在左边) ---
+        # 2a. 项目介绍部分 (左侧)
         project_desc_groupbox = QGroupBox("项目介绍:")
-        project_desc_main_layout = QVBoxLayout() # GroupBox内部的主布局
-
-        # 添加预设选项 (RadioButton + 可复制的Label)
+        project_desc_main_layout = QVBoxLayout()
         if self.project_desc_options:
             for i, option_text in enumerate(self.project_desc_options):
-                option_item_layout = QHBoxLayout() # 用于放置单选按钮和标签
-                
-                radio_button = QRadioButton() # 单选按钮本身可以没有文本
-                
-                label = QLabel(option_text) # 标签显示文本，并允许选择复制
+                option_item_layout = QHBoxLayout()
+                radio_button = QRadioButton()
+                label = QLabel(option_text)
                 label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
-                label.setWordWrap(True) # 长文本自动换行
-
+                label.setWordWrap(True)
                 option_item_layout.addWidget(radio_button)
-                option_item_layout.addWidget(label, 1) # 标签占据更多空间
+                option_item_layout.addWidget(label, 1)
                 project_desc_main_layout.addLayout(option_item_layout)
-
-                self.project_desc_button_group.addButton(radio_button, i) # ID为索引
-                self.project_desc_radio_buttons_map[radio_button] = option_text # 映射按钮到文本
-            
-        # 添加“自定义”选项
-        custom_option_layout = QHBoxLayout() # 用于自定义单选按钮和输入框
+                self.project_desc_button_group.addButton(radio_button, i)
+                self.project_desc_radio_buttons_map[radio_button] = option_text
+        custom_option_layout = QHBoxLayout()
         self.custom_desc_radio_button = QRadioButton("自定义:")
         custom_option_layout.addWidget(self.custom_desc_radio_button)
-
-        self.custom_desc_input = QLineEdit() # 自定义输入框
+        self.custom_desc_input = QLineEdit()
         self.custom_desc_input.setPlaceholderText("在此输入自定义项目介绍...")
         custom_option_layout.addWidget(self.custom_desc_input, 1)
-        
         project_desc_main_layout.addLayout(custom_option_layout)
-        
-        # 为自定义单选按钮分配一个唯一的ID
-        # ID = 预设选项的数量 (如果预设选项从0开始编号，这个ID就是下一个可用的)
         custom_radio_id = len(self.project_desc_options)
         self.project_desc_button_group.addButton(self.custom_desc_radio_button, custom_radio_id)
-        
         project_desc_groupbox.setLayout(project_desc_main_layout)
-        # 将项目介绍部分先添加到布局中，拉伸因子为2
-        top_section_layout.addWidget(project_desc_groupbox, 2)
-        
-        # 连接按钮组的信号，以处理自定义输入框的启用/禁用和文本填充
         self.project_desc_button_group.buttonClicked[int].connect(self._handle_project_desc_selection_changed)
         
-        # --- 项目名称部分 (现在在右边) ---
-        project_name_group_layout = QVBoxLayout()
+        # 2b. 项目名称部分 (右侧)
+        project_name_widget = QWidget() # 需要一个容器控件来添加到splitter
+        project_name_group_layout = QVBoxLayout(project_name_widget)
         project_name_group_layout.addWidget(QLabel("项目名称:"))
         self.project_name_input = QLineEdit()
         self.project_name_input.setStyleSheet("font-size:20pt;")
         self.project_name_input.setPlaceholderText("例如：Finance")
         project_name_group_layout.addWidget(self.project_name_input)
-        # 后添加项目名称部分到布局中，拉伸因子为1
-        top_section_layout.addLayout(project_name_group_layout, 1)
 
-        # ==================== 代码修改结束 ====================
-        
-        main_layout.addLayout(top_section_layout)
+        # 将左右两部分添加到水平分割器
+        top_splitter.addWidget(project_desc_groupbox)
+        top_splitter.addWidget(project_name_widget)
+        top_splitter.setSizes([self.width() * 2 // 3, self.width() * 1 // 3]) # 设置初始比例 2:1
 
-        # 文件块区域
-        self.file_blocks_container_widget = QWidget()
-        self.file_blocks_layout = QHBoxLayout(self.file_blocks_container_widget)
-        self.file_blocks_layout.setContentsMargins(0,0,0,0)
-        self.file_blocks_layout.setSpacing(5)
-        second_section_wrapper_layout = QHBoxLayout()
-        second_section_wrapper_layout.addWidget(self.file_blocks_container_widget, 1)
+        # --- 3. 创建中部区域 (文件块) ---
+        middle_section_widget = QWidget()
+        second_section_wrapper_layout = QHBoxLayout(middle_section_widget)
+        second_section_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        second_section_wrapper_layout.setSpacing(5)
+
+        # 3a. 文件块区域使用水平分割器
+        self.file_blocks_splitter = QSplitter(Qt.Horizontal)
+        second_section_wrapper_layout.addWidget(self.file_blocks_splitter, 1)
+
+        # 3b. 添加文件块的 "+" 按钮
         self.add_file_block_button = QPushButton("+")
         self.add_file_block_button.setToolTip("增加文件引入块")
         self.add_file_block_button.setFixedSize(30, 30)
@@ -677,100 +604,100 @@ class MainWindow(QWidget):
         add_button_layout.addWidget(self.add_file_block_button)
         add_button_layout.addStretch()
         second_section_wrapper_layout.addLayout(add_button_layout)
-        main_layout.addLayout(second_section_wrapper_layout)
 
+        # 初始化文件块
         for _ in range(3): self._add_file_block_widget(add_to_list_ref=True)
 
-        # Prompt指令区域
-        bottom_section_layout = QVBoxLayout()
+        # --- 4. 创建下部区域 (Prompt指令和按钮) ---
+        bottom_section_widget = QWidget()
+        bottom_section_layout = QVBoxLayout(bottom_section_widget)
         bottom_section_layout.addWidget(QLabel("最终Prompt指令:"))
         self.prompt_input = QTextEdit()
         self.prompt_input.setStyleSheet("font-size:18pt;")
         self.prompt_input.setPlaceholderText("例如：我现在需要制作底部tab里的“资产”页面...")
         self.prompt_input.setMinimumHeight(100)
-        self.prompt_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        bottom_section_layout.addWidget(self.prompt_input)
         
-        # --- MODIFICATION START ---
-        # “生成最终文本并保存记录”按钮的创建
+        # ==================== 代码修改开始 ====================
+        # 将垂直策略从 Preferred 改为 Expanding，使其能够填充所有可用的垂直空间
+        self.prompt_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # ==================== 代码修改结束 ====================
+
+        bottom_section_layout.addWidget(self.prompt_input)
+
+        self.load_history_button = QPushButton("加载历史记录")
+        self.load_history_button.clicked.connect(self.show_history_dialog)
         self.generate_button = QPushButton("生成最终文本并保存记录")
         self.generate_button.setFixedHeight(40)
         self.generate_button.clicked.connect(self.generate_and_save_output)
 
-        # 创建一个新的 QHBoxLayout 用于底部的两个按钮
         bottom_buttons_layout = QHBoxLayout()
-        bottom_buttons_layout.addWidget(self.load_history_button) # 添加“加载历史记录”按钮
-        bottom_buttons_layout.addStretch() # 添加伸缩项
-        bottom_buttons_layout.addWidget(self.generate_button) # 添加“生成”按钮
-        
-        bottom_section_layout.addLayout(bottom_buttons_layout) # 将此新布局添加到 bottom_section_layout
-        # --- MODIFICATION END ---
-        
-        main_layout.addLayout(bottom_section_layout)
+        bottom_buttons_layout.addWidget(self.load_history_button)
+        bottom_buttons_layout.addStretch()
+        bottom_buttons_layout.addWidget(self.generate_button)
+        bottom_section_layout.addLayout(bottom_buttons_layout)
 
-        # --- MODIFICATION START ---
-        # 更新 StretchFactor 设置
-        # main_layout.setStretchFactor(top_buttons_layout, 0) # 此行移除，因为 top_buttons_layout 不再存在
-        main_layout.setStretchFactor(top_section_layout, 0)
-        main_layout.setStretchFactor(second_section_wrapper_layout, 1) # 文件块区域将扩展
-        main_layout.setStretchFactor(bottom_section_layout, 0)
-        # --- MODIFICATION END ---
+        # --- 5. 将上、中、下三个区域添加到主垂直分割器 ---
+        main_splitter.addWidget(top_splitter)
+        main_splitter.addWidget(middle_section_widget)
+        main_splitter.addWidget(bottom_section_widget)
+        
+        # 设置初始高度比例
+        main_splitter.setSizes([200, 500, 200])
+
+        # --- 6. 将主分割器添加到窗口的主布局中 ---
+        main_layout.addWidget(main_splitter)
 
         # 初始化项目介绍部分的状态
-        if self.project_desc_options: # 如果有预设选项，默认选中第一个
+        if self.project_desc_options:
             first_preset_button = self.project_desc_button_group.button(0)
             if first_preset_button:
                 first_preset_button.setChecked(True)
-                # 触发一次处理函数，以设置自定义输入框的初始状态和文本
                 self._handle_project_desc_selection_changed(0) 
-        else: # 没有预设选项，默认选中自定义
+        else:
             self.custom_desc_radio_button.setChecked(True)
             self._handle_project_desc_selection_changed(custom_radio_id)
 
-
     def _clear_all_file_blocks_ui(self):
-        while self.file_blocks_layout.count():
-            child = self.file_blocks_layout.takeAt(0)
-            if child.widget(): child.widget().deleteLater()
+        """安全地清除文件块分割器中的所有控件。"""
+        # 倒序遍历以安全删除
+        for i in reversed(range(self.file_blocks_splitter.count())):
+            widget = self.file_blocks_splitter.widget(i)
+            if widget:
+                # 从父控件中移除并安排稍后删除
+                widget.setParent(None)
+                widget.deleteLater()
 
     def _add_file_block_widget(self, add_to_list_ref=False, file_data=None):
         file_block = FileBlockWidget()
         file_block.delete_requested.connect(self._handle_delete_file_block)
-        # --- 修改点 4: 连接新信号到主窗口的新槽函数 ---
         file_block.files_selected.connect(self.handle_multiple_files_selected)
 
         if file_data: file_block.load_data(file_data.get("path"), file_data.get("content"))
         
-        self.file_blocks_layout.addWidget(file_block)
+        # 将新文件块添加到水平分割器中
+        self.file_blocks_splitter.addWidget(file_block)
+        
         if add_to_list_ref: self.file_blocks.append(file_block)
         return file_block
 
-    # --- 修改点 5: 新增的槽函数，用于处理批量文件选择 ---
     def handle_multiple_files_selected(self, file_paths):
-        """
-        接收一个文件路径列表，并为每个文件路径填充或创建一个新的文件块。
-        """
-        # 查找当前所有未加载文件的空文件块
-        empty_blocks = [
-            w for w in self.file_blocks if w.file_path is None
-        ]
+        """接收一个文件路径列表，并为每个文件路径填充或创建一个新的文件块。"""
+        empty_blocks = [w for w in self.file_blocks if w.file_path is None]
         
         for i, f_path in enumerate(file_paths):
             block_to_populate = None
             if i < len(empty_blocks):
-                # 如果有可用的空文件块，则使用它
                 block_to_populate = empty_blocks[i]
             else:
-                # 如果空文件块用完了，就创建一个新的
                 block_to_populate = self._add_file_block_widget(add_to_list_ref=True)
             
-            # 使用文件路径填充该块
             if block_to_populate:
                 block_to_populate.populate_with_file(f_path)
 
     def _handle_delete_file_block(self, block_to_delete):
+        """处理删除文件块的请求。"""
         if block_to_delete in self.file_blocks: self.file_blocks.remove(block_to_delete)
-        self.file_blocks_layout.removeWidget(block_to_delete)
+        # 调用deleteLater()会自动将其从父控件(QSplitter)中移除
         block_to_delete.deleteLater()
 
     def show_history_dialog(self):
@@ -788,29 +715,24 @@ class MainWindow(QWidget):
         saved_desc = record_data.get("project_desc", "").strip()
         found_preset = False
         
-        # 尝试匹配预设选项
         for radio_button, preset_text in self.project_desc_radio_buttons_map.items():
             if preset_text == saved_desc:
                 radio_button.setChecked(True)
-                # self._handle_project_desc_selection_changed 将处理 custom_desc_input
                 found_preset = True
                 break
         
         if not found_preset:
-            # 如果描述不为空且不匹配任何预设，则认为是自定义的
             if saved_desc:
                 self.custom_desc_radio_button.setChecked(True)
                 self.custom_desc_input.setText(saved_desc) 
-                # self._handle_project_desc_selection_changed 将处理 custom_desc_input.setEnabled
-            else: # 描述为空，默认选中第一个预设（如果存在）或自定义（如果无预设）
+            else:
                 if self.project_desc_options:
                     first_preset_button = self.project_desc_button_group.button(0)
                     if first_preset_button: first_preset_button.setChecked(True)
                 else:
                     self.custom_desc_radio_button.setChecked(True)
-                self.custom_desc_input.clear() # 清空自定义输入
+                self.custom_desc_input.clear()
 
-        # 触发一次处理函数以确保UI状态（如custom_input的enable/disable和文本）正确同步
         current_checked_button = self.project_desc_button_group.checkedButton()
         if current_checked_button:
             button_id = self.project_desc_button_group.id(current_checked_button)
@@ -828,44 +750,35 @@ class MainWindow(QWidget):
         if num_to_add > 0:
             for _ in range(num_to_add): self._add_file_block_widget(add_to_list_ref=True)
 
-    # --- 新增代码开始 ---
     def keyPressEvent(self, event):
-        """
-        重写 keyPressEvent 方法以捕获键盘事件。
-        """
-        # 检查按下的键是否是 Esc 键
+        """重写 keyPressEvent 方法以捕获键盘事件。"""
         if event.key() == Qt.Key_Escape:
-            # 如果是，则关闭主窗口，这将终止整个应用程序
             self.close()
         else:
-            # 对于所有其他按键，调用父类的默认实现
             super().keyPressEvent(event)
-    # --- 新增代码结束 ---
 
     def generate_and_save_output(self):
         project_name = self.project_name_input.text().strip()
         
-        # 获取项目介绍
         project_desc = ""
         checked_radio_button = self.project_desc_button_group.checkedButton()
         if checked_radio_button == self.custom_desc_radio_button:
             project_desc = self.custom_desc_input.text().strip()
-            if not project_desc: # 如果自定义选项被选中但内容为空
+            if not project_desc:
                 QMessageBox.warning(self, "信息不完整", "自定义项目介绍不能为空。")
                 return
         elif checked_radio_button in self.project_desc_radio_buttons_map:
             project_desc = self.project_desc_radio_buttons_map[checked_radio_button]
-        else: # Fallback, 理论上QButtonGroup保证有选中，但以防万一
-            if self.project_desc_options: # 尝试默认第一个预设
+        else:
+            if self.project_desc_options:
                  project_desc = self.project_desc_options[0]
-            # 如果连预设都没有，project_desc会是空字符串，后续检查会捕获
 
         final_prompt = self.prompt_input.toPlainText().strip()
 
         if not project_name:
             QMessageBox.warning(self, "信息不完整", "请输入项目名称。")
             return
-        if not project_desc: # 确保项目介绍不为空
+        if not project_desc:
             QMessageBox.warning(self, "信息不完整", "请选择或输入项目介绍。")
             return
 
@@ -879,24 +792,21 @@ class MainWindow(QWidget):
         file_tree_lines = []
         valid_file_infos_for_output = []
         
-        # 确保从UI布局中获取最新的控件列表
-        current_ui_file_blocks = [self.file_blocks_layout.itemAt(i).widget() for i in range(self.file_blocks_layout.count()) if isinstance(self.file_blocks_layout.itemAt(i).widget(), FileBlockWidget)]
+        # 从 QSplitter 获取最新的控件列表
+        current_ui_file_blocks = [self.file_blocks_splitter.widget(i) for i in range(self.file_blocks_splitter.count()) if isinstance(self.file_blocks_splitter.widget(i), FileBlockWidget)]
         
         for block_widget in current_ui_file_blocks:
             path, filename, content = block_widget.get_file_info()
-            # --- 修改开始: 调整判断逻辑 ---
-            # 只要路径或内容不为空，就视为有效块
             if path or content.strip():
                 current_record["files"].append({"path": path, "filename": filename, "content": content})
                 if path:
                     file_tree_lines.append(f"  ├── {filename}")
                     valid_file_infos_for_output.append({"path": path, "content": content})
-                elif content.strip(): # 仅有内容，没有路径
-                    # 使用一个临时的名字，或允许用户在未来版本中指定
+                elif content.strip():
                     temp_filename = "临时内容块" 
                     file_tree_lines.append(f"  ├── {temp_filename} (仅内容)")
                     valid_file_infos_for_output.append({"path": f"{temp_filename} (内容)", "content": content})
-            # --- 修改结束 ---
+        
         self._save_record_to_file(current_record)
         final_builder = [project_desc]
         tree_string = "\n".join(file_tree_lines) if file_tree_lines else ""
