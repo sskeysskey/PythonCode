@@ -12,6 +12,278 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSettings
 from PyQt5.QtGui import QTextDocument, QTextCursor, QKeySequence, QPainter
 
+# ==================== 新增：Nord 主题 QSS 样式表 ====================
+NORD_QSS = """
+/* Nord Theme - https://www.nordtheme.com/ */
+QWidget {
+    background-color: #2E3440; /* nord0 */
+    color: #D8DEE9; /* nord4 */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    border: none;
+}
+
+/* === Main Window and Dialogs === */
+QMainWindow, QDialog, QWidget {
+    background-color: #2E3440; /* nord0 */
+}
+
+/* === Input Fields === */
+QLineEdit, QTextEdit, QListWidget {
+    background-color: #3B4252; /* nord1 */
+    color: #E5E9F0; /* nord5 */
+    border: 1px solid #434C5E; /* nord2 */
+    border-radius: 4px;
+    padding: 5px;
+    selection-background-color: #4C566A; /* nord3 */
+    selection-color: #ECEFF4; /* nord6 */
+}
+
+QLineEdit:focus, QTextEdit:focus {
+    border: 1px solid #5E81AC; /* nord10 */
+}
+
+/* === Buttons === */
+QPushButton {
+    background-color: #434C5E; /* nord2 */
+    color: #ECEFF4; /* nord6 */
+    border: 1px solid #4C566A; /* nord3 */
+    padding: 8px 12px;
+    border-radius: 4px;
+    min-height: 1em;
+}
+
+QPushButton:hover {
+    background-color: #4C566A; /* nord3 */
+}
+
+QPushButton:pressed {
+    background-color: #5E81AC; /* nord10 */
+    border-color: #81A1C1; /* nord9 */
+}
+
+QPushButton:disabled {
+    background-color: #3B4252; /* nord1 */
+    color: #4C566A; /* nord3 */
+    border-color: #434C5E; /* nord2 */
+}
+
+/* Special Buttons */
+QPushButton#generateButton {
+    background-color: #A3BE8C; /* nord14 - Green */
+    color: #2E3440; /* nord0 */
+    font-weight: bold;
+}
+QPushButton#generateButton:hover {
+    background-color: #b1d09a;
+}
+QPushButton#generateButton:pressed {
+    background-color: #8da977;
+}
+
+QPushButton#deleteButton {
+    background-color: transparent;
+    color: #BF616A; /* nord11 - Red */
+    font-weight: bold;
+    font-size: 16px;
+    padding: 2px;
+}
+QPushButton#deleteButton:hover {
+    color: #d77c86;
+}
+QPushButton#deleteButton:pressed {
+    color: #ECEFF4; /* nord6 */
+}
+
+QPushButton#addButton {
+    background-color: #81A1C1; /* nord9 */
+    color: #2E3440; /* nord0 */
+    font-size: 20px;
+    font-weight: bold;
+    padding: 2px;
+}
+QPushButton#addButton:hover {
+    background-color: #8fbcbb; /* nord7 */
+}
+
+QPushButton#pathButton {
+    background-color: #3B4252; /* nord1 */
+    border: 1px solid #4C566A; /* nord3 */
+}
+QPushButton#pathButton:hover {
+    background-color: #434C5E; /* nord2 */
+}
+
+
+/* === GroupBox === */
+QGroupBox {
+    border: 1px solid #434C5E; /* nord2 */
+    border-radius: 5px;
+    margin-top: 1em; /* space for title */
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 2px 8px;
+    background-color: #434C5E; /* nord2 */
+    border-radius: 4px;
+    color: #ECEFF4; /* nord6 */
+    font-weight: bold;
+}
+
+/* === Splitter === */
+QSplitter::handle {
+    background-color: #2E3440; /* nord0 */
+}
+
+QSplitter::handle:horizontal {
+    width: 6px;
+    image: url(none);
+}
+
+QSplitter::handle:vertical {
+    height: 6px;
+    image: url(none);
+}
+
+QSplitter::handle:hover {
+    background-color: #5E81AC; /* nord10 */
+}
+
+QSplitter::handle:pressed {
+    background-color: #81A1C1; /* nord9 */
+}
+
+
+/* === CheckBox and RadioButton === */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+}
+
+QCheckBox::indicator, QRadioButton::indicator {
+    border: 1px solid #4C566A; /* nord3 */
+    width: 16px;
+    height: 16px;
+    background-color: #3B4252; /* nord1 */
+}
+
+QRadioButton::indicator {
+    border-radius: 9px;
+}
+
+QCheckBox::indicator {
+    border-radius: 3px;
+}
+
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {
+    border-color: #81A1C1; /* nord9 */
+}
+
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #88C0D0; /* nord8 */
+    border-color: #81A1C1; /* nord9 */
+}
+
+QRadioButton::indicator:checked {
+    background-color: #88C0D0; /* nord8 */
+    border: 4px solid #3B4252; /* Creates the inner dot effect */
+}
+QRadioButton::indicator:checked:hover {
+    border-color: #434C5E;
+}
+
+
+/* === ScrollBar === */
+QScrollBar:vertical {
+    background: #3B4252; /* nord1 */
+    width: 12px;
+    margin: 0px;
+    border-radius: 6px;
+}
+QScrollBar::handle:vertical {
+    background: #4C566A; /* nord3 */
+    min-height: 25px;
+    border-radius: 6px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #5E81AC; /* nord10 */
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+    background: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    background: #3B4252; /* nord1 */
+    height: 12px;
+    margin: 0px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal {
+    background: #4C566A; /* nord3 */
+    min-width: 25px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #5E81AC; /* nord10 */
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+    background: none;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
+/* === ListWidget in History Dialog === */
+QListWidget::item {
+    padding: 8px;
+    border-radius: 4px; /* For hover effect */
+}
+
+QListWidget::item:hover {
+    background-color: #434C5E; /* nord2 */
+}
+
+QListWidget::item:selected {
+    background-color: #5E81AC; /* nord10 */
+    color: #ECEFF4; /* nord6 */
+}
+
+/* === Other === */
+QToolTip {
+    background-color: #3B4252; /* nord1 */
+    color: #ECEFF4; /* nord6 */
+    border: 1px solid #4C566A; /* nord3 */
+    padding: 5px;
+    border-radius: 4px;
+    opacity: 230;
+}
+
+/* Dialog Button Box */
+QDialogButtonBox QPushButton {
+    min-width: 80px;
+}
+
+/* Adjust font sizes for hierarchy */
+#project_name_input {
+    font-size: 20pt;
+    font-weight: bold;
+    padding: 8px;
+}
+
+#prompt_input {
+    font-size: 16pt;
+    padding: 8px;
+}
+
+"""
+# ==================== 代码修改结束 ====================
+
 class ElidedLabel(QLabel):
     """
     一个 QLabel 子类，它会在绘制时根据当前宽度自动用左侧省略号展示过长的文字。
@@ -182,6 +454,7 @@ class FileBlockWidget(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         path_layout = QHBoxLayout()
         self.path_button = QPushButton("选择文件")
+        self.path_button.setObjectName("pathButton") # 修改：为按钮设置对象名
         self.path_button.clicked.connect(self.select_file)
 
         self.path_input = QLineEdit()
@@ -189,6 +462,7 @@ class FileBlockWidget(QWidget):
         self.path_input.editingFinished.connect(self._on_path_manually_entered)
         
         self.delete_button = QPushButton("X")
+        self.delete_button.setObjectName("deleteButton") # 修改：为按钮设置对象名
         self.delete_button.setFixedSize(32, 22)
         self.delete_button.setToolTip("删除此文件块")
         self.delete_button.clicked.connect(self._request_delete_self)
@@ -469,15 +743,6 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        global LAST_FILE_SELECTION_PATH
-        settings = QSettings("MyCustomTools", "PromptGeneratorApp") 
-        saved_path = settings.value("last_path", DEFAULT_FILE_SELECTION_PATH)
-
-        if os.path.isdir(saved_path):
-            LAST_FILE_SELECTION_PATH = saved_path
-        else:
-            LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
-
         self.file_blocks = []
         self.project_desc_button_group = QButtonGroup(self)
         self.project_desc_options = [
@@ -491,6 +756,7 @@ class MainWindow(QWidget):
         self.custom_desc_input = None
 
         self.init_ui()
+        self._restore_settings() # 修改：在UI初始化后恢复设置
         self._ensure_history_file_exists()
 
     def _ensure_history_file_exists(self):
@@ -533,18 +799,14 @@ class MainWindow(QWidget):
         self.setWindowTitle("代码与Prompt整合工具")
         self.setGeometry(100, 100, 1600, 900)
         
-        # 主布局将只包含一个主分割器
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 1. 创建主垂直分割器，用于分隔上、中、下三个主要区域
-        main_splitter = QSplitter(Qt.Vertical)
+        # 修改：将分割器设为实例属性，以便保存和恢复状态
+        self.main_splitter = QSplitter(Qt.Vertical)
+        self.top_splitter = QSplitter(Qt.Horizontal)
 
-        # --- 2. 创建上部区域 (项目介绍和项目名称) ---
-        # 使用水平分割器使这两部分可以左右拖动
-        top_splitter = QSplitter(Qt.Horizontal)
-
-        # 2a. 项目介绍部分 (左侧)
+        # --- 上部区域 (项目介绍和项目名称) ---
         project_desc_groupbox = QGroupBox("项目介绍:")
         project_desc_main_layout = QVBoxLayout()
         if self.project_desc_options:
@@ -571,32 +833,28 @@ class MainWindow(QWidget):
         project_desc_groupbox.setLayout(project_desc_main_layout)
         self.project_desc_button_group.buttonClicked[int].connect(self._handle_project_desc_selection_changed)
         
-        # 2b. 项目名称部分 (右侧)
-        project_name_widget = QWidget() # 需要一个容器控件来添加到splitter
+        project_name_widget = QWidget()
         project_name_group_layout = QVBoxLayout(project_name_widget)
         project_name_group_layout.addWidget(QLabel("项目名称:"))
         self.project_name_input = QLineEdit()
-        self.project_name_input.setStyleSheet("font-size:20pt;")
+        self.project_name_input.setObjectName("project_name_input") # 修改：设置对象名
         self.project_name_input.setPlaceholderText("例如：Finance")
         project_name_group_layout.addWidget(self.project_name_input)
 
-        # 将左右两部分添加到水平分割器
-        top_splitter.addWidget(project_desc_groupbox)
-        top_splitter.addWidget(project_name_widget)
-        top_splitter.setSizes([self.width() * 2 // 3, self.width() * 1 // 3]) # 设置初始比例 2:1
+        self.top_splitter.addWidget(project_desc_groupbox)
+        self.top_splitter.addWidget(project_name_widget)
 
-        # --- 3. 创建中部区域 (文件块) ---
+        # --- 中部区域 (文件块) ---
         middle_section_widget = QWidget()
         second_section_wrapper_layout = QHBoxLayout(middle_section_widget)
         second_section_wrapper_layout.setContentsMargins(0, 0, 0, 0)
         second_section_wrapper_layout.setSpacing(5)
 
-        # 3a. 文件块区域使用水平分割器
-        self.file_blocks_splitter = QSplitter(Qt.Horizontal)
+        self.file_blocks_splitter = QSplitter(Qt.Horizontal) # 修改：设为实例属性
         second_section_wrapper_layout.addWidget(self.file_blocks_splitter, 1)
 
-        # 3b. 添加文件块的 "+" 按钮
         self.add_file_block_button = QPushButton("+")
+        self.add_file_block_button.setObjectName("addButton") # 修改：设置对象名
         self.add_file_block_button.setToolTip("增加文件引入块")
         self.add_file_block_button.setFixedSize(30, 30)
         self.add_file_block_button.clicked.connect(lambda: self._add_file_block_widget(add_to_list_ref=True))
@@ -605,28 +863,23 @@ class MainWindow(QWidget):
         add_button_layout.addStretch()
         second_section_wrapper_layout.addLayout(add_button_layout)
 
-        # 初始化文件块
         for _ in range(3): self._add_file_block_widget(add_to_list_ref=True)
 
-        # --- 4. 创建下部区域 (Prompt指令和按钮) ---
+        # --- 下部区域 (Prompt指令和按钮) ---
         bottom_section_widget = QWidget()
         bottom_section_layout = QVBoxLayout(bottom_section_widget)
         bottom_section_layout.addWidget(QLabel("最终Prompt指令:"))
         self.prompt_input = QTextEdit()
-        self.prompt_input.setStyleSheet("font-size:18pt;")
+        self.prompt_input.setObjectName("prompt_input") # 修改：设置对象名
         self.prompt_input.setPlaceholderText("例如：我现在需要制作底部tab里的“资产”页面...")
         self.prompt_input.setMinimumHeight(100)
-        
-        # ==================== 代码修改开始 ====================
-        # 将垂直策略从 Preferred 改为 Expanding，使其能够填充所有可用的垂直空间
         self.prompt_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # ==================== 代码修改结束 ====================
-
         bottom_section_layout.addWidget(self.prompt_input)
 
         self.load_history_button = QPushButton("加载历史记录")
         self.load_history_button.clicked.connect(self.show_history_dialog)
         self.generate_button = QPushButton("生成最终文本并保存记录")
+        self.generate_button.setObjectName("generateButton") # 修改：设置对象名
         self.generate_button.setFixedHeight(40)
         self.generate_button.clicked.connect(self.generate_and_save_output)
 
@@ -636,18 +889,14 @@ class MainWindow(QWidget):
         bottom_buttons_layout.addWidget(self.generate_button)
         bottom_section_layout.addLayout(bottom_buttons_layout)
 
-        # --- 5. 将上、中、下三个区域添加到主垂直分割器 ---
-        main_splitter.addWidget(top_splitter)
-        main_splitter.addWidget(middle_section_widget)
-        main_splitter.addWidget(bottom_section_widget)
+        # --- 组合所有区域 ---
+        self.main_splitter.addWidget(self.top_splitter)
+        self.main_splitter.addWidget(middle_section_widget)
+        self.main_splitter.addWidget(bottom_section_widget)
         
-        # 设置初始高度比例
-        main_splitter.setSizes([200, 500, 200])
+        main_layout.addWidget(self.main_splitter)
 
-        # --- 6. 将主分割器添加到窗口的主布局中 ---
-        main_layout.addWidget(main_splitter)
-
-        # 初始化项目介绍部分的状态
+        # --- 初始化默认值 ---
         if self.project_desc_options:
             first_preset_button = self.project_desc_button_group.button(0)
             if first_preset_button:
@@ -657,13 +906,54 @@ class MainWindow(QWidget):
             self.custom_desc_radio_button.setChecked(True)
             self._handle_project_desc_selection_changed(custom_radio_id)
 
+    # ==================== 新增：恢复设置的方法 ====================
+    def _restore_settings(self):
+        """在程序启动时恢复窗口和分割器的状态。"""
+        global LAST_FILE_SELECTION_PATH
+        settings = QSettings("MyCustomTools", "PromptGeneratorApp")
+
+        # 恢复上次使用的路径
+        saved_path = settings.value("last_path", DEFAULT_FILE_SELECTION_PATH)
+        if os.path.isdir(saved_path):
+            LAST_FILE_SELECTION_PATH = saved_path
+        else:
+            LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
+
+        # 恢复窗口几何信息
+        geometry = settings.value("main_window_geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
+        # 恢复分割器状态
+        main_splitter_state = settings.value("main_splitter_state")
+        if main_splitter_state:
+            self.main_splitter.restoreState(main_splitter_state)
+
+        top_splitter_state = settings.value("top_splitter_state")
+        if top_splitter_state:
+            self.top_splitter.restoreState(top_splitter_state)
+
+        file_blocks_splitter_state = settings.value("file_blocks_splitter_state")
+        if file_blocks_splitter_state:
+            self.file_blocks_splitter.restoreState(file_blocks_splitter_state)
+    # ==================== 代码修改结束 ====================
+
+    # ==================== 新增：窗口关闭事件处理 ====================
+    def closeEvent(self, event):
+        """在窗口关闭时保存其状态。"""
+        settings = QSettings("MyCustomTools", "PromptGeneratorApp")
+        settings.setValue("main_window_geometry", self.saveGeometry())
+        settings.setValue("main_splitter_state", self.main_splitter.saveState())
+        settings.setValue("top_splitter_state", self.top_splitter.saveState())
+        settings.setValue("file_blocks_splitter_state", self.file_blocks_splitter.saveState())
+        super().closeEvent(event)
+    # ==================== 代码修改结束 ====================
+
     def _clear_all_file_blocks_ui(self):
         """安全地清除文件块分割器中的所有控件。"""
-        # 倒序遍历以安全删除
         for i in reversed(range(self.file_blocks_splitter.count())):
             widget = self.file_blocks_splitter.widget(i)
             if widget:
-                # 从父控件中移除并安排稍后删除
                 widget.setParent(None)
                 widget.deleteLater()
 
@@ -674,7 +964,6 @@ class MainWindow(QWidget):
 
         if file_data: file_block.load_data(file_data.get("path"), file_data.get("content"))
         
-        # 将新文件块添加到水平分割器中
         self.file_blocks_splitter.addWidget(file_block)
         
         if add_to_list_ref: self.file_blocks.append(file_block)
@@ -697,7 +986,6 @@ class MainWindow(QWidget):
     def _handle_delete_file_block(self, block_to_delete):
         """处理删除文件块的请求。"""
         if block_to_delete in self.file_blocks: self.file_blocks.remove(block_to_delete)
-        # 调用deleteLater()会自动将其从父控件(QSplitter)中移除
         block_to_delete.deleteLater()
 
     def show_history_dialog(self):
@@ -749,6 +1037,10 @@ class MainWindow(QWidget):
         num_to_add = 3 - len(self.file_blocks)
         if num_to_add > 0:
             for _ in range(num_to_add): self._add_file_block_widget(add_to_list_ref=True)
+        
+        # 恢复分割器比例
+        self.file_blocks_splitter.setSizes([1] * len(self.file_blocks))
+
 
     def keyPressEvent(self, event):
         """重写 keyPressEvent 方法以捕获键盘事件。"""
@@ -792,7 +1084,6 @@ class MainWindow(QWidget):
         file_tree_lines = []
         valid_file_infos_for_output = []
         
-        # 从 QSplitter 获取最新的控件列表
         current_ui_file_blocks = [self.file_blocks_splitter.widget(i) for i in range(self.file_blocks_splitter.count()) if isinstance(self.file_blocks_splitter.widget(i), FileBlockWidget)]
         
         for block_widget in current_ui_file_blocks:
@@ -821,10 +1112,16 @@ class MainWindow(QWidget):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    
+    # ==================== 修改：应用全局 QSS 主题 ====================
+    app.setStyleSheet(NORD_QSS)
+    # ==================== 代码修改结束 ====================
+
     history_dir = os.path.dirname(HISTORY_FILE)
     if history_dir and not os.path.exists(history_dir):
         try: os.makedirs(history_dir)
         except OSError as e: print(f"警告: 无法创建历史记录目录 {history_dir}: {e}")
+    
     main_window = MainWindow()
     main_window.show()
     sys.exit(app.exec_())
