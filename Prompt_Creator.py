@@ -503,7 +503,8 @@ class FileBlockWidget(QWidget):
         if not os.path.exists(start_path):
             start_path = os.path.expanduser("~")
         
-        formats = "*.swift *.py *.html *.css *.js *.scpt *.txt *.json *.csv *.db"
+        # 支持 Kotlin 源码：加入 *.kt
+        formats = "*.swift *.py *.html *.css *.js *.scpt *.txt *.json *.csv *.db *.kt *.xml *.kts"
         f_paths, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个文件", start_path, f"支持的文件 ({formats});;所有文件 (*)")
         
         if f_paths:
@@ -749,7 +750,7 @@ class MainWindow(QWidget):
             "我有一个Xcode开发的iPhone手机应用程序.",
             "我有一个JavaScript和html发的chrome插件程序",
             "我有一个AppleScript开发的自动化脚本",
-            "我有一个Python开发的程序"
+            "我有一个Android开发的程序"
         ]
         self.project_desc_radio_buttons_map = {}
         self.custom_desc_radio_button = None
