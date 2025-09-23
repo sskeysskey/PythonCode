@@ -856,9 +856,16 @@ class MainWindow(QWidget):
 
         self.add_file_block_button = QPushButton("+")
         self.add_file_block_button.setObjectName("addButton") # 修改：设置对象名
-        self.add_file_block_button.setToolTip("增加文件引入块")
+        self.add_file_block_button.setToolTip("增加文件引入块并选择文件")
         self.add_file_block_button.setFixedSize(30, 30)
-        self.add_file_block_button.clicked.connect(lambda: self._add_file_block_widget(add_to_list_ref=True))
+        
+        # ==================== 代码修改开始 (1/2) ====================
+        # 原来的连接方式:
+        # self.add_file_block_button.clicked.connect(lambda: self._add_file_block_widget(add_to_list_ref=True))
+        # 修改后的连接方式，连接到一个新的专用方法
+        self.add_file_block_button.clicked.connect(self._add_block_and_select_file)
+        # ==================== 代码修改结束 (1/2) ====================
+
         add_button_layout = QVBoxLayout()
         add_button_layout.addWidget(self.add_file_block_button)
         add_button_layout.addStretch()
@@ -957,6 +964,19 @@ class MainWindow(QWidget):
             if widget:
                 widget.setParent(None)
                 widget.deleteLater()
+
+    # ==================== 代码修改开始 (2/2) ====================
+    def _add_block_and_select_file(self):
+        """
+        处理“增加文件引入块”按钮的点击事件。
+        创建一个新的文件块，并立即触发其文件选择对话框。
+        """
+        # 1. 调用现有方法创建并添加控件
+        new_block = self._add_file_block_widget(add_to_list_ref=True)
+        # 2. 如果控件成功创建，则调用其 select_file 方法
+        if new_block:
+            new_block.select_file()
+    # ==================== 代码修改结束 (2/2) ====================
 
     def _add_file_block_widget(self, add_to_list_ref=False, file_data=None):
         file_block = FileBlockWidget()
@@ -1114,9 +1134,8 @@ class MainWindow(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     
-    # ==================== 修改：应用全局 QSS 主题 ====================
+    # 应用全局 QSS 主题
     app.setStyleSheet(NORD_QSS)
-    # ==================== 代码修改结束 ====================
 
     history_dir = os.path.dirname(HISTORY_FILE)
     if history_dir and not os.path.exists(history_dir):

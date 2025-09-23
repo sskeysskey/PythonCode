@@ -230,23 +230,27 @@ def main() -> None:
         if lines:  # 确保内容不为空
             first_line = lines[0]
 
-            # 规则2和3：如果第一段包含“以下”和“翻译”或“全译”，则删除整个第一段
-            # 这两种情况的处理方式相同，都是移除第一行
-            if "以下" in first_line and ("翻译" in first_line or "全译" in first_line):
-                # 将第一行之后的内容重新组合成新的剪贴板内容
-                clipboard_content = "\n".join(lines[1:]).lstrip()
+        # 新增：处理只包含"以下是...总结："的情况
+        if first_line.startswith("以下") and "总结：" in first_line:
+            # 将第一行之后的内容重新组合成新的剪贴板内容
+            clipboard_content = "\n".join(lines[1:]).lstrip()
+            
+        # 规则2和3：如果第一段包含"以下"和"翻译"或"全译"，则删除整个第一段
+        elif "以下" in first_line and ("翻译" in first_line or "全译" in first_line):
+            # 将第一行之后的内容重新组合成新的剪贴板内容
+            clipboard_content = "\n".join(lines[1:]).lstrip()
 
-            # 规则1 (再次修正): 如果第一段包含“以上”或“以下”，则尝试清理引导句
-            elif "总结" in first_line or "以下" in first_line:
-                # 这个更通用的正则表达式会匹配从句末标点（。或，）开始，
-                # 包含“以上”或“以下”，直到最后冒号（中英文冒号皆可）的整个部分。
-                # 这样就不再依赖于“总结”这个词了。
-                modified_first_line = re.sub(r'[。，]\s*(?:总结|以下).*?[:：]', '：', first_line, count=1)
-                
-                # 仅在正则表达式成功匹配并作出改变时才更新内容
-                if modified_first_line != first_line:
-                    lines[0] = modified_first_line
-                    clipboard_content = "\n".join(lines)
+        # 规则1 (再次修正): 如果第一段包含"以上"或"以下"，则尝试清理引导句
+        elif "总结" in first_line or "以下" in first_line:
+            # 这个更通用的正则表达式会匹配从句末标点（。或，）开始，
+            # 包含"以上"或"以下"，直到最后冒号（中英文冒号皆可）的整个部分。
+            # 这样就不再依赖于"总结"这个词了。
+            modified_first_line = re.sub(r'[。，]\s*(?:总结|以下).*?[:：]', '：', first_line, count=1)
+            
+            # 仅在正则表达式成功匹配并作出改变时才更新内容
+            if modified_first_line != first_line:
+                lines[0] = modified_first_line
+                clipboard_content = "\n".join(lines)
 
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)
