@@ -453,7 +453,7 @@ class FileBlockWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         path_layout = QHBoxLayout()
-        self.path_button = QPushButton("选择文件")
+        self.path_button = QPushButton("☜")
         self.path_button.setObjectName("pathButton") # 修改：为按钮设置对象名
         self.path_button.clicked.connect(self.select_file)
 
@@ -815,6 +815,10 @@ class MainWindow(QWidget):
                 option_item_layout = QHBoxLayout()
                 radio_button = QRadioButton()
                 label = QLabel(option_text)
+                # 设置标签点击事件处理
+                label.mousePressEvent = lambda event, rb=radio_button: rb.setChecked(True)
+                # 设置鼠标样式为指针，提示可点击
+                label.setCursor(Qt.PointingHandCursor)
                 label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
                 label.setWordWrap(True)
                 option_item_layout.addWidget(radio_button)
