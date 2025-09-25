@@ -1197,7 +1197,7 @@ if __name__ == "__main__":
 
         # 8. 清理超过10天的旧文件和目录
         print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
-        prune_old_assets(local_server_dir, days_to_keep=5)
+        prune_old_assets(local_server_dir, days_to_keep=6)
         print("="*10 + " 完成清理旧资产 " + "="*10)
 
     else:
