@@ -227,7 +227,7 @@ class ResponseWindow(QMainWindow):
 
 def main():
     parser = argparse.ArgumentParser(description='与 POE API 交互的程序')
-    parser.add_argument('model', help='模型名称，例如: Claude-Sonnet-3.5')
+    parser.add_argument('model', help='模型名称，例如: Claude-Haiku-3.5')
     parser.add_argument('content', help='要发送给模型的消息内容')
     
     args = parser.parse_args()
