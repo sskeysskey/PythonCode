@@ -193,13 +193,31 @@ class ResponseWindow(QMainWindow):
         frame_geometry.moveCenter(center_point)
         self.move(frame_geometry.topLeft())
 
+    # def stream_in_text(self, text): # 光标自动跟随滚动模式
+    #     """将流式文本块插入到文本区域"""
+    #     self.text_area.moveCursor(QTextCursor.End)
+    #     # 插入纯文本
+    #     self.text_area.insertPlainText(text)
+    #     # 确保光标可见，这会自动将滚动条滚动到底部
+    #     self.text_area.ensureCursorVisible()
+
     def stream_in_text(self, text):
-        """将流式文本块插入到文本区域"""
-        self.text_area.moveCursor(QTextCursor.End)
-        # 插入纯文本
+        """将流式文本块插入到文本区域，并保持当前视口位置不变"""
+        # 记录当前滚动位置
+        vbar = self.text_area.verticalScrollBar()
+        current_value = vbar.value()
+
+        # 在文末插入文本（不改变视口）
+        cursor = self.text_area.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.text_area.setTextCursor(cursor)
         self.text_area.insertPlainText(text)
-        # 确保光标可见，这会自动将滚动条滚动到底部
-        self.text_area.ensureCursorVisible()
+
+        # 恢复滚动条原位置，避免自动滚动到末尾
+        vbar.setValue(current_value)
+
+        # 不再使用 ensureCursorVisible()，以免强制滚到最底部
+        # self.text_area.ensureCursorVisible()
 
     def display_error(self, text):
         """【修改】用于显示错误信息，并发送错误标记，然后退出"""
@@ -213,7 +231,14 @@ class ResponseWindow(QMainWindow):
             self.is_first_chunk = False
             
         self.text_area.setTextColor(Qt.red) # 用红色显示错误
-        self.stream_in_text(f"\n\n❌ {text}") # 换行并添加错误图标
+        # self.stream_in_text(f"\n\n❌ {text}") # 光标自动跟随滚动模式
+        # 显示错误时同样保持视口不动，光标不自动跟随模式
+        vbar = self.text_area.verticalScrollBar()
+        current_value = vbar.value()
+        self.text_area.moveCursor(QTextCursor.End)
+        self.text_area.insertPlainText(f"\n\n❌ {text}")
+        vbar.setValue(current_value)
+
         self.text_area.setTextColor(Qt.white) # 恢复默认颜色
 
         # 打印错误标记到标准输出
