@@ -679,7 +679,7 @@ function extractAndCopy() {
                 const lastDot = pathname.lastIndexOf('.');
                 if (lastDot !== -1 && lastDot < pathname.length - 1) {
                   const extCandidate = pathname.substring(lastDot + 1).toLowerCase().split('?')[0]; // Remove query params from ext
-                  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(extCandidate)) {
+                  if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(extCandidate)) {
                     extension = extCandidate;
                   }
                 }
@@ -1109,7 +1109,7 @@ function extractAndCopy() {
               let ext = 'jpg';
               try {
                 const pathname = new URL(bestUrl, window.location.href).pathname;
-                const m = pathname.match(/\.(jpg|jpeg|png|webp|gif|svg)(?:$|\?)/i);
+                const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
                 if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
               } catch (_) { }
 
@@ -1328,7 +1328,7 @@ function extractAndCopy() {
             let ext = 'jpg';
             try {
               const pathname = new URL(bestUrl, window.location.href).pathname;
-              const m = pathname.match(/\.(jpg|jpeg|png|webp|gif|svg)(?:$|\?)/i);
+              const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
               if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
             } catch (_) { /* ignore */ }
 
@@ -1440,7 +1440,7 @@ function extractAndCopy() {
               if (srcUrl.includes('format=auto')) {
                 const originalPath = srcUrl.split('/').pop().split('_')[1];
                 if (originalPath) {
-                  const match = originalPath.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                  const match = originalPath.match(/\.(jpg|jpeg|png|webp)$/i);
                   if (match) fileExtension = match[1].toLowerCase();
                 }
               }
@@ -1658,7 +1658,7 @@ function extractAndCopy() {
             .trim();
 
           // 从URL中提取文件扩展名，默认为 'jpg'
-          const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+          const extMatch = url.match(/\.(png|jpe?g|webp)(\?|$)/i);
           const ext = extMatch ? extMatch[1] : 'jpg';
 
           // 生成文件名
@@ -1787,7 +1787,7 @@ function extractAndCopy() {
               }
               // --- 结束标题提取 ---
 
-              const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+              const extMatch = url.match(/\.(png|jpe?g|webp)(\?|$)/i);
               const ext = extMatch ? extMatch[1] : 'jpg';
 
               let filename = caption ?
@@ -1875,7 +1875,7 @@ function extractAndCopy() {
             .trim();
 
           // 构造文件名
-          const extMatch = url.match(/\.(png|jpe?g|gif|webp)(\?|$)/i);
+          const extMatch = url.match(/\.(png|jpe?g|webp)(\?|$)/i);
           const ext = extMatch ? extMatch[1] : 'jpg';
           let filename = caption ?
             caption.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180) :
