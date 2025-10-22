@@ -252,20 +252,64 @@ try:
         # 设置文件的保存路径和名称
         now = datetime.now()
         time_str = now.strftime("%y%m%d")
-        # 基础文件名，不含扩展名
         base_filename = f"TodayCNH_{time_str}"
-        # 文件扩展名
         file_extension = ".html"
-        # 目标目录
         txt_directory = '/Users/yanzhang/Coding/News'
 
-        # 调用新函数来获取一个唯一的文件路径
-        txt_file_path = get_unique_filepath(txt_directory, base_filename, file_extension)
+        # 构建基础文件路径
+        base_file_path = os.path.join(txt_directory, f"{base_filename}{file_extension}")
 
-        # 重命名文件
-        os.rename(original_file_path, txt_file_path)
-        print(f"文件已重命名为：{txt_file_path}")
-        # <--- 修改的部分 END --->
+        # 检查是否存在同名文件
+        if os.path.exists(base_file_path):
+            print(f"找到已存在的文件：{base_file_path}，将追加新内容。")
+            
+            # 读取已存在文件的内容
+            with open(base_file_path, 'r', encoding='utf-8') as existing_file:
+                existing_html = existing_file.read()
+            
+            # 解析已存在的文件
+            existing_soup = BeautifulSoup(existing_html, 'html.parser')
+            existing_table = existing_soup.find('table')
+            
+            # 解析新生成的HTML内容
+            new_soup = BeautifulSoup(parser.result_html, 'html.parser')
+            new_table = new_soup.find('table')
+            
+            if existing_table and new_table:
+                # 将新表格的所有行（跳过表头）追加到已存在表格中
+                for row in new_table.find_all('tr')[1:]:  # 跳过表头行
+                    existing_table.append(row.extract())
+                print(f"已将新内容追加到 {base_file_path}")
+                
+                # 保存更新后的文件
+                with open(base_file_path, 'w', encoding='utf-8') as file:
+                    file.write(str(existing_soup))
+                
+                txt_file_path = base_file_path
+            else:
+                print("警告：未找到表格结构，无法合并。")
+                # 如果出错，使用唯一文件名创建新文件
+                txt_file_path = get_unique_filepath(txt_directory, base_filename, file_extension)
+                soup = BeautifulSoup(parser.result_html, 'html.parser')
+                with open(txt_file_path, 'w', encoding='utf-8') as file:
+                    file.write(str(soup))
+                print(f"已创建新文件：{txt_file_path}")
+        else:
+            print(f"未找到已存在文件，将创建新文件：{base_file_path}")
+            # 不存在同名文件，创建新文件
+            soup = BeautifulSoup(parser.result_html, 'html.parser')
+            with open(base_file_path, 'w', encoding='utf-8') as file:
+                file.write(str(soup))
+            txt_file_path = base_file_path
+            print(f"已创建文件：{txt_file_path}")
+
+        # 删除临时文件
+        for file_to_delete in [file_path, process_eng_txt, process_jpn_txt, result_eng_html, result_jpn_html]:
+            try:
+                os.remove(file_to_delete)
+            except FileNotFoundError:
+                print(f"{file_to_delete} 文件不存在，跳过删除。")
+        print("临时文件已成功删除。")
 
         # 调用函数，传入路径
         delete_done_txt_files("/tmp/")
