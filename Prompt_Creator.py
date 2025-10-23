@@ -504,7 +504,7 @@ class FileBlockWidget(QWidget):
             start_path = os.path.expanduser("~")
         
         # 支持 Kotlin 源码：加入 *.kt
-        formats = "*.swift *.py *.html *.css *.js *.scpt *.txt *.json *.csv *.db *.kt *.xml *.kts"
+        formats = "*.swift *.py *.html *.css *.js *.scpt *.txt *.json *.csv *.db *.kt *.xml *.kts *.sh"
         f_paths, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个文件", start_path, f"支持的文件 ({formats});;所有文件 (*)")
         
         if f_paths:
