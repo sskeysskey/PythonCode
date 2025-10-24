@@ -304,7 +304,7 @@ try:
             print(f"已创建文件：{txt_file_path}")
 
         # 删除临时文件
-        for file_to_delete in [file_path, process_eng_txt, process_jpn_txt, result_eng_html, result_jpn_html]:
+        for file_to_delete in [original_file_path, file_path, process_eng_txt, process_jpn_txt, result_eng_html, result_jpn_html]:
             try:
                 os.remove(file_to_delete)
             except FileNotFoundError:
