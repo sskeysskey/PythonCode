@@ -79,7 +79,7 @@ try:
         if href and title_text:
             #print(f"标题: {title_text}, 链接: {href}")
 
-            if ('podcasts' not in title_text and 
+            if ('podcasts' not in title_text and 'podcast' not in title_text and 
                 "film" not in title_text and 
                 "FT News Briefing." not in title_text and 
                 title_text != "opinion content." and
