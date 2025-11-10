@@ -49,8 +49,8 @@ def process_and_clean_news_files(local_dir):
                         for article in articles:
                             if "url" in article:
                                 article["url"] = ""
-                            if "images" in article:
-                                article["images"] = []
+                            # if "images" in article:
+                            #     article["images"] = []
                 
                 # 3. 将修改后的 Python 对象转换回格式化的 JSON 字符串
                 # 使用 ensure_ascii=False 和 indent=4 来保持格式美观和中文正常显示
