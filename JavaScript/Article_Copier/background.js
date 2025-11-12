@@ -752,6 +752,7 @@ function extractAndCopy() {
       const possibleSelectors = [
         // 【新增】针对新版页面布局的段落选择器
         'p.css-1009hy1-StyledNewsKitParagraph',
+        'p.css-k3zb6l-Paragraph',
         // --- 以下为原有选择器，保持不变 ---
         'p[class*="emoc1hq1"][class*="css-1jdwmf4-StyledNewsKitParagraph"][font-size="17"]',
         'p[class*="css-k3zb61-Paragraph"]',
@@ -774,8 +775,9 @@ function extractAndCopy() {
 
       textContent = allParagraphs
         .map(p => {
+          // 【修改】移除了对 strong[data-type="emphasis"] 的排除，改为保留其文本内容
           if (
-            p.querySelector('strong[data-type="emphasis"]') ||
+            // p.querySelector('strong[data-type="emphasis"]') ||
             p.className.includes('g-pstyle') ||
             p.closest('.ai2html_export') ||
             p.closest('[data-block="dynamic-inset"]')

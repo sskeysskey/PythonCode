@@ -1148,58 +1148,58 @@ if __name__ == "__main__":
 
     print("="*10 + " 1. 开始 TXT 转 PDF 处理 " + "="*10)
     # <--- 修改部分：捕获返回值 ---
-    pdf_conversion_successful = process_all_files(news_directory, article_copier_path, image_dir)
-    print("="*10 + " 完成 TXT 转 PDF 处理 " + "="*10)
+    # pdf_conversion_successful = process_all_files(news_directory, article_copier_path, image_dir)
+    # print("="*10 + " 完成 TXT 转 PDF 处理 " + "="*10)
     
     # <--- 修改部分：根据第一步的结果决定是否继续 ---
-    if pdf_conversion_successful:
-        print("\nPDF转换成功，继续执行后续步骤...")
+    # if pdf_conversion_successful:
+    print("\nPDF转换成功，继续执行后续步骤...")
 
-        # 2. 生成 JSON 汇总（使用已确认存在的当天 TodayCNH HTML 文件）
-        print("\n" + "="*10 + " 2. 开始生成 JSON 汇总 " + "="*10)
-        generate_news_json(news_directory, today, cnh_html_paths=cnh_html_paths)
-        print("="*10 + " 完成生成 JSON 汇总 " + "="*10)
+    # 2. 生成 JSON 汇总（使用已确认存在的当天 TodayCNH HTML 文件）
+    print("\n" + "="*10 + " 2. 开始生成 JSON 汇总 " + "="*10)
+    generate_news_json(news_directory, today, cnh_html_paths=cnh_html_paths)
+    print("="*10 + " 完成生成 JSON 汇总 " + "="*10)
 
-        # 3. 移动 TodayCNH 文件 (如果需要)
-        print("\n" + "="*10 + " 3. 开始移动 TodayCNH 文件 " + "="*10)
-        move_cnh_file(news_directory)
-        print("="*10 + " 完成移动 TodayCNH 文件 " + "="*10)
+    # 3. 移动 TodayCNH 文件 (如果需要)
+    print("\n" + "="*10 + " 3. 开始移动 TodayCNH 文件 " + "="*10)
+    move_cnh_file(news_directory)
+    print("="*10 + " 完成移动 TodayCNH 文件 " + "="*10)
 
-        # 4. 清理 Downloads 目录下的 .html 文件
-        print("\n" + "="*10 + " 4. 开始清理 Downloads 中的 HTML 文件 " + "="*10)
-        html_files = [f for f in os.listdir(downloads_path) if f.endswith('.html')]
-        if html_files:
-            for file in html_files:
-                file_path = os.path.join(downloads_path, file)
-                try:
-                    os.remove(file_path)
-                    print(f'成功删除 HTML 文件: {file}')
-                except OSError as e:
-                    print(f'删除 HTML 文件失败 {file}: {e}')
-        else:
-            print("Downloads 目录下没有找到 .html 文件。")
-        print("="*10 + " 完成清理 Downloads 中的 HTML 文件 " + "="*10)
-
-        # 5. 移动 article_copier 文件到 backup
-        print("\n" + "="*10 + " 5. 开始移动 article_copier 文件 " + "="*10)
-        move_article_copier_files(news_directory, news_directory)
-        print("="*10 + " 完成移动 article_copier 文件 " + "="*10)
-
-        # 6. 将所有处理过的 TXT 文件移动到 done 目录
-        print("\n" + "="*10 + " 6. 开始移动已处理的 TXT 文件 " + "="*10)
-        move_processed_txt_files(news_directory)
-        print("="*10 + " 完成移动已处理的 TXT 文件 " + "="*10)
-
-        # 7. 将news_images和onews.json备份到相应目录下并更新version.json
-        print("\n" + "="*10 + " 7. 开始备份核心资产 " + "="*10)
-        backup_news_assets(local_server_dir)
-        print("="*10 + " 完成备份核心资产 " + "="*10)
-
-        # 8. 清理超过10天的旧文件和目录
-        print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
-        prune_old_assets(local_server_dir, days_to_keep=6)
-        print("="*10 + " 完成清理旧资产 " + "="*10)
-
+    # 4. 清理 Downloads 目录下的 .html 文件
+    print("\n" + "="*10 + " 4. 开始清理 Downloads 中的 HTML 文件 " + "="*10)
+    html_files = [f for f in os.listdir(downloads_path) if f.endswith('.html')]
+    if html_files:
+        for file in html_files:
+            file_path = os.path.join(downloads_path, file)
+            try:
+                os.remove(file_path)
+                print(f'成功删除 HTML 文件: {file}')
+            except OSError as e:
+                print(f'删除 HTML 文件失败 {file}: {e}')
     else:
-        print("\n错误：PDF转换过程中出现失败，已终止后续所有任务。")
-        print("请检查上面的日志以确定失败原因。")
+        print("Downloads 目录下没有找到 .html 文件。")
+    print("="*10 + " 完成清理 Downloads 中的 HTML 文件 " + "="*10)
+
+    # 5. 移动 article_copier 文件到 backup
+    print("\n" + "="*10 + " 5. 开始移动 article_copier 文件 " + "="*10)
+    move_article_copier_files(news_directory, news_directory)
+    print("="*10 + " 完成移动 article_copier 文件 " + "="*10)
+
+    # 6. 将所有处理过的 TXT 文件移动到 done 目录
+    print("\n" + "="*10 + " 6. 开始移动已处理的 TXT 文件 " + "="*10)
+    move_processed_txt_files(news_directory)
+    print("="*10 + " 完成移动已处理的 TXT 文件 " + "="*10)
+
+    # 7. 将news_images和onews.json备份到相应目录下并更新version.json
+    print("\n" + "="*10 + " 7. 开始备份核心资产 " + "="*10)
+    backup_news_assets(local_server_dir)
+    print("="*10 + " 完成备份核心资产 " + "="*10)
+
+    # 8. 清理超过10天的旧文件和目录
+    print("\n" + "="*10 + " 8. 开始清理旧资产 " + "="*10)
+    prune_old_assets(local_server_dir, days_to_keep=6)
+    print("="*10 + " 完成清理旧资产 " + "="*10)
+
+    # else:
+    #     print("\n错误：PDF转换过程中出现失败，已终止后续所有任务。")
+    #     print("请检查上面的日志以确定失败原因。")
