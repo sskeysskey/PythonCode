@@ -74,7 +74,7 @@ def process_and_clean_news_files(local_dir):
     print("--- 所有新闻 JSON 文件处理完毕 ---\n")
 
 
-def update_version_json(local_dir, timestamp):
+def update_version_json_fake(local_dir, timestamp):
     """
     读取 local_dir/version.json，向 files 数组追加本次
     onews_*.json 和 news_images_* 记录，并为 json 文件计算 MD5，
@@ -141,8 +141,8 @@ local_server_dir = "/Users/yanzhang/Coding/LocalServer/Resources/ONews"
 timestamp = datetime.now().strftime("%y%m%d")
 
 # 1. 首先，执行清理和替换操作，这将修改目录中所有的 onews_*.json 文件
-process_and_clean_news_files(local_server_dir)
+# process_and_clean_news_files(local_server_dir)
 
 # 2. 然后，执行原有的 version.json 更新逻辑
 #    它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5
-update_version_json(local_server_dir, timestamp)
+# update_version_json_fake(local_server_dir, timestamp)
