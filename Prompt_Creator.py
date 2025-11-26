@@ -5,9 +5,9 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QTextEdit, QPushButton, QLabel, QFileDialog,
-    QSizePolicy, QDialog, QMessageBox,
+    QSizePolicy, QDialog, QMessageBox, QGroupBox,
     QCheckBox, QDialogButtonBox, QListWidget, QListWidgetItem,
-    QSplitter, QAbstractItemView, QRadioButton, QButtonGroup, QGroupBox
+    QSplitter, QAbstractItemView, QRadioButton, QButtonGroup
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSettings
 from PyQt5.QtGui import QTextDocument, QTextCursor, QKeySequence, QPainter
@@ -745,6 +745,9 @@ class MainWindow(QWidget):
         super().__init__()
 
         self.file_blocks = []
+        # 替换原有的单个 splitter，改为 splitter 列表
+        self.file_block_splitters = [] 
+        
         self.project_desc_button_group = QButtonGroup(self)
         self.project_desc_options = [
             "我有一个Xcode开发的iPhone手机应用程序.",
@@ -850,31 +853,33 @@ class MainWindow(QWidget):
         self.top_splitter.addWidget(project_name_widget)
 
         # --- 中部区域 (文件块) ---
+        # 修改：中部区域现在包含一个垂直布局的容器，用于存放多行 Splitter
         middle_section_widget = QWidget()
         second_section_wrapper_layout = QHBoxLayout(middle_section_widget)
         second_section_wrapper_layout.setContentsMargins(0, 0, 0, 0)
         second_section_wrapper_layout.setSpacing(5)
 
-        self.file_blocks_splitter = QSplitter(Qt.Horizontal) # 修改：设为实例属性
-        second_section_wrapper_layout.addWidget(self.file_blocks_splitter, 1)
+        # 这是一个垂直容器，用来放一行行的 Splitter
+        self.file_blocks_container_widget = QWidget()
+        self.file_blocks_container_layout = QVBoxLayout(self.file_blocks_container_widget)
+        self.file_blocks_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.file_blocks_container_layout.setSpacing(5)
+        
+        # 将垂直容器添加到中部布局
+        second_section_wrapper_layout.addWidget(self.file_blocks_container_widget, 1)
 
         self.add_file_block_button = QPushButton("+")
         self.add_file_block_button.setObjectName("addButton") # 修改：设置对象名
         self.add_file_block_button.setToolTip("增加文件引入块并选择文件")
         self.add_file_block_button.setFixedSize(30, 30)
-        
-        # ==================== 代码修改开始 (1/2) ====================
-        # 原来的连接方式:
-        # self.add_file_block_button.clicked.connect(lambda: self._add_file_block_widget(add_to_list_ref=True))
-        # 修改后的连接方式，连接到一个新的专用方法
         self.add_file_block_button.clicked.connect(self._add_block_and_select_file)
-        # ==================== 代码修改结束 (1/2) ====================
 
         add_button_layout = QVBoxLayout()
         add_button_layout.addWidget(self.add_file_block_button)
         add_button_layout.addStretch()
         second_section_wrapper_layout.addLayout(add_button_layout)
 
+        # 初始化添加3个块
         for _ in range(3): self._add_file_block_widget(add_to_list_ref=True)
 
         # --- 下部区域 (Prompt指令和按钮) ---
@@ -945,31 +950,31 @@ class MainWindow(QWidget):
         if top_splitter_state:
             self.top_splitter.restoreState(top_splitter_state)
 
-        file_blocks_splitter_state = settings.value("file_blocks_splitter_state")
-        if file_blocks_splitter_state:
-            self.file_blocks_splitter.restoreState(file_blocks_splitter_state)
-    # ==================== 代码修改结束 ====================
+        # 注意：由于文件块的splitter现在是动态多行的，恢复其状态比较复杂且容易出错，
+        # 这里暂时不恢复 file_blocks_splitter_state，以保证布局稳定性。
 
-    # ==================== 新增：窗口关闭事件处理 ====================
     def closeEvent(self, event):
         """在窗口关闭时保存其状态。"""
         settings = QSettings("MyCustomTools", "PromptGeneratorApp")
         settings.setValue("main_window_geometry", self.saveGeometry())
         settings.setValue("main_splitter_state", self.main_splitter.saveState())
         settings.setValue("top_splitter_state", self.top_splitter.saveState())
-        settings.setValue("file_blocks_splitter_state", self.file_blocks_splitter.saveState())
+        # 同样，不保存动态多行splitter的状态
         super().closeEvent(event)
-    # ==================== 代码修改结束 ====================
 
     def _clear_all_file_blocks_ui(self):
-        """安全地清除文件块分割器中的所有控件。"""
-        for i in reversed(range(self.file_blocks_splitter.count())):
-            widget = self.file_blocks_splitter.widget(i)
+        """安全地清除文件块容器中的所有 Splitter 和控件。"""
+        # 清除所有 splitter 引用
+        self.file_block_splitters.clear()
+        
+        # 删除 layout 中的所有子控件
+        while self.file_blocks_container_layout.count():
+            item = self.file_blocks_container_layout.takeAt(0)
+            widget = item.widget()
             if widget:
                 widget.setParent(None)
                 widget.deleteLater()
 
-    # ==================== 代码修改开始 (2/2) ====================
     def _add_block_and_select_file(self):
         """
         处理“增加文件引入块”按钮的点击事件。
@@ -980,18 +985,46 @@ class MainWindow(QWidget):
         # 2. 如果控件成功创建，则调用其 select_file 方法
         if new_block:
             new_block.select_file()
-    # ==================== 代码修改结束 (2/2) ====================
+
+    def _create_new_row_splitter(self):
+        """创建一个新的水平 Splitter 并添加到容器中。"""
+        splitter = QSplitter(Qt.Horizontal)
+        self.file_blocks_container_layout.addWidget(splitter)
+        self.file_block_splitters.append(splitter)
+        return splitter
 
     def _add_file_block_widget(self, add_to_list_ref=False, file_data=None):
+        MAX_PER_ROW = 5 # 每行最大显示数量
+        
+        # 1. 确定要添加到哪个 Splitter
+        target_splitter = None
+        if not self.file_block_splitters:
+            # 如果没有 splitter，创建一个
+            target_splitter = self._create_new_row_splitter()
+        else:
+            # 检查最后一个 splitter 是否已满
+            last_splitter = self.file_block_splitters[-1]
+            if last_splitter.count() >= MAX_PER_ROW:
+                # 已满，创建新行
+                target_splitter = self._create_new_row_splitter()
+            else:
+                # 未满，使用当前行
+                target_splitter = last_splitter
+
+        # 2. 创建并添加控件
         file_block = FileBlockWidget()
         file_block.delete_requested.connect(self._handle_delete_file_block)
         file_block.files_selected.connect(self.handle_multiple_files_selected)
 
         if file_data: file_block.load_data(file_data.get("path"), file_data.get("content"))
         
-        self.file_blocks_splitter.addWidget(file_block)
+        target_splitter.addWidget(file_block)
         
         if add_to_list_ref: self.file_blocks.append(file_block)
+        
+        # 稍微调整一下新加入行的比例，使其均匀
+        target_splitter.setSizes([1] * target_splitter.count())
+        
         return file_block
 
     def handle_multiple_files_selected(self, file_paths):
@@ -1011,7 +1044,22 @@ class MainWindow(QWidget):
     def _handle_delete_file_block(self, block_to_delete):
         """处理删除文件块的请求。"""
         if block_to_delete in self.file_blocks: self.file_blocks.remove(block_to_delete)
+        
+        # 找到该 block 所在的 splitter
+        parent_splitter = None
+        for splitter in self.file_block_splitters:
+            if splitter.indexOf(block_to_delete) != -1:
+                parent_splitter = splitter
+                break
+        
+        block_to_delete.setParent(None)
         block_to_delete.deleteLater()
+        
+        # 如果 splitter 空了，移除该 splitter
+        if parent_splitter and parent_splitter.count() == 0:
+            self.file_block_splitters.remove(parent_splitter)
+            parent_splitter.setParent(None)
+            parent_splitter.deleteLater()
 
     def show_history_dialog(self):
         history_data = self._load_history_from_file()
@@ -1052,19 +1100,20 @@ class MainWindow(QWidget):
             self._handle_project_desc_selection_changed(button_id)
 
         self.prompt_input.setPlainText(record_data.get("final_prompt", ""))
+        
+        # 清除并重新加载文件块
         self._clear_all_file_blocks_ui()
         self.file_blocks.clear()
+        
         loaded_files_data = record_data.get("files", [])
         if loaded_files_data:
             for file_info in loaded_files_data:
                 new_block = self._add_file_block_widget(add_to_list_ref=False, file_data=file_info)
                 self.file_blocks.append(new_block)
+        
         num_to_add = 3 - len(self.file_blocks)
         if num_to_add > 0:
             for _ in range(num_to_add): self._add_file_block_widget(add_to_list_ref=True)
-        
-        # 恢复分割器比例
-        self.file_blocks_splitter.setSizes([1] * len(self.file_blocks))
 
 
     def keyPressEvent(self, event):
@@ -1109,7 +1158,13 @@ class MainWindow(QWidget):
         file_tree_lines = []
         valid_file_infos_for_output = []
         
-        current_ui_file_blocks = [self.file_blocks_splitter.widget(i) for i in range(self.file_blocks_splitter.count()) if isinstance(self.file_blocks_splitter.widget(i), FileBlockWidget)]
+        # 修改：遍历所有 splitter 中的所有 widget
+        current_ui_file_blocks = []
+        for splitter in self.file_block_splitters:
+            for i in range(splitter.count()):
+                widget = splitter.widget(i)
+                if isinstance(widget, FileBlockWidget):
+                    current_ui_file_blocks.append(widget)
         
         for block_widget in current_ui_file_blocks:
             path, filename, content = block_widget.get_file_info()
