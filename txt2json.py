@@ -1340,7 +1340,7 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%y%m%d")
 
     # 1. 首先，执行清理和替换操作，这将修改目录中所有的 onews_*.json 文件
-    process_and_clean_news_files(local_server_dir)
+    # process_and_clean_news_files(local_server_dir)
 
     # 2. 然后，执行原有的 version.json 更新逻辑
     #    它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5

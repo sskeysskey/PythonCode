@@ -14,21 +14,22 @@ def compute_md5(path):
 def process_and_clean_news_files(local_dir):
     """
     遍历目录中所有的 onews_*.json 文件，
-    清空 url 和 images 字段，并替换指定的源名称。
+    清空 url 字段，并将“假名”替换回“真名”。
     """
-    print("--- 开始处理和清理新闻 JSON 文件 ---")
+    print("--- 开始处理和还原新闻 JSON 文件 ---")
     
-    # 定义需要替换的文本对应关系
+    # 【修改点】：这里将键值对进行了互换
+    # 左边是现在文件里存在的名字（假名），右边是你想要还原的名字（真名）
     replacements = {
-        "华尔街日报": "新闻纵横",
-        "伦敦金融时报": "时事评论",
-        "布隆伯格金融": "热点News",
-        "路透社": "环球速递",
-        "经济学人": "国外摘要",
-        "日经新闻": "酷评直击",
-        "华盛顿邮报": "百姓民生",
-        "纽约时报": "寰宇纵横",
-        "麻省理工技术评论": "技术和创新"
+        "新闻纵横": "华尔街日报",
+        "时事评论": "伦敦金融时报",
+        "热点News": "布隆伯格金融",
+        "环球速递": "路透社",
+        "国外摘要": "经济学人",
+        "酷评直击": "日经新闻",
+        "百姓民生": "华盛顿邮报",
+        "寰宇纵横": "纽约时报",
+        "技术和创新": "麻省理工技术评论"
     }
     
     # 遍历目录中的所有文件
@@ -141,8 +142,7 @@ local_server_dir = "/Users/yanzhang/Coding/LocalServer/Resources/ONews"
 timestamp = datetime.now().strftime("%y%m%d")
 
 # 1. 首先，执行清理和替换操作，这将修改目录中所有的 onews_*.json 文件
-# process_and_clean_news_files(local_server_dir)
+process_and_clean_news_files(local_server_dir)
 
-# 2. 然后，执行原有的 version.json 更新逻辑
-#    它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5
-# update_version_json_fake(local_server_dir, timestamp)
+# 2. 然后，执行原有的 version.json 更新逻辑，它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5
+update_version_json_fake(local_server_dir, timestamp)
