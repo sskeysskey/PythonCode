@@ -1,0 +1,29 @@
+{
+    "version": "1.2",
+    "locked_days": 2,
+    "source_mappings": {
+        "wsj": "新闻纵横",
+        "wsjcn": "新闻纵横中文网",
+        "ft": "时事评论",
+        "bloomberg": "热点News",
+        "reuters": "环球速递",
+        "economist": "国外摘要",
+        "nikkei": "酷评直击",
+        "washpost": "百姓民生",
+        "nytimes": "寰宇纵横",
+        "mittr": "技术和创新"
+    },
+    "source_mappings真": {
+        "wsj": "华尔街日报",
+        "wsjcn": "华尔街日报中文网",
+        "ft": "伦敦金融时报",
+        "bloomberg": "布隆伯格金融",
+        "reuters": "路透社",
+        "economist": "经济学人",
+        "nikkei": "日经新闻亚洲版",
+        "washpost": "华盛顿邮报",
+        "nytimes": "纽约时报",
+        "mittr": "麻省理工技术评论"
+    },
+    "files": []
+}

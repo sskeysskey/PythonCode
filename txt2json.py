@@ -619,6 +619,20 @@ SITE_DISPLAY_MAP = {
     'nikkeiasia':     '日经新闻亚洲版',
 }
 
+# ---- 新增：反向映射，用于生成 source_id ----
+REVERSE_SITE_MAPPING = {
+    "华尔街日报": "wsj",
+    "华尔街日报中文网": "wsjcn",
+    "伦敦金融时报": "ft",
+    "布隆伯格金融": "bloomberg",
+    "路透社": "reuters",
+    "经济学人": "economist",
+    "日经新闻亚洲版": "nikkei",
+    "华盛顿邮报": "washpost",
+    "纽约时报": "nytimes",
+    "麻省理工技术评论": "mittr"
+}
+
 def compute_md5(path):
     hash_md5 = hashlib.md5()
     with open(path, "rb") as f:
@@ -865,7 +879,11 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
                 
                 print(f"注意：URL {url} 未在 HTML 中找到，使用推断信息: 站点={site_code}, 主题={topic[:50]}...")
 
+            # --- 新增逻辑：获取 source_id ---
+            source_id = REVERSE_SITE_MAPPING.get(display_site, "unknown")
+
             data.setdefault(display_site, []).append({
+                "source_id": source_id,  # 新增字段
                 "topic":   topic,
                 "url":     original_url_from_map,
                 "article": article_text,
