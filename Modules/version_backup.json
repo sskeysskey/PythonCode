@@ -13,7 +13,7 @@
         "nytimes": "英文期刊",
         "mittr": "可以听的新闻"
     },
-    "source_mappings真": {
+    "source_mappings": {
         "wsj": "华尔街日报",
         "wsjcn": "华尔街日报中文网",
         "ft": "伦敦金融时报",
