@@ -745,108 +745,115 @@ function extractAndCopy() {
 
   // 处理 wsj.com
   else if (window.location.hostname.includes("wsj.com")) {
-    const article = document.querySelector('article');
+    // 扩大搜索范围，有时候内容不在 article 标签直属下，但在 main 或 paywall 容器中
+    // 优先锁定 article，如果没有则回退到 document
+    const contentRoot = document.querySelector('article') || document.querySelector('main') || document;
 
-    if (article) {
-      // 【1】先提取文本，而不进行图片下载
-      const possibleSelectors = [
-        // 【新增】针对新版页面布局的段落选择器
+    if (contentRoot) {
+      // 【关键修改】
+      // 将所有可能的文本选择器放入一个数组
+      // 注意：顺序不再决定提取顺序，DOM流的物理位置决定提取顺序
+      const textSelectors = [
+        // 1. 视差画廊 (Parallax Gallery) - 必须包含，否则会漏掉你提到的“海峡”等内容
+        '.pg-media-text h4',          // 画廊标题 (如: "海峡")
+        '.pg-media-text p',           // 画廊描述 (如: "台湾海峡是一个...")
+
+        // 2. 标准正文段落
+        'p[data-type="paragraph"]',
+
+        // 3. 针对 WSJ 不同版式的特定 CSS类名 (保留原有的兼容性)
         'p.css-1009hy1-StyledNewsKitParagraph',
         'p.css-k3zb6l-Paragraph',
-        // --- 以下为原有选择器，保持不变 ---
-        'p[class*="emoc1hq1"][class*="css-1jdwmf4-StyledNewsKitParagraph"][font-size="17"]',
-        'p[class*="css-k3zb61-Paragraph"]',
-        'p[data-type="paragraph"]',
-        '.paywall p[data-type="paragraph"]',
-        'article p[data-type="paragraph"]',
-        'p[class*="Paragraph"]',
+        'p[class*="emoc1hq1"]',
+        'p[class*="css-1jdwmf4"]',
+
+        // 4. Paywall 容器下的段落 (作为兜底)
         '.paywall p'
       ];
 
-      let allParagraphs = [];
-      possibleSelectors.forEach(selector => {
-        // 【修改】将文本搜索范围从 article 扩展到 document，以应对某些正文内容也在 article 标签外的情况
-        const paragraphs = document.querySelectorAll(selector);
-        allParagraphs = [...allParagraphs, ...Array.from(paragraphs)];
-      });
+      // 【关键修改】使用 join(',') 将选择器合并，执行一次查询
+      // 这样返回的 nodeList 是严格按照 HTML 页面从上到下的顺序排列的
+      const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
 
-      // 去重后生成最终文本内容
-      allParagraphs = [...new Set(allParagraphs)];
+      // 将 NodeList 转换为数组并去重 (防止同一个元素被多个选择器命中)
+      let uniqueElements = [...new Set(allElements)];
 
-      textContent = allParagraphs
-        .map(p => {
-          // 【修改】移除了对 strong[data-type="emphasis"] 的排除，改为保留其文本内容
+      textContent = uniqueElements
+        .map(el => {
+          // 过滤逻辑：跳过不需要的元素
           if (
-            // p.querySelector('strong[data-type="emphasis"]') ||
-            p.className.includes('g-pstyle') ||
-            p.closest('.ai2html_export') ||
-            p.closest('[data-block="dynamic-inset"]')
+            el.closest('.ai2html_export') || // 排除图表内嵌文字
+            el.closest('figcaption') ||      // 排除图片说明(通常由图片下载逻辑处理)
+            el.className.includes('g-pstyle')
           ) {
             return '';
           }
 
-          let text = p.textContent.trim()
-            .replace(/<!--[\s\S]*?-->/g, '')
+          // 针对视差画廊标题做特殊处理，增加换行使其更明显
+          const isHeader = el.tagName.toLowerCase() === 'h4';
+
+          let text = el.textContent.trim()
+            .replace(/<!--[\s\S]*?-->/g, '') // 去除注释
             .replace(/[•∞@]/g, '')
             .replace(/\s+/g, ' ')
             .replace(/&nbsp;/g, ' ')
-            // .replace(/≤\/p>/g, '')
-            .replace(/<\/?[^>]+>/g, '')
-            // .replace(/[.*?]/g, '')
+            .replace(/<\/?[^>]+>/g, '') // 去除HTML标签
             .trim();
 
-          return text;
-        })
-        .filter(text => {
-          return text &&
-            text.length > 1 &&
-            !['@', '•', '∞', 'flex'].includes(text) &&
-            !/^\s*$/.test(text) &&
-            !/^Advertisement$/i.test(text) &&
-            !/^.$/.test(text) &&
-            !text.includes("Newsletter Sign-up") &&
-            !text.includes("Catch up on the headlines, understand the news and make better decisions, free in your inbox daily. Enjoy a free article in every edition.") &&
-            !text.includes("News and analysis of the New York City mayor's case") &&
-            !text.includes("Latest news and key analysis, selected by editors") &&
-            !text.includes("广告");
-        })
-        .join('\n\n');
+          // 再次过滤无效文本
+          if (
+            !text ||
+            text.length <= 1 ||
+            ['@', '•', '∞', 'flex'].includes(text) ||
+            /^\s*$/.test(text) ||
+            /^Advertisement$/i.test(text) ||
+            text.includes("Newsletter Sign-up") ||
+            text.includes("Catch up on the headlines") ||
+            text.includes("News and analysis of the New York City") ||
+            text.includes("Latest news and key analysis") ||
+            text.includes("广告")
+          ) {
+            return '';
+          }
 
+          // 如果是标题，前后加换行符以区分
+          return isHeader ? `\n【${text}】\n` : text;
+        })
+        .filter(text => text.length > 0) // 移除空字符串
+        .join('\n\n'); // 用双换行符连接段落
+
+      // ... 以下是图片下载逻辑，保持原样或根据需要微调 ...
       // 【2】只有当文本提取成功后，再进行图片下载
       if (textContent) {
         // 查找"Show Conversation"元素
         const showConversationElement = document.querySelector('.css-1nc85ca-Show0rHideCommentsSpan');
 
-        // 【修改】扩展图片查找范围，增加对 <article> 标签外部头图的抓取
+        // 【修改】扩展图片查找范围，增加对视差画廊图片的抓取
         let allImages = [
+          // 【新增】抓取视差画廊中的图片
+          ...Array.from(document.querySelectorAll('.pg-element img')),
           // 【新增】抓取位于 <main> 标签下、<article> 标签外的头图
           ...Array.from(document.querySelectorAll('main > .bigTop picture img')),
-          // --- 以下为原有选择器，保持不变，但搜索范围从 article 改为 document 以确保全面 ---
+          // --- 以下为原有选择器，保持不变 ---
           ...Array.from(document.querySelectorAll('article picture.css-u314cv img')),
           ...Array.from(document.querySelectorAll('article .origami-item img')),
           ...Array.from(document.querySelectorAll('article [data-type="inset"] img')),
           ...Array.from(document.querySelectorAll('article figure img'))
         ];
 
-        // 【新增】对抓取到的图片进行去重，防止因为选择器重叠而重复下载
+        // 【新增】对抓取到的图片进行去重
         allImages = [...new Set(allImages)];
 
-        // --- 新增过滤逻辑 ---
-        // 过滤掉 "What to Read Next" 等推荐区域的图片
-        // 这个步骤应该在其他过滤（如评论区过滤、尺寸过滤）之前进行，以提高效率
+        // 【新增】过滤掉 "What to Read Next" 等推荐区域的图片
         allImages = allImages.filter(img => {
-          // 检查图片的祖先元素中是否包含特定排除区域的标志
-          // data-testid 属性以 "wtrn-block" 开头，例如 "wtrn-block-0"
-          // aria-label 属性为 "What to Read Next"
           if (
             img.closest('[data-testid^="wtrn-block"]') ||
             img.closest('[aria-label="What to Read Next"]')
           ) {
-            return false; // 如果图片在这些区域内，则排除该图片
+            return false;
           }
-          return true; // 否则，保留该图片
+          return true;
         });
-        // --- 新增过滤逻辑结束 ---
 
         // 如果找到"Show Conversation"元素，则过滤掉其后的图片
         if (showConversationElement) {
@@ -913,36 +920,51 @@ function extractAndCopy() {
                 processedUrls.add(baseUrl);
 
                 let altText = '';
-                const origamiCaption = img.closest('.origami-wrapper')?.querySelector('.origami-caption');
-                const figureEl = img.closest('figure');
-                let captionSpan;
-                if (figureEl) {
-                  // 【修改】修正了对 figcaption 的查找逻辑，使其更健壮
-                  const figcaptionEl = figureEl.nextElementSibling?.tagName.toLowerCase() === 'figcaption'
-                    ? figureEl.nextElementSibling
-                    : figureEl.querySelector('figcaption');
-                  if (figcaptionEl) {
-                    captionSpan = figcaptionEl.querySelector('.css-426zcb-CaptionSpan');
+
+                // 【新增】优先从视差画廊的标题提取描述
+                const pgTextWrapper = img.closest('.pg-element')?.querySelector('.pg-media-text');
+                if (pgTextWrapper) {
+                  const pgTitle = pgTextWrapper.querySelector('h4.pg-title');
+                  const pgCaption = pgTextWrapper.querySelector('.pg-image-caption');
+                  if (pgTitle && pgTitle.textContent.trim()) {
+                    altText = pgTitle.textContent.trim();
+                  } else if (pgCaption && pgCaption.textContent.trim()) {
+                    altText = pgCaption.textContent.trim();
                   }
                 }
-                const creditSpan = img.closest('[data-type="image"]')?.querySelector('.css-7jz429-Credit');
 
-                if (origamiCaption) {
-                  altText = origamiCaption.textContent;
-                } else if (captionSpan) {
-                  altText = captionSpan.textContent;
-                } else if (creditSpan) {
-                  altText = creditSpan.textContent;
-                } else {
-                  altText = img.alt || 'wsj_image';
+                // 如果视差画廊没有找到描述，使用原有逻辑
+                if (!altText) {
+                  const origamiCaption = img.closest('.origami-wrapper')?.querySelector('.origami-caption');
+                  const figureEl = img.closest('figure');
+                  let captionSpan;
+                  if (figureEl) {
+                    // 【修改】修正了对 figcaption 的查找逻辑，使其更健壮
+                    const figcaptionEl = figureEl.nextElementSibling?.tagName.toLowerCase() === 'figcaption'
+                      ? figureEl.nextElementSibling
+                      : figureEl.querySelector('figcaption');
+                    if (figcaptionEl) {
+                      captionSpan = figcaptionEl.querySelector('.css-426zcb-CaptionSpan');
+                    }
+                  }
+                  const creditSpan = img.closest('[data-type="image"]')?.querySelector('.css-7jz429-Credit');
+
+                  if (origamiCaption) {
+                    altText = origamiCaption.textContent;
+                  } else if (captionSpan) {
+                    altText = captionSpan.textContent;
+                  } else if (creditSpan) {
+                    altText = creditSpan.textContent;
+                  } else {
+                    altText = img.alt || 'wsj_image';
+                  }
                 }
 
-                // --- 新增逻辑：为默认文件名添加时间戳 ---
+                // 为默认文件名添加时间戳
                 if (altText === 'wsj_image') {
-                  const seconds = new Date().getSeconds(); // 获取当前秒数 (0-59)
-                  altText = `wsj_image-${seconds}`; // 拼接成新名称，如 "wsj_image-46"
+                  const seconds = new Date().getSeconds();
+                  altText = `wsj_image-${seconds}`;
                 }
-                // --- 新增逻辑结束 ---
 
                 const processFileName = (text) => {
                   text = text.replace(/[/\\?%*:|"<>+]/g, '-')
