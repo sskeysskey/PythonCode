@@ -422,76 +422,89 @@ function extractAndCopy() {
 
     // 处理 wsj.com
     else if (window.location.hostname.includes("wsj.com")) {
-        const article = document.querySelector('article');
+        // 扩大搜索范围，有时候内容不在 article 标签直属下，但在 main 或 paywall 容器中
+        // 优先锁定 article，如果没有则回退到 document
+        const contentRoot = document.querySelector('article') || document.querySelector('main') || document;
 
-        if (article) {
-            // 【1】文本提取 - 扩展选择器以包含视差画廊内容
-            const possibleSelectors = [
-                // 【新增】视差画廊（parallax gallery）中的文本内容
-                '.pg-media-text p',           // 画廊中的段落
-                '.pg-media-text h4',          // 画廊中的标题
-                // 【新增】针对新版页面布局的段落选择器
+        if (contentRoot) {
+            // 【关键修改 1】在选择器数组中增加了 h2 和 h3 标签
+            // 将所有可能的文本选择器放入一个数组
+            // 注意：顺序不再决定提取顺序，DOM流的物理位置决定提取顺序
+            const textSelectors = [
+                // 1. 视差画廊 (Parallax Gallery)
+                '.pg-media-text h4',
+                '.pg-media-text p',
+
+                // 2. 增加：标准正文中的小标题 (匹配你的 HTML 中的 <h3 data-type="hed">)
+                'h2[data-type="hed"]',
+                'h3[data-type="hed"]',
+
+                // 3. 标准正文段落
+                'p[data-type="paragraph"]',
+
+                // 4. 针对 WSJ 不同版式的特定 CSS类名
                 'p.css-1009hy1-StyledNewsKitParagraph',
                 'p.css-k3zb6l-Paragraph',
-                // --- 以下为原有选择器，保持不变 ---
-                'p[class*="emoc1hq1"][class*="css-1jdwmf4-StyledNewsKitParagraph"][font-size="17"]',
-                'p[class*="css-k3zb61-Paragraph"]',
-                'p[data-type="paragraph"]',
-                '.paywall p[data-type="paragraph"]',
-                'article p[data-type="paragraph"]',
-                'p[class*="Paragraph"]',
+                'p[class*="emoc1hq1"]',
+                'p[class*="css-1jdwmf4"]',
+
+                // 5. Paywall 容器下的段落 (作为兜底)
                 '.paywall p'
             ];
 
-            let allParagraphs = [];
-            possibleSelectors.forEach(selector => {
-                // 【修改】将文本搜索范围从 article 扩展到 document，以应对某些正文内容也在 article 标签外的情况
-                const paragraphs = document.querySelectorAll(selector);
-                allParagraphs = [...allParagraphs, ...Array.from(paragraphs)];
-            });
+            // 使用 join(',') 将选择器合并，querySelectorAll 会按照 DOM 在页面中的物理顺序返回元素
+            // 这样返回的 nodeList 是严格按照 HTML 页面从上到下的顺序排列的
+            const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
 
-            // 去重后生成最终文本内容
-            allParagraphs = [...new Set(allParagraphs)];
+            // 将 NodeList 转换为数组并去重 (防止同一个元素被多个选择器命中)
+            let uniqueElements = [...new Set(allElements)];
 
-            textContent = allParagraphs
-                .map(p => {
-                    // 【修改】移除了对 strong[data-type="emphasis"] 的排除，改为保留其文本内容
+            textContent = uniqueElements
+                .map(el => {
+                    // 过滤逻辑：跳过不需要的元素
                     if (
-                        // p.querySelector('strong[data-type="emphasis"]') ||
-                        p.className.includes('g-pstyle') ||
-                        // p.closest('[data-block="dynamic-inset"]') ||
-                        p.closest('.ai2html_export')
+                        el.closest('.ai2html_export') || // 排除图表内嵌文字
+                        el.closest('figcaption') ||      // 排除图片说明(通常由图片下载逻辑处理)
+                        el.className.includes('g-pstyle')
                     ) {
                         return '';
                     }
 
-                    let text = p.textContent.trim()
-                        .replace(/<!--[\s\S]*?-->/g, '')
+                    // 【关键修改 2】扩展标题判断逻辑，包含 h2, h3, h4
+                    const tagName = el.tagName.toLowerCase();
+                    const isHeader = tagName === 'h2' || tagName === 'h3' || tagName === 'h4';
+
+                    let text = el.textContent.trim()
+                        .replace(/<!--[\s\S]*?-->/g, '') // 去除注释
                         .replace(/[•∞@]/g, '')
                         .replace(/\s+/g, ' ')
                         .replace(/&nbsp;/g, ' ')
-                        // .replace(/≤\/p>/g, '')
-                        .replace(/<\/?[^>]+>/g, '')
-                        // .replace(/[.*?]/g, '')
+                        .replace(/<\/?[^>]+>/g, '') // 去除HTML标签
                         .trim();
 
-                    return text;
-                })
-                .filter(text => {
-                    return text &&
-                        text.length > 1 &&
-                        !['@', '•', '∞', 'flex'].includes(text) &&
-                        !/^\s*$/.test(text) &&
-                        !/^Advertisement$/i.test(text) &&
-                        !/^.$/.test(text) &&
-                        !text.includes("Newsletter Sign-up") &&
-                        !text.includes("Catch up on the headlines, understand the news and make better decisions, free in your inbox daily. Enjoy a free article in every edition.") &&
-                        !text.includes("News and analysis of the New York City mayor's case") &&
-                        !text.includes("Latest news and key analysis, selected by editors") &&
-                        !text.includes("广告");
-                })
-                .join('\n\n');
+                    // 再次过滤无效文本
+                    if (
+                        !text ||
+                        text.length <= 1 ||
+                        ['@', '•', '∞', 'flex'].includes(text) ||
+                        /^\s*$/.test(text) ||
+                        /^Advertisement$/i.test(text) ||
+                        text.includes("Newsletter Sign-up") ||
+                        text.includes("Catch up on the headlines") ||
+                        text.includes("News and analysis of the New York City") ||
+                        text.includes("Latest news and key analysis") ||
+                        text.includes("广告")
+                    ) {
+                        return '';
+                    }
 
+                    // 如果是标题，前后加换行符及【】以区分
+                    return isHeader ? `\n【${text}】\n` : text;
+                })
+                .filter(text => text.length > 0) // 移除空字符串
+                .join('\n\n'); // 用双换行符连接段落
+
+            // ... 以下是图片下载逻辑，保持原样或根据需要微调 ...
             // 【2】只有当文本提取成功后，再进行图片下载
             if (textContent) {
                 // 查找"Show Conversation"元素

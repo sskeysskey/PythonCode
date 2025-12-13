@@ -750,28 +750,32 @@ function extractAndCopy() {
     const contentRoot = document.querySelector('article') || document.querySelector('main') || document;
 
     if (contentRoot) {
-      // 【关键修改】
+      // 【关键修改 1】在选择器数组中增加了 h2 和 h3 标签
       // 将所有可能的文本选择器放入一个数组
       // 注意：顺序不再决定提取顺序，DOM流的物理位置决定提取顺序
       const textSelectors = [
-        // 1. 视差画廊 (Parallax Gallery) - 必须包含，否则会漏掉你提到的“海峡”等内容
-        '.pg-media-text h4',          // 画廊标题 (如: "海峡")
-        '.pg-media-text p',           // 画廊描述 (如: "台湾海峡是一个...")
+        // 1. 视差画廊 (Parallax Gallery)
+        '.pg-media-text h4',
+        '.pg-media-text p',
 
-        // 2. 标准正文段落
+        // 2. 增加：标准正文中的小标题 (匹配你的 HTML 中的 <h3 data-type="hed">)
+        'h2[data-type="hed"]',
+        'h3[data-type="hed"]',
+
+        // 3. 标准正文段落
         'p[data-type="paragraph"]',
 
-        // 3. 针对 WSJ 不同版式的特定 CSS类名 (保留原有的兼容性)
+        // 4. 针对 WSJ 不同版式的特定 CSS类名
         'p.css-1009hy1-StyledNewsKitParagraph',
         'p.css-k3zb6l-Paragraph',
         'p[class*="emoc1hq1"]',
         'p[class*="css-1jdwmf4"]',
 
-        // 4. Paywall 容器下的段落 (作为兜底)
+        // 5. Paywall 容器下的段落 (作为兜底)
         '.paywall p'
       ];
 
-      // 【关键修改】使用 join(',') 将选择器合并，执行一次查询
+      // 使用 join(',') 将选择器合并，querySelectorAll 会按照 DOM 在页面中的物理顺序返回元素
       // 这样返回的 nodeList 是严格按照 HTML 页面从上到下的顺序排列的
       const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
 
@@ -789,8 +793,9 @@ function extractAndCopy() {
             return '';
           }
 
-          // 针对视差画廊标题做特殊处理，增加换行使其更明显
-          const isHeader = el.tagName.toLowerCase() === 'h4';
+          // 【关键修改 2】扩展标题判断逻辑，包含 h2, h3, h4
+          const tagName = el.tagName.toLowerCase();
+          const isHeader = tagName === 'h2' || tagName === 'h3' || tagName === 'h4';
 
           let text = el.textContent.trim()
             .replace(/<!--[\s\S]*?-->/g, '') // 去除注释
@@ -816,7 +821,7 @@ function extractAndCopy() {
             return '';
           }
 
-          // 如果是标题，前后加换行符以区分
+          // 如果是标题，前后加换行符及【】以区分
           return isHeader ? `\n【${text}】\n` : text;
         })
         .filter(text => text.length > 0) // 移除空字符串
