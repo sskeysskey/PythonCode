@@ -827,7 +827,6 @@ function extractAndCopy() {
         .filter(text => text.length > 0) // 移除空字符串
         .join('\n\n'); // 用双换行符连接段落
 
-      // ... 以下是图片下载逻辑，保持原样或根据需要微调 ...
       // 【2】只有当文本提取成功后，再进行图片下载
       if (textContent) {
         // 查找"Show Conversation"元素
