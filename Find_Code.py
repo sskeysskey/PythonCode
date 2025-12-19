@@ -277,7 +277,7 @@ def handle_file(root, name, directory, keywords, matched_files):  # 改为 keywo
         return
         
     # 检查文件内容
-    if item_path.endswith(('.txt', '.py', '.json', '.js', '.css', '.html', '.csv', '.md', '.swift', '.sh')):  # 添加 .swift
+    if item_path.endswith(('.txt', '.py', '.json', '.js', '.css', '.html', '.csv', '.md', '.swift', '.sh', '.lua')):
         try:
             with open(item_path, 'r', encoding='utf-8') as file:
                 content = file.read().lower()
