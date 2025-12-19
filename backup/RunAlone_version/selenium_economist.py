@@ -124,7 +124,7 @@ template_path_accept = '/Users/yanzhang/Coding/python_code/Resource/economist_ac
 template_accept = cv2.imread(template_path_accept, cv2.IMREAD_COLOR)
 
 if template_accept is None:
-    raise FileNotFoundError(f"模板图片未能正确读取于路径 {template_path}")
+    raise FileNotFoundError(f"模板图片未能正确读取于路径 {template_path_accept}")
 
 found = False
 start_time = time.time()
