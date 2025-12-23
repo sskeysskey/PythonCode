@@ -21,7 +21,8 @@ searchFolders = [
     "/Users/yanzhang/Coding/Xcode/Indices/Finance",
     "/Users/yanzhang/Coding/Xcode/ONews/ONews",
     "/Users/yanzhang/.hammerspoon",
-    "/Users/yanzhang/Coding/sh"
+    "/Users/yanzhang/Coding/sh",
+    "/Users/yanzhang/Coding/LocalServer"
 ]
 
 class CustomTextBrowser(QTextBrowser):
