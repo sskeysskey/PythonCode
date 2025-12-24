@@ -1834,35 +1834,39 @@ function extractAndCopy() {
         }
       } else if (window.location.pathname.includes('/pictures/')) {
         imagesFoundForDownload = true;
-        // 2.1 抓文字描述（SingleImageHero 顶部描述）
-        let textContent = '';
+
+        // 2.1 抓文字描述（支持 SingleImageHero 和 CollageHero）
         const heroDesc = document.querySelector(
-          'div[data-testid="SingleImageHeroSubSection"] p[data-testid="Body"]'
+          'div[data-testid="SingleImageHeroSubSection"] [data-testid="Body"], ' +
+          'div[data-testid="CollageHeroSubSection"] [data-testid="Body"], ' +
+          'div[data-testid="PicturesLayoutHeroContent"] [data-testid="Body"]'
         );
+
         if (heroDesc) {
-          textContent = heroDesc.textContent.trim();
-          // 如果你要把文字传给 background，再发一条消息
-          chrome.runtime.sendMessage({ action: 'sendText', text: textContent });
+          textContent = heroDesc.textContent.trim(); // 赋值给外层的 textContent
         }
 
         // 2.2 抓所有图片
         const processedUrls = new Set();
-        // 选出 hero 图 和 event-gallery 图集里的 <img>
         const images = Array.from(
           document.querySelectorAll(
             'div[data-testid="SingleImageHero"] img, ' +
+            'div[data-testid="CollageHero"] img, ' +
             'div[data-testid="EventGalleryImageImage"] img'
           )
         );
 
         images.forEach((img, idx) => {
           let url = '';
+          // 优先直接的 src
           if (img.src && !img.src.startsWith('data:image/') && img.src !== window.location.href) {
             url = img.src;
           }
+          // 尝试 lazy load 属性
           if ((!url || url.startsWith('data:image/')) && img.dataset.src) {
             url = img.dataset.src;
           }
+          // 解析 srcset
           if (img.srcset) {
             const candidates = img.srcset.trim().split(',')
               .map(entry => {
@@ -1871,16 +1875,22 @@ function extractAndCopy() {
               })
               .filter(c => c.url && c.width > 0 && !c.url.startsWith('data:image/'))
               .sort((a, b) => b.width - a.width);
+
             if (candidates.length) url = candidates[0].url;
           }
-          if (url.startsWith('/')) {
+
+          // 补全相对路径
+          if (url && url.startsWith('/')) {
             try { url = new URL(url, location.origin).href; } catch (e) { url = ''; }
           }
-          url = url.replace(/\s+/g, '');
+
+          // 清理 URL
+          if (url) url = url.replace(/\s+/g, '');
 
           if (!url || url.startsWith('data:image/') || url === location.href) {
             return;
           }
+
           if (processedUrls.has(url)) {
             return;
           }
@@ -1888,26 +1898,42 @@ function extractAndCopy() {
 
           // ---- 针对图集页面的 Caption 提取 ------------------------------------------
           let caption = '';
-          // 先找 figcaption 里的 span
+
+          // 1. 先找 figcaption 里的 span
           const fig = img.closest('figure');
           if (fig) {
             const span = fig.querySelector('figcaption span, [data-testid="ImageCaption"] span');
             if (span) caption = span.textContent.trim();
           }
-          // 再 fallback 用 alt
+
+          // 2. 如果是 CollageHero 或 SingleHero，尝试用文章的 Title 或 Body 作为文件名
+          // 因为 Hero 图片通常没有直接紧挨着的 caption
+          if (!caption && (img.closest('[data-testid="CollageHero"]') || img.closest('[data-testid="SingleImageHero"]'))) {
+            // 尝试获取页面大标题
+            const mainTitle = document.querySelector('h1[data-testid="Heading"]');
+            if (mainTitle) caption = mainTitle.textContent.trim();
+            // 如果还没有，使用刚才抓取的 textContent 的前一段
+            if (!caption && textContent) caption = textContent.substring(0, 50);
+          }
+
+          // 3. 再 fallback 用 alt
           if (!caption && img.alt) caption = img.alt.trim();
 
           // 清洗 caption
-          caption = caption.replace(/REUTERS\/.*/i, '')
+          caption = caption.replace(/REUTERS\/.*$/i, '')
             .replace(/^["“]+|["”]+$/g, '')
             .trim();
 
           // 构造文件名
           const extMatch = url.match(/\.(png|jpe?g|webp)(\?|$)/i);
           const ext = extMatch ? extMatch[1] : 'jpg';
+
           let filename = caption ?
-            caption.replace(/[/\\?%*:|"<>+]/g, '-').slice(0, 180) :
+            caption.replace(/[\\/?%*:|"<>+]/g, '-').slice(0, 180) :
             `reuters-pic-${Date.now()}-${idx}`;
+
+          // 再次清理多余的空格和连字符
+          filename = filename.replace(/\s+/g, ' ').trim();
           filename += '.' + ext;
 
           chrome.runtime.sendMessage({
