@@ -104,19 +104,28 @@ class MainWindow(QMainWindow):
 
         for directory, files in results.items():
             if files:
+                # 显示大目录分组
                 html_content += f"<h2 style='color: yellow; font-size: 18px;'>{directory}</h2>"
                 for file in files:
-                    # 确保使用绝对路径
+                    # 确保使用绝对路径用于点击打开
                     file_path = os.path.abspath(os.path.join(directory, file))
+                    
                     # 确保路径格式正确
                     file_path = file_path.replace('\\', '/')
+                    
                     # 对路径进行编码
                     from urllib.parse import quote
                     encoded_path = quote(file_path)
                     file_url = f"file://{encoded_path}"
-                    display_name = os.path.basename(file)
-                    html_content += f"<p><a href='{file_url}' style='color: orange; text-decoration: underline; font-size: 18px;'>{display_name}</a></p>"
+                    
+                    # --- 修改点在这里 ---
+                    # 原代码: display_name = os.path.basename(file)  <-- 这句把路径去掉了
+                    # 新代码: 直接使用 file，它包含了相对路径
+                    display_name = file 
+                    # ------------------
 
+                    html_content += f"<p><a href='{file_url}' style='color: orange; text-decoration: underline; font-size: 18px;'>{display_name}</a></p>"
+        
         self.result_area.setHtml(html_content)
         self.result_area.verticalScrollBar().setValue(0)
 
