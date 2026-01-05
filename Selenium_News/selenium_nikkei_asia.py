@@ -1,16 +1,48 @@
 import os
 import glob
 import time
-import pyautogui
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException # 新增引用
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
+
+# ================= 配置区域 =================
+
+# 1. 路径配置 (适配 Beta 版)
+# Chrome Beta 浏览器程序路径
+CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+# Chrome Beta 驱动路径
+CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+
+# 文件路径
+FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
+NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
+TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+
+# 设置超时时间
+TIMEOUT = 20 
+
+# ================= 过滤黑名单 =================
+# 这里列出所有不需要抓取的栏目名称
+EXCLUDED_TITLES = {
+    "Bonds", "Commodities", "Wealth Management", "China", "Japan", "India",
+    "South Korea", "Indonesia", "Taiwan", "Thailand", "U.S.", "Hong Kong",
+    "Macao", "Mongolia", "North Korea", "Malaysia", "Singapore", "Philippines",
+    "Vietnam", "Myanmar", "Cambodia", "Laos", "Brunei", "East Timor",
+    "Pakistan", "Afghanistan", "Bangladesh", "Sri Lanka", "Nepal", "Bhutan",
+    "Maldives", "Kazakhstan", "Uzbekistan", "Turkmenistan", "Tajikistan",
+    "Kyrgyzstan", "Australia", "New Zealand", "Papua New Guinea",
+    "Pacific Islands", "Middle East", "Russia & Caucasus", "North America",
+    "Latin America", "Europe", "Africa", "Trading Asia", "Opinion", "Life & Arts",
+    "Politics", "Economy", "Business", "Tech", "Spotlight"
+}
+
+# ================= 工具函数 =================
 
 def is_similar(url1, url2):
     """
@@ -21,248 +53,264 @@ def is_similar(url1, url2):
         return False
     parsed_url1 = urlparse(url1)
     parsed_url2 = urlparse(url2)
-
     base_url1 = f"{parsed_url1.scheme}://{parsed_url1.netloc}{parsed_url1.path}"
     base_url2 = f"{parsed_url2.scheme}://{parsed_url2.netloc}{parsed_url2.path}"
-
     return base_url1 == base_url2
 
-# 获取当前日期
-current_datetime = datetime.now()
-formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
+def main():
+    # 获取当前日期
+    current_datetime = datetime.now()
+    formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
-# ChromeDriver 路径
-chrome_driver_path = "/Users/yanzhang/Downloads/backup/chromedriver"
+    # --- 1. 初始化 Selenium ---
+    options = webdriver.ChromeOptions()
+    options.binary_location = CHROME_BINARY_PATH # 指定 Beta 浏览器位置
 
-# 设置 ChromeDriver
-chrome_options = Options()
-service = Service(executable_path=chrome_driver_path)
+    # --- Headless模式 & 伪装设置 ---
+    options.add_argument('--headless=new') 
+    options.add_argument('--window-size=1920,1080')
 
-# --- 增强的浏览器设置 ---
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-chrome_options.add_argument(f'user-agent={user_agent}')
-chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-chrome_options.add_experimental_option('useAutomationExtension', False)
-# chrome_options.add_argument("--start-maximized") # 启动时最大化窗口
-
-# --- 性能相关设置 ---
-chrome_options.add_argument("--disable-extensions")
-chrome_options.add_argument("--disable-gpu")
-chrome_options.add_argument("--disable-dev-shm-usage")
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
-
-pyautogui.moveTo(653, 614)
-driver = webdriver.Chrome(service=service, options=chrome_options)
-
-# 打开 nikkei asia 网站
-driver.get("https://asia.nikkei.com/")
-
-# 等待页面主要内容加载
-# 这是一个好的实践，可以等待某个关键元素出现，例如页脚
-try:
-    WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-trackable='home']"))
-    )
-    print("页面主要内容已加载。")
-except Exception as e:
-    print(f"等待页面加载超时: {e}")
-    driver.quit()
-    exit()
-
-
-# 查找旧的 html 文件
-file_pattern = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
-old_file_list = glob.glob(file_pattern)
-
-old_content = []
-if old_file_list:
-    old_file_path = old_file_list[0]
-    seven_days_ago = current_datetime - timedelta(days=10)
-
-    try:
-        with open(old_file_path, 'r', encoding='utf-8') as file:
-            soup = BeautifulSoup(file, 'html.parser')
-            rows = soup.find_all('tr')[1:]  # 跳过标题行
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) >= 2:  # 确保行有足够的列
-                    date_str = cols[0].text.strip()
-                    # 解析日期字符串
-                    date = datetime.strptime(date_str, '%Y_%m_%d_%H')
-                    # 若日期大于等于50天前的日期，则保留
-                    if date >= seven_days_ago:
-                        title_column = cols[1]
-                        title = title_column.text.strip()
-                        # 从标题所在的列中提取链接
-                        link = title_column.find('a')['href'] if title_column.find('a') else None
-                        old_content.append([date_str, title, link])
-    except OSError as e:
-        print(f"读取文件时出错: {e}")
-
-# 抓取新内容
-new_rows = []
-new_rows1 = []
-all_links = [old_link for _, _, old_link in old_content if old_link]
-
-# **【修改点 1】: 使用JavaScript进行滚动，替代pyautogui**
-print("开始滚动页面以加载更多内容...")
-for i in range(4):
-    driver.execute_script("window.scrollBy(0, 800);") # 每次向下滚动800像素
-    print(f"滚动次数: {i+1}/4")
-    time.sleep(0.5) # 每次滚动后等待0.5秒让内容加载
-
-print("滚动完成，开始抓取内容。")
-
-# 1. 需要特殊处理的版块，但在选择器中实现不区分大小写
-SECTIONS = ["Spotlight", "Business", "Economy"]
-
-# **【修改点 3】: 修改CSS选择器，在属性选择器中添加 ' i' 标志使其不区分大小写**
-css_selector = ", ".join(
-    f"a[href*='/{section}/' i]:not(.label-link)" for section in SECTIONS
-)
-
-try:
-    # 增加显式等待，确保滚动加载出的元素可以被找到
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
-    )
+    # --- 伪装设置 (User-Agent & 去除自动化特征) ---
+    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    options.add_argument(f'user-agent={user_agent}')
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
-    titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
-    print(f"找到了 {len(titles_elements)} 个符合条件的链接元素。")
+    # 性能优化
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
+    options.page_load_strategy = 'eager'
 
-    for title_element in titles_elements:
-        href = title_element.get_attribute('href')
-        # 尝试获取 `h2` 或 `h3` 标签内的文本，如果找不到，再获取 `<a>` 标签自身的文本
-        try:
-            # 网站结构可能会将标题放在子元素中，如<h2>
-            title_text = title_element.find_element(By.CSS_SELECTOR, "h2, h3").text.strip()
-        except:
-            title_text = title_element.text.strip()
+    # 检查驱动是否存在
+    if not os.path.exists(CHROME_DRIVER_PATH):
+        print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        return
 
-        if not (href and title_text):
-            continue
+    service = Service(executable_path=CHROME_DRIVER_PATH)
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(30)
+    
+    # 初始化数据容器
+    new_rows = []
+    new_rows1 = []
+    old_content = []
+    old_file_list = glob.glob(FILE_PATTERN) # 提前获取
 
-        # 一般性的排除关键字
-        general_keywords_to_exclude = [
-            'Podcast', 'sports', '/music/', 'weather', '/books/', 'food',
-            'The-Future-of-Asia', 'Your-Week-in-Asia'
-        ]
-        if any(keyword.lower() in href.lower() for keyword in general_keywords_to_exclude):
-            continue
-
-        # Spotlight/Business 结构判断
-        skip_due_to_structure = False
-        try:
-            parsed_url = urlparse(href)
-            # 仅对 asia.nikkei.com 生效
-            if parsed_url.netloc == "asia.nikkei.com":
-                # 提取所有非空的 path segment
-                path_segments = [
-                    seg for seg in parsed_url.path.strip("/").split("/") if seg
-                ]
-                # 如果第一个 segment 在 SECTIONS 里，并且恰好只有两个 segment
-                # （即 /Spotlight/分类 or /Business/分类），就跳过
-                if (
-                    path_segments and
-                    path_segments[0].lower() in [s.lower() for s in SECTIONS] and
-                    len(path_segments) == 2
-                ):
-                    skip_due_to_structure = True
-        except ValueError:
-            # URL 格式异常也跳过
-            skip_due_to_structure = True
-
-        if skip_due_to_structure:
-            continue
-
-        # 滤重逻辑
-        if not any(is_similar(href, existing_link) for existing_link in all_links):
-            new_rows.append([formatted_datetime, title_text, href])
-            new_rows1.append(["NikkeiAsia", title_text, href])
-            all_links.append(href)
-            print(f"发现新文章: {title_text}")
-
-
-except Exception as e:
-    print("抓取过程中出现错误:", e)
-
-# 关闭驱动
-driver.quit()
-
-if not new_rows:
-    print("未能抓取到任何新内容。")
-else:
-    print(f"成功抓取到 {len(new_rows)} 条新内容。")
-
-# --- 后续文件处理逻辑保持不变 ---
-
-if old_file_list:
     try:
-        os.remove(old_file_path)
-        print(f"文件 {old_file_path} 已被删除。")
-    except OSError as e:
-        print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
+        print("正在访问 Nikkei Asia...")
+        driver.get("https://asia.nikkei.com/")
 
-# 创建 HTML 文件
-new_html_path = f"/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
-with open(new_html_path, 'w', encoding='utf-8') as html_file:
-    # 写入 HTML 基础结构和表格开始标签
-    html_file.write("<html><body><table border='1'>\n")
+        # 等待页面主要内容加载
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-trackable='home']"))
+            )
+            print("页面主要内容已加载。")
+        except Exception as e:
+            print(f"等待页面加载超时: {e}")
+            driver.quit()
+            return
 
-    # 写入标题行
-    html_file.write("<tr><th>Date</th><th>Title</th></tr>\n")
+        # --- 2. 查找旧的 HTML 文件 ---
+        if old_file_list:
+            old_file_path = old_file_list[0]
+            seven_days_ago = current_datetime - timedelta(days=10)
+            try:
+                with open(old_file_path, 'r', encoding='utf-8') as file:
+                    soup = BeautifulSoup(file, 'html.parser')
+                    rows = soup.find_all('tr')[1:]  # 跳过标题行
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            date_str = cols[0].text.strip()
+                            try:
+                                date = datetime.strptime(date_str, '%Y_%m_%d_%H')
+                                # 若日期符合条件则保留
+                                if date >= seven_days_ago:
+                                    title_column = cols[1]
+                                    title = title_column.text.strip()
+                                    link = title_column.find('a')['href'] if title_column.find('a') else None
+                                    old_content.append([date_str, title, link])
+                            except ValueError:
+                                continue
+            except OSError as e:
+                print(f"读取文件时出错: {e}")
 
-    # 写入新抓取的内容
-    new_content_added = False
-    for row in new_rows:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
-        html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
-        new_content_added = True
+        # --- 3. 抓取新内容 ---
+        all_links = [old_link for _, _, old_link in old_content if old_link]
 
-    # 写入旧内容
-    for row in old_content:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>" if row[2] else row[1]
-        html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
+        print("开始滚动页面以加载更多内容...")
+        # 即使在 Headless 模式下，execute_script 依然有效
+        for i in range(4):
+            driver.execute_script("window.scrollBy(0, 800);") 
+            print(f"滚动次数: {i+1}/4")
+            time.sleep(0.5) 
+        print("滚动完成，开始抓取内容。")
 
-    # 结束表格和 HTML 结构
-    html_file.write("</table></body></html>")
+        # 定义需要抓取的版块
+        SECTIONS = ["Spotlight", "Business", "Economy"]
+        # CSS选择器：不区分大小写
+        css_selector = ", ".join(
+            f"a[href*='/{section}/' i]:not(.label-link)" for section in SECTIONS
+        )
 
-if new_rows1:
-    # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
-    file_exists = os.path.isfile(today_html_path)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
+            )
+            
+            # === [核心修改 1]：先获取元素对象 ===
+            titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
+            print(f"找到了 {len(titles_elements)} 个符合条件的链接元素。")
+            
+            # === [核心修改 2]：快速提取数据 (Snapshot)，避免 StaleElementReference ===
+            # 我们在这里只做提取，不做复杂的过滤，尽快把数据拿到手
+            raw_data_list = []
+            
+            for element in titles_elements:
+                try:
+                    href = element.get_attribute('href')
+                    # 尝试获取标题
+                    try:
+                        title_text = element.find_element(By.CSS_SELECTOR, "h2, h3").text.strip()
+                    except:
+                        title_text = element.text.strip() or element.get_attribute('innerText').strip()
+                    
+                    if href and title_text:
+                        raw_data_list.append((href, title_text))
+                        
+                except StaleElementReferenceException:
+                    # 如果这个元素在遍历过程中失效了，直接跳过，不影响整体
+                    continue
+                except Exception:
+                    continue
+            
+            print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
 
-    # 准备要追加的内容
-    append_content = ""
-    for row in new_rows1:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
-        append_content += f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n"
+            # === [核心修改 3]：对静态数据进行逻辑过滤 (纯 Python 操作，不会报错) ===
+            for href, title_text in raw_data_list:
+                
+                # 1. 检查是否在黑名单中
+                if title_text in EXCLUDED_TITLES:
+                    continue
 
-    # 如果文件已存在，先删除末尾的HTML结束标签，再追加新内容，最后重新添加结束标签
-    closing_tag = "</table></body></html>"
-    if file_exists:
-        # 读取整个文件内容，并去掉原有的结束标签
-        with open(today_html_path, 'r', encoding='utf-8') as html_file:
-            content = html_file.read()
-        
-        # 如果存在结束标签，则将其移除
-        if closing_tag in content:
-            content = content.replace(closing_tag, "")
-        
-        # 拼接新内容和完整的结束标签
-        new_content = content + append_content + closing_tag
+                # 2. 检查长度（真正的新闻标题通常不会只有 1 个单词）
+                #    如果标题只有1个单词，且不在排除名单里，大概率也是误判，建议过滤
+                if len(title_text.split()) <= 1:
+                    continue
+                
+                # 3. 原有的关键字排除
+                general_keywords_to_exclude = [
+                    'Podcast', 'sports', '/music/', 'weather', '/books/', 'food',
+                    'The-Future-of-Asia', 'Your-Week-in-Asia'
+                ]
+                if any(keyword.lower() in href.lower() for keyword in general_keywords_to_exclude):
+                    continue
 
-        # 以写入模式完整覆盖原文件，确保不会残留任何多余数据
-        with open(today_html_path, 'w', encoding='utf-8') as html_file:
-            html_file.write(new_content)
-    else:
-        # 如果文件是新建的，添加新内容和HTML结束标签
-        with open(today_html_path, 'w', encoding='utf-8') as html_file:
+                # 4. 结构判断 (Spotlight/Business 下的二级目录)
+                skip_due_to_structure = False
+                try:
+                    parsed_url = urlparse(href)
+                    if parsed_url.netloc == "asia.nikkei.com":
+                        path_segments = [
+                            seg for seg in parsed_url.path.strip("/").split("/") if seg
+                        ]
+                        # 排除仅有两级目录的特定链接 (例如 /Spotlight/xxxx)
+                        if (
+                            path_segments and
+                            path_segments[0].lower() in [s.lower() for s in SECTIONS] and
+                            len(path_segments) == 2
+                        ):
+                            skip_due_to_structure = True
+                except ValueError:
+                    skip_due_to_structure = True
+
+                if skip_due_to_structure:
+                    continue
+
+                # 滤重逻辑
+                if not any(is_similar(href, existing_link) for existing_link in all_links):
+                    new_rows.append([formatted_datetime, title_text, href])
+                    new_rows1.append(["NikkeiAsia", title_text, href])
+                    all_links.append(href)
+                    # print(f"发现新文章: {title_text}")
+
+            # 日志
+            print("-" * 40)
+            if new_rows:
+                print(f"✅ 统计报告: 本次共抓取到 {len(new_rows)} 条新新闻！")
+            else:
+                print("⚠️ 统计报告: 本次未发现新内容 (0 条)。")
+            print("-" * 40)
+
+        except Exception as e:
+            print("抓取过程中出现错误:", e)
+
+    finally:
+        driver.quit()
+
+    # --- 4. 文件写入操作 (逻辑保持不变) ---
+    
+    # 删除旧文件
+    if old_file_list:
+        try:
+            if os.path.exists(old_file_list[0]):
+                os.remove(old_file_list[0])
+                print(f"文件 {old_file_list[0]} 已被删除。")
+        except OSError as e:
+            print(f"错误: 无法删除旧文件 {e}")
+
+    # 创建 HTML 文件
+    try:
+        with open(NEW_HTML_PATH, 'w', encoding='utf-8') as html_file:
             html_file.write("<html><body><table border='1'>\n")
-            html_file.write("<tr><th>site</th><th>Title</th></tr>\n")
-            html_file.write(append_content)
-            html_file.write(closing_tag)
-            html_file.flush()
-            os.fsync(html_file.fileno())
+            html_file.write("<tr><th>Date</th><th>Title</th></tr>\n")
+            
+            for row in new_rows:
+                clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
+                html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
+            
+            for row in old_content:
+                clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>" if row[2] else row[1]
+                html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
+            
+            html_file.write("</table></body></html>")
+        print(f"已更新文件: {NEW_HTML_PATH}")
+    except Exception as e:
+        print(f"写入 HTML 出错: {e}")
+
+    # 创建每日新闻总表 HTML
+    if new_rows1:
+        file_exists = os.path.isfile(TODAY_HTML_PATH)
+        closing_tag = "</table></body></html>"
+        append_content = ""
+        
+        for row in new_rows1:
+            clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
+            append_content += f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n"
+        
+        try:
+            if file_exists:
+                with open(TODAY_HTML_PATH, 'r', encoding='utf-8') as html_file:
+                    content = html_file.read()
+                if closing_tag in content:
+                    content = content.replace(closing_tag, "")
+                new_content = content + append_content + closing_tag
+                with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
+                    html_file.write(new_content)
+            else:
+                with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
+                    html_file.write("<html><body><table border='1'>\n")
+                    html_file.write("<tr><th>site</th><th>Title</th></tr>\n")
+                    html_file.write(append_content)
+                    html_file.write(closing_tag)
+            print(f"已追加到总表: {TODAY_HTML_PATH}")
+        except Exception as e:
+            print(f"写入总表出错: {e}")
+
+if __name__ == "__main__":
+    main()
