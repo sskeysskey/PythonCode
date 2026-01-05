@@ -13,7 +13,7 @@ from time import sleep
 # 常量定义
 TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
 HTML_DIRECTORY = '/Users/yanzhang/Coding/Website/news'
-SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
+# SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
 SEGMENT_FILE_PATH = '/tmp/segment.txt'
 SITE_FILE_PATH = '/tmp/site.txt'
 RATIO_FILE_PATH = '/tmp/english_ratio_result.txt'
@@ -284,12 +284,14 @@ def main() -> None:
     if os.path.isfile(html_file_path):
         close_html_skeleton(html_file_path)
     
-    # 执行 AppleScript
-    try:
-        result = subprocess.run(['osascript', SCRIPT_PATH], check=True, text=True, stdout=subprocess.PIPE)
-        print(result.stdout.strip())
-    except subprocess.CalledProcessError as e:
-        print(f"Error running AppleScript: {e}")
+    # =========== 修改处开始：注释掉关闭标签页的代码 ===========
+    # 我们不在这里关闭标签页了，改为在 AppleScript 最后统一关闭
+    # try:
+    #     result = subprocess.run(['osascript', SCRIPT_PATH], check=True, text=True, stdout=subprocess.PIPE)
+    #     print(result.stdout.strip())
+    # except subprocess.CalledProcessError as e:
+    #     print(f"Error running AppleScript: {e}")
+    # =========== 修改处结束 ===========
     
     move_and_record_images(url)
     sleep(0.3)

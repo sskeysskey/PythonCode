@@ -156,39 +156,61 @@ def main():
                 print(f"读取旧文件出错: {e}")
 
         # --- 4. 抓取新内容 ---
-        print("正在抓取文章列表...")
+        
+        # [新增] 滚动机制
+        print("开始滚动页面以加载更多内容...")
+        for i in range(4):
+            driver.execute_script("window.scrollBy(0, 1000);") # Economist 页面较长，每次滚动 1000
+            print(f"滚动次数: {i+1}/4")
+            time.sleep(0.5)
+        print("滚动完成，开始抓取内容。")
+
         try:
-            # 查找今年内的链接
             wait.until(EC.presence_of_element_located((By.TAG_NAME, "a")))
+            
+            # 获取元素列表
             titles_elements = driver.find_elements(By.CSS_SELECTOR, f"a[href*='/{datetime.now().year}/']")
             formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H")
             
-            for title_element in titles_elements:
-                href = title_element.get_attribute('href')
-                # 在 headless 模式下 .text 有时为空，尝试 get_attribute('innerText')
-                title_text = title_element.text.strip() or title_element.get_attribute('innerText').strip()
-                
-                if href and title_text:
-                    if ('podcasts' not in href and "film" not in href and "cartoon" not in href and 
-                        not ('letters' in href and 'editor' in href and 'Sources and acknowledgments' in href)):
-                        
-                        # 检查重复
-                        is_old_duplicate = any(is_similar(href, old_link) for _, _, old_link in old_content)
-                        is_new_duplicate = any(is_similar(href, new_link) for _, _, new_link in new_rows)
-                        
-                        if not is_old_duplicate and not is_new_duplicate:
-                            new_rows.append([formatted_datetime, title_text, href])
-                            new_rows1.append(["Economist", title_text, href])
-                            # print(f"新发现: {title_text[:30]}...") 
+            # [核心修改] 第一步：只提取原始数据 (Snapshot)
+            # 这样可以避免 "Stale element reference" 错误
+            raw_data_list = []
+            for element in titles_elements:
+                try:
+                    href = element.get_attribute('href')
+                    # 尝试多种方式获取文本
+                    title_text = element.text.strip() or element.get_attribute('innerText').strip()
+                    if href and title_text:
+                        raw_data_list.append((href, title_text))
+                except StaleElementReferenceException:
+                    continue # 忽略失效的元素
+                except Exception:
+                    continue
 
-            # ==================== 新增日志区域 ====================
+            print(f"提取到 {len(raw_data_list)} 个原始链接，开始处理逻辑...")
+
+            # [核心修改] 第二步：处理逻辑 (过滤和排重)
+            for href, title_text in raw_data_list:
+                # 排除逻辑
+                if ('podcasts' not in href and "film" not in href and "cartoon" not in href and 
+                    not ('letters' in href and 'editor' in href and 'Sources and acknowledgments' in href)):
+                    
+                    # 检查重复
+                    is_old_duplicate = any(is_similar(href, old_link) for _, _, old_link in old_content)
+                    is_new_duplicate = any(is_similar(href, new_link) for _, _, new_link in new_rows)
+                    
+                    if not is_old_duplicate and not is_new_duplicate:
+                        new_rows.append([formatted_datetime, title_text, href])
+                        new_rows1.append(["Economist", title_text, href])
+                        # print(f"新发现: {title_text[:30]}...") 
+
+            # ==================== 日志区域 ====================
             print("-" * 40)
             if new_rows:
                 print(f"✅ 统计报告: 本次共抓取到 {len(new_rows)} 条新新闻！")
             else:
                 print("⚠️ 统计报告: 本次未发现新内容 (0 条)。")
             print("-" * 40)
-            # ====================================================
 
         except Exception as e:
             print("抓取过程中出现错误:", e)

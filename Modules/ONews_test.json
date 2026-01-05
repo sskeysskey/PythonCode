@@ -1,125 +1,34 @@
 {
-    "新闻纵横中文网": [
+    "经济学人": [
         {
-            "topic": "特朗普看重的交易，在俄中看来是破坏美国同盟之机",
-            "url": "",
-            "article": "美国的对手正利用特朗普(Trump)热衷于达成交易这一点，在美国与其盟友之间制造隔阂，并削弱由华盛顿主导、多年来制衡它们的安全秩序。",
-            "images": [
-                "特朗普与习近平和普京等对手的会谈正引发美国盟友对长期安全安排持久性的担忧。.jpg"
-            ]
-        }
-    ],
-    "时事评论": [
-        {
-            "topic": "房主争相将房产定价在豪宅税门槛以下",
-            "url": "https://cn.wsj.com/articles/%E7%BE%8E%E5%9B%BD%E7%BB%8F%E6%B5%8E%E5%AE%9E%E7%8E%B0%E4%B8%A4%E5%B9%B4%E6%9D%A5%E6%9C%80%E5%BC%BA%E5%8A%B2%E5%A2%9E%E9%95%BF-%E5%8F%97%E6%B6%88%E8%B4%B9%E8%80%85%E6%94%AF%E5%87%BA%E6%8E%A8%E5%8A%A8-8f8e719b?mod=cn_hp_lead_pos1",
-            "article": "这篇文章主要讨论了英国即将实施的\"豪宅税\"及其影响：\n核心内容：\n1. 新税收将于2028年4月生效",
-            "images": [
-                "Estate agents said the lack of clarity from the government meant sellers and buyers would have strong incentives to keep valuations just below the thresholds.jpg"
-            ]
+            "source_id": "economist",
+            "topic": "特朗普的委内瑞拉石油豪赌",
+            "topic_eng": "Donald Trump’s great Venezuelan oil gamble",
+            "url": "https://www.economist.com/finance-and-economics/2026/01/04/donald-trumps-great-venezuelan-oil-gamble",
+            "article": "这篇文章主要讲述了美国抓捕委内瑞拉独裁者马杜罗后：\n背景与动机",
+            "article_eng": "Here's a detailed summary of the article:\nThe article discusses the U.S. capture of Venezuelan",
+            "images": []
         },
         {
-            "topic": "为何我不得不抛售股票基金",
-            "url": "https://cn.wsj.com/articles/%E7%BE%8E%E5%9B%BD%E7%BB%8F%E6%B5%8E%E5%AE%9E%E7%8E%B0%E4%B8%A4%E5%B9%B4%E6%9D%A5%E6%9C%80%E5%BC%BA%E5%8A%B2%E5%A2%9E%E9%95%BF-%E5%8F%97%E6%B6%88%E8%B4%B9%E8%80%85%E6%94%AF%E5%87%BA%E6%8E%A8%E5%8A%A8-8f8e719b?mod=cn_hp_lead_pos1",
-            "article": "这篇文章主要讲述作者在10月28日清仓了自己的投资组合：\n关键时间点和数据",
-            "images": [
-                "An illustration showing a hand holding a lit lighter against a background of blurred financial data and stock charts. (1).jpg",
-                "An illustration showing a hand holding a lit lighter against a background of blurred financial data and stock charts..jpg"
-            ]
-        }
-    ],
-    "新闻纵横": [
-        {
-            "topic": "芝加哥一数据中心过热导致全球重要市场交易中断",
-            "url": "",
-            "article": "这篇文章主要报道了芝加哥商品交易所(CME Group)发生的一次重大技术故障事件：\n事件概要",
-            "images": [
-                "The Aurora, Ill., data center is run by CyrusOne, which bought it from CME in 2016..jpg",
-                "CME is one of the world’s largest derivatives marketplaces..jpg"
-            ]
-        }
-    ],
-    "热点News": [
-        {
-            "topic": "解读：芝商所故障显示数据中心制冷面临的挑战",
-            "url": "",
-            "article": "这篇文章主要讨论数据中心的冷却系统及其重要性：\n1. 数据中心的重要性",
-            "images": [
-                "A CyrusOne data center in Aurora, Illinois.webp",
-                "Liquid-cooled servers in an installation at the Global Switch Docklands data center campus in London.webp"
-            ]
-        },
-        {
-            "topic": "周末随笔：鸵鸟效应内幕：无知如何成为生存策略",
-            "url": "",
-            "article": "这篇文章主要讨论了信息逃避现象：\n1. 个人经历引入",
-            "images": [
-                "Illustration- Stefhany Lozano for Bloomberg.webp",
-                "Illustration- Stefhany Lozano for Bloomberg.webp"
-            ]
-        }
-    ],
-    "环球速递": [
-        {
-            "topic": "印度阿达尼寻求高达50亿美元投资谷歌数据中心以加入AI热潮",
-            "url": "",
-            "article": "环球速递 - 印度阿达尼集团计划在Alphabet旗下的谷歌印度人工智能数据中心项目中投资高达50亿美元",
-            "images": [
-                "The logo of the Adani Group is seen on the facade of its Corporate House on the outskirts of Ahmedabad.jpg"
-            ]
-        }
-    ],
-    "国外摘要": [
-        {
-            "topic": "人工智能正在颠覆色情行业",
-            "url": "",
-            "article": "这篇文章详细探讨了人工智能(AI)对色情产业的深远影响",
+            "source_id": "economist",
+            "topic": "第二天：特朗普治理委内瑞拉计划面临的诸多风险",
+            "topic_eng": "Day two: The many risks to Donald Trump’s plans to “run” Venezuela",
+            "url": "https://www.economist.com/the-americas/2026/01/04/the-many-risks-to-donald-trumps-plans-to-run-venezuela",
+            "article": "这篇文章主要讲述了2024年1月3日美国特种部队在委内瑞拉首都加拉加斯突袭并逮捕前总统尼古拉斯·马杜罗的事件及其后续影响",
+            "article_eng": "This article describes a significant event where former Venezuelan President Nicolás Maduro was captured by U.S. ",
             "images": []
         }
     ],
-    "酷评直击亚洲版": [
+    "纽约时报": [
         {
-            "topic": "亚瑟士赢得跑步爱好者青睐，超越阿迪达斯和耐克",
-            "url": "",
-            "article": "这篇文章主要介绍了ASICS（亚瑟士）运动品牌的发展现状和战略",
+            "source_id": "nytimes",
+            "topic": "特朗普称美国主导委内瑞拉，卢比奥强调施压",
+            "topic_eng": "Trump Says U.S. Is ‘in Charge’ of Venezuela, While Rubio Stresses Coercing It",
+            "url": "https://www.nytimes.com/2026/01/04/us/politics/rubio-military-quarantine-venezuela-oil.html",
+            "article": "这篇文章主要报道了特朗普政府对委内瑞拉的军事行动和政策立场：\n1. 军事行动：\n- 美军于周六",
+            "article_eng": "Here's a detailed summary of the article:\nThe article discusses recent U.S. ",
             "images": [
-                "img-1764384295212-1.jpg",
-                "img-1764384295212-4.jpg",
-                "ASICS aims to keep growing revenue while maintaining superior profitability compared with its rivals. © Reuters.jpg",
-                "IMG_1156.jpg.jpg",
-                "IMG_1150.jpg.jpg"
-            ]
-        },
-        {
-            "topic": "特朗普称美国将永久暂停来自第三世界国家的移民",
-            "url": "",
-            "article": "（环球速递）——美国总统唐纳德·特朗普周四表示，他的政府将努力",
-            "images": [
-                "A man is led out of a house as federal immigration agents raided a home in St. Paul, Minnesota, on Nov. 25. © Reuters.jpg"
-            ]
-        }
-    ],
-    "百姓民生": [
-        {
-            "topic": "霍梅尼承诺免费供水，如今伊朗水资源即将耗尽",
-            "url": "",
-            "article": "这篇文章主要讨论了伊朗特别是首都德黑兰当前面临的严重水资源危机",
-            "images": [
-                "Iranian_women_perform_a_prayer_for_rainfall_at_the_Saleh_Shrine_in_Tehran_on_Nov._14._AFP-Getty_Images.jpg"
-            ]
-        }
-    ],
-    "寰宇纵横": [
-        {
-            "topic": "一名居民讲述被困燃烧大楼两小时的经历",
-            "url": "",
-            "article": "这篇文章讲述了香港王福阁一场大火中，40岁的William Li的生存经历",
-            "images": [
-                "The fire as seen from inside Mr. Li’s apartment..jpg",
-                "Once outside, Mr. Li documented some of the rescue efforts..jpg",
-                "Firefighters as seen from Mr. Li’s window..jpg",
-                "William Li, on Friday night in Hong Kong..jpg",
-                "William Li photographed the burning Wang Fuk Court complex after escaping from the fire..jpg"
+                "Secretary of State Marco Rubio at a news conference with President Trump at Mar-a-Lago, the president’s private estate and club in Palm Beach, Fla., on Saturday morning..jpg"
             ]
         }
     ]

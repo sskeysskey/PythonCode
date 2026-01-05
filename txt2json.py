@@ -9,7 +9,7 @@ import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 # ------  整个pdf逻辑部分开始  ------#
-from datetime import datetime, timedelta # <--- 新增导入
+from datetime import datetime, timedelta
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
@@ -50,13 +50,12 @@ def find_today_cnh_html(today, news_directory):
     candidate1 = os.path.join(backup_dir, f"TodayCNH_{today}.html")
     # 回退目录：News/
     candidate2 = os.path.join(news_directory, f"TodayCNH_{today}.html")
-
+    
     paths = []
     if os.path.exists(candidate1):
         paths.append(candidate1)
     elif os.path.exists(candidate2):
         paths.append(candidate2)
-
     return paths
 
 def get_pdf_path(txt_path):
@@ -560,7 +559,7 @@ def extract_site_name(url):
     except Exception as e:
         print(f"提取网站名称时出错 ({url}): {str(e)}")
         return "Other" # 出错时返回 Other
-    
+
 def process_all_files(directory, article_copier_path, image_dir):
     """
     仅将 News_*.txt 文件转换为 PDF，不移动源文件。
@@ -669,14 +668,14 @@ def parse_article_copier(file_path):
     url_images = {}
     current_url = None
     valid_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif')
-
+    
     try: # 增加错误处理，防止文件不存在
         with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
     except FileNotFoundError:
         print(f"警告: article_copier 文件未找到: {file_path}")
         return {} # 返回空字典
-
+        
     for line in lines:
         line = line.strip()
         if not line:
@@ -702,14 +701,14 @@ def move_processed_txt_files(directory):
     """
     done_dir = os.path.join(directory, "done")
     os.makedirs(done_dir, exist_ok=True)
-
+    
     txt_files_to_move = find_all_news_files(directory)
-
     if not txt_files_to_move:
         print(f"在 {directory} 目录中没有找到需要移动的 News_*.txt 文件。")
         return
     
     print(f"准备移动 {len(txt_files_to_move)} 个 TXT 文件到 '{done_dir}' 目录...")
+    
     moved_count = 0
     for source_path in txt_files_to_move:
         # 再次确认文件存在，以防万一
@@ -718,7 +717,7 @@ def move_processed_txt_files(directory):
         
         original_basename = os.path.basename(source_path)
         target_path = os.path.join(done_dir, original_basename)
-
+        
         # 检查目标文件是否存在，如果存在则重命名
         if os.path.exists(target_path):
             print(f"警告: 文件 '{original_basename}' 已存在于 'done' 目录中。将重命名后移动。")
@@ -740,7 +739,6 @@ def move_processed_txt_files(directory):
             
     print(f"移动完成，共成功移动 {moved_count} 个文件。")
 
-
 # --- 新增功能 1: 移动 article_copier 文件 ---
 def move_article_copier_files(source_dir, backup_parent_dir):
     """
@@ -749,20 +747,20 @@ def move_article_copier_files(source_dir, backup_parent_dir):
     """
     backup_dir = os.path.join(backup_parent_dir, "backup") # 目标是 News/backup
     os.makedirs(backup_dir, exist_ok=True) # 确保 backup 目录存在
-
+    
     pattern = os.path.join(source_dir, "article_copier_*.txt")
     files_to_move = glob.glob(pattern)
-
+    
     if not files_to_move:
         print(f"在 {source_dir} 未找到 article_copier_*.txt 文件。")
         return
-
+        
     print(f"\n--- 开始移动 article_copier 文件到 {backup_dir} ---")
     moved_count = 0
     for source_path in files_to_move:
         filename = os.path.basename(source_path)
         target_path = os.path.join(backup_dir, filename)
-
+        
         # 检查重名冲突
         counter = 1
         base, ext = os.path.splitext(filename)
@@ -771,7 +769,7 @@ def move_article_copier_files(source_dir, backup_parent_dir):
             target_path = os.path.join(backup_dir, new_filename)
             print(f"警告: 文件 {filename} 已存在于备份目录，尝试重命名为 {new_filename}")
             counter += 1
-
+            
         # 移动文件
         try:
             shutil.move(source_path, target_path)
@@ -779,7 +777,7 @@ def move_article_copier_files(source_dir, backup_parent_dir):
             moved_count += 1
         except Exception as e:
             print(f"移动文件 {filename} 时出错: {str(e)}")
-
+            
     print(f"--- 完成移动 article_copier 文件，共移动 {moved_count} 个文件 ---")
 
 def normalize_url(u):
@@ -790,37 +788,123 @@ def normalize_url(u):
     new = urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip('/'), '', ''))
     return new
 
+def split_zh_en(text):
+    """
+    将文章内容拆分为中文部分和英文部分。
+    Strategy: 
+    1. Iterate line by line.
+    2. Look for a line that has English characters but NO Chinese characters.
+    3. CRITICAL: This line must be preceded by an empty line (or be at start).
+    4. SAFETY: The next few non-empty lines must also be English (no Chinese) to avoid splitting on isolated sentences.
+    """
+    lines = text.strip().split('\n')
+    split_index = -1
+    
+    for i, line in enumerate(lines):
+        line_strip = line.strip()
+        if not line_strip:
+            continue
+            
+        # Check language characteristics
+        has_zh = bool(re.search(r'[\u4e00-\u9fff]', line_strip))
+        has_en = bool(re.search(r'[a-zA-Z]', line_strip))
+        
+        # Candidate for start of English section:
+        # - Has English
+        # - Has NO Chinese
+        if not has_zh and has_en:
+            # Check 1: Preceded by empty line (or start of text)
+            prev_is_empty = (i == 0) or (not lines[i-1].strip())
+            
+            if prev_is_empty:
+                # Check 2: Check length to avoid bullet points like "1." 
+                # (though "1." usually has no En chars if just numbers, but "FT" might)
+                en_count = len(re.findall(r'[a-zA-Z]', line_strip))
+                if en_count > 3:
+                    # Check 3 (Lookahead): Ensure the next few lines are also not Chinese
+                    # This prevents splitting on an isolated English sentence inside Chinese text.
+                    is_english_block = True
+                    checked_lines = 0
+                    for k in range(i + 1, len(lines)):
+                        next_line = lines[k].strip()
+                        if not next_line:
+                            continue
+                        
+                        if re.search(r'[\u4e00-\u9fff]', next_line):
+                            is_english_block = False
+                            break
+                        
+                        checked_lines += 1
+                        if checked_lines >= 2: # Check next 2 non-empty lines is sufficient
+                            break
+                    
+                    if is_english_block:
+                        split_index = i
+                        break
+    
+    if split_index != -1:
+        # Found the split point
+        zh_part = '\n'.join(lines[:split_index]).strip()
+        en_part = '\n'.join(lines[split_index:]).strip()
+        return zh_part, en_part
+    
+    # If no split found (e.g. WSJCN), return all as first part
+    return text.strip(), ""
+
 def generate_news_json(news_directory, today, cnh_html_paths=None):
     """
     扫描 News_*.txt、TodayCNH_*.html、article_copier_{today}.txt，
 
     新增: 若 cnh_html_paths 提供，则仅使用这些 HTML（通常是当天的唯一文件）。
     """
-    # 1. 解析 TodayCNH_*.html -> { norm_url: (site, topic, original_url) }
-    #    **改动**: cnh_map 中增加存储原始 URL（保持原逻辑）
+    # 1. 解析 TodayCNH_*.html -> { norm_url: (site, topic, original_url, topic_eng) }
+    #    **改动**: 增加 parsing 逻辑以支持提取 title-eng
     cnh_map = {}
-
     if cnh_html_paths is None:
         # 兼容旧逻辑：遍历目录中所有 TodayCNH_*.html
         html_files = glob.glob(os.path.join(news_directory, f"TodayCNH_*.html"))
     else:
         # 只使用传入的（已确认存在的）路径
         html_files = cnh_html_paths
-
+        
     for html_path in html_files:
         with open(html_path, 'r', encoding='utf-8') as f:
             text = f.read()
-        # 匹配 <tr>…<td>SITE</td>…<a href="URL">TITLE</a>
-        for site, url, title in re.findall(
-            r"<tr>.*?<td>\s*([^<]+)\s*</td>.*?<a\s+href=\"([^\"]+)\"[^>]*>([^<]+)</a>",
-            text, re.S):
-            original_url = url.strip()
-            nu = normalize_url(original_url)
-            site = site.strip()
-            # 先 HTML 反解码，再去掉全/半角数字+逗号
-            title_decoded = html.unescape(title.strip())  # 关键修改：反解码 &amp; -> &
-            topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title_decoded)
-            cnh_map[nu] = (site, topic, original_url) # 保存站点、主题和原始URL
+        
+        # 使用更稳健的方式遍历表格行
+        for tr_match in re.finditer(r"<tr>(.*?)</tr>", text, re.S):
+            tr_content = tr_match.group(1)
+            
+            # 提取基础信息：站点和标题链接
+            # 匹配 <td>SITE</td>...<a href="URL">TITLE</a>
+            basic_match = re.search(
+                r"<td>\s*([^<]+)\s*</td>.*?<a\s+href=\"([^\"]+)\"[^>]*>([^<]+)</a>", 
+                tr_content, re.S
+            )
+            
+            if basic_match:
+                site = basic_match.group(1).strip()
+                original_url = basic_match.group(2).strip()
+                title_raw = basic_match.group(3).strip()
+                
+                # 尝试提取英文标题 (class="title-eng")
+                topic_eng = ""
+                eng_match = re.search(r"<td\s+class=\"title-eng\">\s*(.*?)\s*</td>", tr_content, re.S)
+                if eng_match:
+                    raw_eng = html.unescape(eng_match.group(1).strip())
+                    # 清理标题：移除开头的箭头和多余空白
+                    # 比如 "→\n Day two..." -> "Day two..."
+                    topic_eng = re.sub(r'^[→\s]+', '', raw_eng).strip()
+                    # 将内部的换行符替换为空格
+                    topic_eng = re.sub(r'\s+', ' ', topic_eng)
+                
+                # 数据清洗
+                nu = normalize_url(original_url)
+                title_decoded = html.unescape(title_raw)
+                topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title_decoded)
+                
+                # 存入 map
+                cnh_map[nu] = (site, topic, original_url, topic_eng)
 
     # 2. 解析 article_copier_{today}.txt -> { norm_url: [img1, img2, ...] }
     copier_path = os.path.join(news_directory, f"article_copier_{today}.txt")
@@ -850,17 +934,23 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
                 current_url = raw
                 buf = []
             else:
-                if current_url and raw:
+                if current_url:
+                    # 修改：保留所有行（即使是空行），以保留段落结构和中英文间的分隔
                     buf.append(raw)
+                    
         if current_url is not None:
             entries.append((current_url, "\n".join(buf).strip()))
 
         for url, article_text in entries:
             nu = normalize_url(url)
             
-            # 修改：优先使用 cnh_map 中的信息，如果没有则从 URL 推断
+            # 默认值
+            topic_eng = ""
+            article_eng = ""
+            
+            # 修改：优先使用 cnh_map 中的信息
             if nu in cnh_map:
-                site_code, topic, original_url_from_map = cnh_map[nu]
+                site_code, topic, original_url_from_map, topic_eng = cnh_map[nu]
                 imgs = url_images.get(nu, [])
                 display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
             else:
@@ -878,15 +968,20 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
                 display_site = SITE_DISPLAY_MAP.get(site_code.lower(), site_code)
                 
                 print(f"注意：URL {url} 未在 HTML 中找到，使用推断信息: 站点={site_code}, 主题={topic[:50]}...")
-
-            # --- 新增逻辑：获取 source_id ---
+            
+            # --- 分割中英文内容 ---
+            article_zh, article_eng = split_zh_en(article_text)
+            
+            # --- 获取 source_id ---
             source_id = REVERSE_SITE_MAPPING.get(display_site, "unknown")
-
+            
             data.setdefault(display_site, []).append({
-                "source_id": source_id,  # 新增字段
+                "source_id": source_id,
                 "topic":   topic,
+                "topic_eng": topic_eng, # 新增字段
                 "url":     original_url_from_map,
-                "article": article_text,
+                "article": article_zh, # 主要是中文部分
+                "article_eng": article_eng, # 新增英文部分
                 "images":  imgs
             })
 
@@ -1151,69 +1246,6 @@ def compute_md5(path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
-def process_and_clean_news_files(local_dir):
-    """
-    遍历目录中所有的 onews_*.json 文件，
-    清空 url 和 images 字段，并替换指定的源名称。
-    """
-    print("--- 开始处理和清理新闻 JSON 文件 ---")
-    
-    # 定义需要替换的文本对应关系
-    replacements = {
-        "华尔街日报": "新闻纵横",
-        "伦敦金融时报": "时事评论",
-        "布隆伯格金融": "热点News",
-        "路透社": "环球速递",
-        "经济学人": "国外摘要",
-        "日经新闻": "酷评直击",
-        "华盛顿邮报": "百姓民生",
-        "纽约时报": "寰宇纵横",
-        "麻省理工技术评论": "技术和创新"
-    }
-    
-    # 遍历目录中的所有文件
-    for filename in os.listdir(local_dir):
-        # 只处理符合 onews_*.json 格式的文件
-        if filename.startswith("onews_") and filename.endswith(".json"):
-            file_path = os.path.join(local_dir, filename)
-            print(f"正在处理文件: {filename}")
-            
-            try:
-                # 1. 读取并加载 JSON 文件
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                # 2. 遍历 JSON 结构，清空 url 和 images
-                for source, articles in data.items():
-                    if isinstance(articles, list):
-                        for article in articles:
-                            if "url" in article:
-                                article["url"] = ""
-                            # if "images" in article:
-                            #     article["images"] = []
-                
-                # 3. 将修改后的 Python 对象转换回格式化的 JSON 字符串
-                # 使用 ensure_ascii=False 和 indent=4 来保持格式美观和中文正常显示
-                json_string = json.dumps(data, ensure_ascii=False, indent=4)
-
-                # 4. 在整个 JSON 字符串上执行文本替换
-                for old_text, new_text in replacements.items():
-                    json_string = json_string.replace(old_text, new_text)
-
-                # 5. 将最终修改过的字符串写回文件
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(json_string)
-                
-                print(f"处理完成: {filename}")
-
-            except json.JSONDecodeError:
-                print(f"错误: 文件 {filename} 不是有效的 JSON 格式，已跳过。")
-            except Exception as e:
-                print(f"处理文件 {filename} 时发生未知错误: {e}")
-
-    print("--- 所有新闻 JSON 文件处理完毕 ---\n")
-
-
 def update_version_json_fake(local_dir, timestamp):
     """
     读取 local_dir/version.json，向 files 数组追加本次
@@ -1230,7 +1262,6 @@ def update_version_json_fake(local_dir, timestamp):
             data = json.load(f)
     
     # 遍历已有条目，如果是 json，就重新计算 MD5 并更新
-    # 这一步现在会自动处理被 process_and_clean_news_files 修改过的文件
     for item in data.get("files", []):
         if item.get("type") == "json":
             file_path = os.path.join(local_dir, item["name"])
@@ -1356,9 +1387,6 @@ if __name__ == "__main__":
     #     print("请检查上面的日志以确定失败原因。")
 
     timestamp = datetime.now().strftime("%y%m%d")
-
-    # 1. 首先，执行清理和替换操作，这将修改目录中所有的 onews_*.json 文件
-    # process_and_clean_news_files(local_server_dir)
 
     # 2. 然后，执行原有的 version.json 更新逻辑
     #    它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5

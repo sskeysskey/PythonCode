@@ -1,5 +1,6 @@
 import os
 import glob
+import time
 import webbrowser
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -7,152 +8,243 @@ from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
+
+# ================= 配置区域 (移植自 b.py) =================
+
+# 1. 浏览器与驱动路径 (改为 Beta 版配置)
+CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+
+# 2. 文件路径 (保持 a.py 原有配置)
+OLD_FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
+NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
+TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+
+# ================= 工具函数 =================
 
 def open_html_file(file_path):
     webbrowser.open('file://' + os.path.realpath(file_path), new=2)
-    exit()  # 终止程序
 
-def open_new_html_file():
-    webbrowser.open('file://' + os.path.realpath(new_html_path), new=2)
+def main():
+    # 获取当前日期
+    current_datetime = datetime.now()
+    formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
-# 获取当前日期
-current_datetime = datetime.now()
-formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
+    # ================= 1. 初始化 Selenium (核心移植部分) =================
+    print("正在初始化 Chrome Beta 驱动...")
+    
+    options = webdriver.ChromeOptions()
+    options.binary_location = CHROME_BINARY_PATH  # 指定 Beta 浏览器位置
 
-# ChromeDriver 路径
-chrome_driver_path = "/Users/yanzhang/Downloads/backup/chromedriver"
+    # --- Headless模式 & 伪装设置 ---
+    options.add_argument('--headless=new') 
+    options.add_argument('--window-size=1920,1080')
+    
+    # --- 伪装设置 (User-Agent & 去除自动化特征) ---
+    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    options.add_argument(f'user-agent={user_agent}')
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
 
-# 设置Chrome选项以提高性能
-chrome_options = Options()
-chrome_options.add_argument("--disable-extensions")
-chrome_options.add_argument("--disable-gpu")
-chrome_options.add_argument("--disable-dev-shm-usage")
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
-chrome_options.page_load_strategy = 'eager'  # 使用eager策略，DOM准备好就开始
+    # --- 性能优化 ---
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
+    options.page_load_strategy = 'eager'
 
-# 设置 ChromeDriver
-service = Service(executable_path=chrome_driver_path)
-driver = webdriver.Chrome(service=service, options=chrome_options)  # 在这里添加options参数
+    # 设置 ChromeDriver
+    if not os.path.exists(CHROME_DRIVER_PATH):
+        print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        return
 
-# 打开 MIT Technology Review 网站
-driver.get("https://www.technologyreview.com/")
-
-# 查找旧的 html 文件
-file_pattern = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
-old_file_list = glob.glob(file_pattern)
-
-old_content = []
-if old_file_list:
-    old_file_path = old_file_list[0]
-    seven_days_ago = current_datetime - timedelta(days=40)
-
+    service = Service(executable_path=CHROME_DRIVER_PATH)
+    driver = webdriver.Chrome(service=service, options=options)
+    
+    # 容器初始化
+    new_rows = []
+    new_rows1 = []
+    old_content = []
+    
     try:
-        with open(old_file_path, 'r', encoding='utf-8') as file:
-            soup = BeautifulSoup(file, 'html.parser')
-            rows = soup.find_all('tr')[1:]  # 跳过标题行
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) >= 2:  # 确保行有足够的列
-                    date_str = cols[0].text.strip()
-                    # 解析日期字符串
-                    date = datetime.strptime(date_str, '%Y_%m_%d_%H')
-                    # 若日期大于等于指定时间，则保留
-                    if date >= seven_days_ago:
-                        title_column = cols[1]
-                        title = title_column.text.strip()
-                        # 从标题所在的列中提取链接
-                        link = title_column.find('a')['href'] if title_column.find('a') else None
-                        old_content.append([date_str, title, link])
-    except OSError as e:
-        print(f"读取文件时出错: {e}")
+        # 打开 MIT Technology Review 网站
+        print("正在访问 MIT Technology Review...")
+        driver.get("https://www.technologyreview.com/")
 
-# 抓取新内容
-new_rows = []
-new_rows1 = []
-all_links = [old_link for _, _, old_link in old_content]  # 既有的所有链接
+        # ================= 2. 滚动加载 (移植自 b.py) =================
+        print("开始滚动页面以加载更多内容...")
+        for i in range(3):  # 滚动3次，可根据需要调整
+            driver.execute_script("window.scrollBy(0, 800);")
+            time.sleep(1)
+        print("滚动完成。")
 
-try:
-    css_selector = f"a[href*='technologyreview.com/{current_datetime.year}/']"
-    titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
+        # ================= 3. 读取旧文件逻辑 (保持 a.py 原有逻辑) =================
+        old_file_list = glob.glob(OLD_FILE_PATTERN)
+        
+        if old_file_list:
+            old_file_path = old_file_list[0]
+            # 这里改成保留更长时间的数据，防止误删，比如40天
+            seven_days_ago = current_datetime - timedelta(days=40)
+            try:
+                with open(old_file_path, 'r', encoding='utf-8') as file:
+                    soup = BeautifulSoup(file, 'html.parser')
+                    rows = soup.find_all('tr')[1:]  # 跳过标题行
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) >= 2:
+                            date_str = cols[0].text.strip()
+                            try:
+                                date = datetime.strptime(date_str, '%Y_%m_%d_%H')
+                                if date >= seven_days_ago:
+                                    title_column = cols[1]
+                                    title = title_column.text.strip()
+                                    link = title_column.find('a')['href'] if title_column.find('a') else None
+                                    old_content.append([date_str, title, link])
+                            except ValueError:
+                                continue
+            except OSError as e:
+                print(f"读取旧文件时出错: {e}")
 
-    for title_element in titles_elements:
-        href = title_element.get_attribute('href')
-        title_text = title_element.text.strip()
+        # ================= 4. 抓取新内容 (Snapshot 策略移植) =================
+        
+        # 获取所有旧链接用于排重
+        all_links = [old_link for _, _, old_link in old_content if old_link]
 
-        if href and title_text:
-            #print(f"标题: {title_text}, 链接: {href}")
+        # 构造选择器：针对今年的文章
+        css_selector = f"a[href*='technologyreview.com/{current_datetime.year}/']"
+        
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
+            )
+            
+            # --- 步骤 A: 获取元素对象 ---
+            titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
+            print(f"找到了 {len(titles_elements)} 个潜在链接元素。")
 
-            # 排除不需要的链接（例如包含 'podcasts' 的）
-            if 'podcasts' not in href:
-                if not any(href == old_link for _, _, old_link in old_content):
-                    if not any(href == new_link for _, _, new_link in new_rows):
-                        new_rows.append([formatted_datetime, title_text, href])
-                        new_rows1.append(["TechReview", title_text, href])
-                        all_links.append(href)  # 添加到所有链接的列表中
+            # --- 步骤 B: 快速提取数据 (避免 StaleElementReferenceException) ---
+            raw_data_list = []
+            for element in titles_elements:
+                try:
+                    href = element.get_attribute('href')
+                    # 尝试获取标题，优先查找内部的h2/h3，如果没有则取自身的text
+                    try:
+                        title_text = element.find_element(By.CSS_SELECTOR, "h2, h3").text.strip()
+                    except:
+                        title_text = element.text.strip() or element.get_attribute('innerText').strip()
+                    
+                    if href and title_text:
+                        raw_data_list.append((href, title_text))
+                except StaleElementReferenceException:
+                    continue # 元素失效则跳过
+                except Exception:
+                    continue
 
-except Exception as e:
-    print("抓取过程中出现错误:", e)
+            print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
 
-# 关闭驱动
-driver.quit()
+            # --- 步骤 C: 逻辑过滤 (纯 Python 处理) ---
+            for href, title_text in raw_data_list:
+                # 1. Podcast 过滤 (a.py 原有逻辑)
+                if 'podcasts' in href:
+                    continue
+                
+                # 2. 排重过滤
+                is_duplicate = False
+                # 检查是否已在旧内容中
+                if any(href == old_link for _, _, old_link in old_content):
+                    is_duplicate = True
+                # 检查是否已在本次新抓取队列中
+                if any(href == new_link for _, _, new_link in new_rows):
+                    is_duplicate = True
+                
+                if not is_duplicate:
+                    new_rows.append([formatted_datetime, title_text, href])
+                    new_rows1.append(["TechReview", title_text, href])
+                    all_links.append(href)
 
-if old_file_list:
+            # --- 日志输出 (移植自 b.py) ---
+            print("-" * 40)
+            if new_rows:
+                print(f"✅ 统计报告: 本次共抓取到 {len(new_rows)} 条新新闻！")
+            else:
+                print("⚠️ 统计报告: 本次未发现新内容 (0 条)。")
+            print("-" * 40)
+
+        except Exception as e:
+            print("抓取过程中出现错误:", e)
+
+    finally:
+        driver.quit()
+
+    # ================= 5. 文件写入操作 (保持 a.py 原有逻辑) =================
+
+    # 删除旧文件
+    if old_file_list and os.path.exists(old_file_list[0]):
+        try:
+            os.remove(old_file_list[0])
+            print(f"旧文件 {old_file_list[0]} 已被删除。")
+        except OSError as e:
+            print(f"错误: {e.strerror}. 文件无法删除。")
+
+    # 创建 site HTML 文件
     try:
-        os.remove(old_file_path)
-        print(f"文件 {old_file_path} 已被删除。")
-    except OSError as e:
-        print(f"错误: {e.strerror}. 文件 {old_file_path} 无法删除。")
-
-# 创建 site HTML 文件（technologyreview.html）
-new_html_path = f"/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
-with open(new_html_path, 'w', encoding='utf-8') as html_file:
-    # 写入 HTML 基础结构和表格开始标签
-    html_file.write("<html><body><table border='1'>\n")
-
-    # 写入标题行
-    html_file.write("<tr><th>Date</th><th>Title</th></tr>\n")
-
-    # 写入新抓取的内容
-    new_content_added = False
-    for row in new_rows:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
-        html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
-        new_content_added = True
-
-    # 写入旧内容
-    for row in old_content:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>" if row[2] else row[1]
-        html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
-
-    # 结束表格和 HTML 结构
-    html_file.write("</table></body></html>")
-
-# 创建每日新闻总表 HTML（today_eng.html）
-if new_rows1:
-    # 创建用于翻译的每日新闻总表html
-    today_html_path = "/Users/yanzhang/Coding/News/today_eng.html"
-    closing_tag = "</table></body></html>"
-    file_exists = os.path.isfile(today_html_path)
-
-    # 如果文件不存在，则创建初始框架
-    if not file_exists:
-        with open(today_html_path, 'w', encoding='utf-8') as html_file:
+        with open(NEW_HTML_PATH, 'w', encoding='utf-8') as html_file:
             html_file.write("<html><body><table border='1'>\n")
-            html_file.write("<tr><th>site</th><th>Title</th></tr>\n")
-            html_file.write(closing_tag)
-    
-    # 准备要追加的内容
-    append_content = ""
-    for row in new_rows1:
-        clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
-        append_content += f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n"
-    
-    # 先读取整个文件内容，去掉末尾的结束标签后，再追加新内容，再重新拼接结束标签
-    with open(today_html_path, 'r', encoding='utf-8') as html_file:
-        content = html_file.read()
-    if closing_tag in content:
-        content = content.replace(closing_tag, "")
-    new_file_content = content + append_content + closing_tag
-    with open(today_html_path, 'w', encoding='utf-8') as html_file:
-        html_file.write(new_file_content)
+            html_file.write("<tr><th>Date</th><th>Title</th></tr>\n")
+            
+            # 写入新内容
+            for row in new_rows:
+                clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
+                html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
+            
+            # 写入旧内容
+            for row in old_content:
+                clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>" if row[2] else row[1]
+                html_file.write(f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n")
+            
+            html_file.write("</table></body></html>")
+            print(f"已更新站点文件: {NEW_HTML_PATH}")
+    except Exception as e:
+        print(f"写入 HTML 出错: {e}")
+
+    # 创建/更新每日新闻总表 (today_eng.html)
+    if new_rows1:
+        closing_tag = "</table></body></html>"
+        file_exists = os.path.isfile(TODAY_HTML_PATH)
+        
+        # 准备追加内容
+        append_content = ""
+        for row in new_rows1:
+            clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
+            append_content += f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n"
+
+        try:
+            if not file_exists:
+                with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
+                    html_file.write("<html><body><table border='1'>\n")
+                    html_file.write("<tr><th>site</th><th>Title</th></tr>\n")
+                    html_file.write(append_content)
+                    html_file.write(closing_tag)
+            else:
+                with open(TODAY_HTML_PATH, 'r', encoding='utf-8') as html_file:
+                    content = html_file.read()
+                
+                if closing_tag in content:
+                    content = content.replace(closing_tag, "")
+                
+                new_file_content = content + append_content + closing_tag
+                
+                with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
+                    html_file.write(new_file_content)
+            
+            print(f"已追加到总表: {TODAY_HTML_PATH}")
+        except Exception as e:
+            print(f"写入总表出错: {e}")
+
+if __name__ == "__main__":
+    main()
