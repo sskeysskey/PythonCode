@@ -53,8 +53,14 @@ function generateHTML(data, source) {
 // Bloomberg 抓取函数
 function scrapeBloomberg() {
     const now = new Date();
+    // 动态获取当前年份 (例如 2026)
+    const currentYear = now.getFullYear();
+
     const currentDatetime = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}`;
-    const links = document.querySelectorAll("a[href*='/2025']");
+
+    // 【修改点 1】：使用 currentYear 变量替换写死的 /2026
+    const links = document.querySelectorAll(`a[href*='/${currentYear}']`);
+
     const newRows = [];
 
     links.forEach(link => {
@@ -65,7 +71,8 @@ function scrapeBloomberg() {
             titleText = titleText.substring(11);
         }
 
-        if (href.includes('/videos/2025') || href.includes('/podcast')) {
+        // 【修改点 2】：过滤视频链接时也使用动态年份
+        if (href.includes(`/videos/${currentYear}`) || href.includes('/podcast')) {
             return;
         }
 
@@ -99,6 +106,9 @@ function scrapeBloomberg() {
 // reuters 抓取函数
 function scrapeReuters() {
     const now = new Date();
+    // 动态获取当前年份
+    const currentYear = now.getFullYear();
+
     const currentDatetime = [
         now.getFullYear(),
         String(now.getMonth() + 1).padStart(2, '0'),
@@ -106,14 +116,14 @@ function scrapeReuters() {
         String(now.getHours()).padStart(2, '0'),
     ].join('_');
 
-    // 先把所有 href*='-2025-' 的 a 拿出来
+    // 【修改点】：使用 currentYear 变量替换写死的 -2026-
+    // 路透社的链接通常是 ...-title-YYYY-MM-DD/，所以包含 -2026- 是合理的特征
     const allLinks = Array.from(
-        document.querySelectorAll("a[href*='-2025-']")
+        document.querySelectorAll(`a[href*='-${currentYear}-']`)
     );
 
     // 要排除的路径片段
     const excludePaths = ['/podcasts/', '/sports/', '/africa/'];
-
     const seen = new Set();
     const newRows = [];
 

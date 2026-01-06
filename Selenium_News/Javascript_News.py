@@ -188,8 +188,7 @@ def open_webpage_and_monitor_bloomberg():
     
     print("Opening Bloomberg Asia page...")
     template_paths = {
-        "asia": "/Users/yanzhang/Coding/python_code/Resource/scraper_asia.png",
-        "us": "/Users/yanzhang/Coding/python_code/Resource/scraper_us.png"
+        "asia": "/Users/yanzhang/Coding/python_code/Resource/scraper_asia.png"
     }
     
     templates = {}
@@ -204,21 +203,32 @@ def open_webpage_and_monitor_bloomberg():
         while not found_asia_image and time.time() < timeout_stop:
             location_asia, shape_asia = find_image_on_screen(templates["asia"])
             if location_asia:
+                # 计算中心点（注意这里保留了你原有的缩放逻辑 //2，适配Retina屏）
                 center_x = (location_asia[0] + shape_asia[1] // 2) // 2
                 center_y = (location_asia[1] + shape_asia[0] // 2) // 2
+                
+                # 1. 点击找到的 asia 图片位置
                 pyautogui.click(center_x, center_y)
                 found_asia_image = True
                 print(f"找到asia图片位置: {location_asia}")
+
+                # ================= 新增逻辑开始 =================
+                time.sleep(0.8)                  # 间隔 0.5 秒
+                
+                # 2. 鼠标向下移动 39 像素 (相对当前位置)
+                # 如果你是在Retina屏截图测量的39像素，可能需要根据缩放比例调整，这里默认按逻辑像素处理
+                pyautogui.move(0, 40)            
+                
+                time.sleep(0.8)                  # 间隔 0.5 秒
+                
+                # 3. 执行点击操作
+                pyautogui.click()                
+                
+                time.sleep(0.5)                  # 间隔 0.5 秒，防止操作过快
+                # ================= 新增逻辑结束 =================
+
             else:
                 time.sleep(1)
-    
-    if not found_asia_image and "us" in templates:
-        time.sleep(1)
-        location_us, shape_us = find_image_on_screen(templates["us"])
-        if location_us:
-            center_x = (location_us[0] + shape_us[1] // 2) // 2
-            center_y = (location_us[1] + shape_us[0] // 2) // 2
-            pyautogui.click(center_x, center_y)
 
     print("Waiting for second file download...")
     while count_files("bloomberg") < 2:

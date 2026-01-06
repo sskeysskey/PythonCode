@@ -2,17 +2,17 @@ import sys
 import os
 import json
 from datetime import datetime
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QTextEdit, QPushButton, QLabel, QFileDialog,
-    QSizePolicy, QDialog, QMessageBox, QGroupBox,
-    QCheckBox, QDialogButtonBox, QListWidget, QListWidgetItem,
-    QSplitter, QAbstractItemView, QRadioButton, QButtonGroup
+    QDialog, QMessageBox,
+    QCheckBox, QListWidget, QListWidgetItem,
+    QSplitter, QAbstractItemView
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSettings
-from PyQt5.QtGui import QTextDocument, QTextCursor, QKeySequence, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QTextDocument, QTextCursor, QKeySequence
 
-# ==================== 优化后的 Nord 主题 QSS ====================
+# ==================== Nord 主题 QSS (保持不变) ====================
 NORD_QSS = """
 QWidget {
     background-color: #2E3440;
@@ -31,7 +31,28 @@ QLineEdit, QTextEdit, QListWidget {
     selection-background-color: #4C566A;
 }
 
-QLineEdit:focus, QTextEdit:focus {
+/* 针对 Prompt 指令输入框的特殊样式 - 字体调大 */
+#prompt_input_field {
+    font-size: 16px; /* 在这里调整你想要的字体大小 */
+    line-height: 1.5;
+    padding: 8px;
+}
+
+QListWidget {
+    border: 1px solid #434C5E;
+    outline: none;
+}
+QListWidget::item {
+    padding: 8px;
+    border-bottom: 1px solid #2E3440;
+}
+QListWidget::item:selected {
+    background-color: #4C566A;
+    color: #ECEFF4;
+    border-radius: 2px;
+}
+
+QLineEdit:focus, QTextEdit:focus, QListWidget:focus {
     border: 1px solid #5E81AC;
 }
 
@@ -39,7 +60,7 @@ QPushButton {
     background-color: #434C5E;
     color: #ECEFF4;
     border: 1px solid #4C566A;
-    padding: 6px 10px;
+    padding: 6px 12px;
     border-radius: 4px;
 }
 
@@ -55,7 +76,9 @@ QPushButton#generateButton {
 QPushButton#deleteButton {
     color: #BF616A;
     font-weight: bold;
+    background-color: transparent;
 }
+QPushButton#deleteButton:hover { color: #D08770; }
 
 /* 优化：减小项目名称输入框的尺寸 */
 #project_name_input {
@@ -65,29 +88,32 @@ QPushButton#deleteButton {
     height: 25px;
 }
 
-QSplitter::handle { background-color: #2E3440; }
-QSplitter::handle:hover { background-color: #5E81AC; }
-"""
+/* 分割线设为极细且与背景同色 */
+QSplitter::handle { 
+    background-color: #2E3440; 
+}
+QSplitter::handle:horizontal { width: 1px; }
+QSplitter::handle:vertical { height: 1px; }
 
-# --- 辅助组件 ---
-class ElidedLabel(QLabel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._full_text = ""
-    def setText(self, text: str):
-        self._full_text = text
-        self.update()
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        fm = painter.fontMetrics()
-        elided = fm.elidedText(self._full_text, Qt.ElideLeft, self.width())
-        painter.drawText(self.rect(), self.alignment(), elided)
+/* 滚动条美化 */
+QScrollBar:vertical {
+    border: none;
+    background: #2E3440;
+    width: 10px;
+}
+QScrollBar::handle:vertical {
+    background: #4C566A;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+"""
 
 HISTORY_FILE = "/Users/yanzhang/Coding/python_code/Modules/Prompt_history.json"
 DEFAULT_FILE_SELECTION_PATH = "/Users/yanzhang/Coding"
 LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
 
-# --- 查找替换对话框 ---
+# --- 查找替换对话框 (PyQt6 适配版) ---
 class SearchReplaceDialog(QDialog):
     def __init__(self, target_text_edit, parent=None):
         super().__init__(parent)
@@ -118,12 +144,14 @@ class SearchReplaceDialog(QDialog):
         self.r_btn.setEnabled(has_txt and self.target_text_edit.textCursor().hasSelection())
 
     def find_next(self):
-        flags = QTextDocument.FindFlags()
-        if self.case_cb.isChecked(): flags |= QTextDocument.FindCaseSensitively
-        if self.word_cb.isChecked(): flags |= QTextDocument.FindWholeWords
+        # PyQt6: 使用完整的枚举路径
+        flags = QTextDocument.FindFlag(0)
+        if self.case_cb.isChecked(): flags |= QTextDocument.FindFlag.FindCaseSensitively
+        if self.word_cb.isChecked(): flags |= QTextDocument.FindFlag.FindWholeWords
+        
         res = self.target_text_edit.find(self.find_input.text(), flags)
         if not res:
-            self.target_text_edit.moveCursor(QTextCursor.Start)
+            self.target_text_edit.moveCursor(QTextCursor.MoveOperation.Start)
             res = self.target_text_edit.find(self.find_input.text(), flags)
         self._update_btns()
         return res
@@ -134,7 +162,7 @@ class SearchReplaceDialog(QDialog):
             self.find_next()
 
     def replace_all(self):
-        self.target_text_edit.moveCursor(QTextCursor.Start)
+        self.target_text_edit.moveCursor(QTextCursor.MoveOperation.Start)
         count = 0
         while self.find_next():
             self.target_text_edit.textCursor().insertText(self.replace_input.text())
@@ -146,10 +174,9 @@ class FileContentTextEdit(QTextEdit):
         super().__init__(parent)
         self.search_dialog = None
     def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Find):
+        if event.matches(QKeySequence.StandardKey.Find):
             if not self.search_dialog: self.search_dialog = SearchReplaceDialog(self, self.window())
-            self.search_dialog.show()
-            self.search_dialog.find_input.setFocus()
+            self.search_dialog.show(); self.search_dialog.find_input.setFocus()
         else: super().keyPressEvent(event)
 
 class FileBlockWidget(QWidget):
@@ -158,7 +185,7 @@ class FileBlockWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2) # 紧凑内边距
+        layout.setContentsMargins(2, 2, 2, 2)
         path_layout = QHBoxLayout()
         self.path_btn = QPushButton("☜"); self.path_btn.setFixedWidth(30)
         self.path_btn.clicked.connect(self.select_file)
@@ -190,6 +217,7 @@ class FileBlockWidget(QWidget):
     def load_data(self, path, content):
         self.path_input.setText(path); self.content_edit.setPlainText(content)
 
+# ==================== 恢复：带快捷键和自动关闭的输出对话框 ====================
 class OutputDialog(QDialog):
     def __init__(self, text, parent=None):
         super().__init__(parent)
@@ -198,38 +226,110 @@ class OutputDialog(QDialog):
         layout = QVBoxLayout(self)
         self.edit = QTextEdit(); self.edit.setPlainText(text); self.edit.setReadOnly(True)
         layout.addWidget(self.edit)
+        
         btns = QHBoxLayout()
-        copy = QPushButton("复制到剪贴板"); copy.clicked.connect(self.do_copy)
-        ok = QPushButton("确定"); ok.clicked.connect(self.accept)
-        btns.addWidget(copy); btns.addStretch(); btns.addWidget(ok)
+        # 快捷键 C 复制并关闭
+        self.copy_btn = QPushButton("复制到剪贴板 (C)")
+        self.copy_btn.setShortcut(QKeySequence("C"))
+        self.copy_btn.clicked.connect(self.do_copy)
+        
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(self.accept)
+        
+        btns.addWidget(self.copy_btn); btns.addStretch(); btns.addWidget(ok_btn)
         layout.addLayout(btns)
+
     def do_copy(self):
         QApplication.clipboard().setText(self.edit.toPlainText())
-        self.setWindowTitle("已复制！")
+        # 恢复：复制后自动关闭窗口
+        self.accept()
 
+# ==================== 历史记录对话框 (PyQt6 适配版) ====================
 class HistoryDialog(QDialog):
     record_selected = pyqtSignal(dict)
     def __init__(self, data, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("历史记录"); self.resize(800, 500)
-        self.data = data
-        layout = QHBoxLayout(self)
+        self.setWindowTitle("历史记录")
+        self.resize(900, 600)
+        self.data = data 
+        
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15) # 增加外边距
+        layout.setSpacing(10) # 增加组件间距
+
+        # PyQt6: Qt.Orientation.Horizontal
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setHandleWidth(1)
+        
         self.list = QListWidget()
-        for i, r in enumerate(reversed(data)):
-            item = QListWidgetItem(f"{r.get('id')} - {r.get('project_name')}")
-            item.setData(Qt.UserRole, len(data)-1-i); self.list.addItem(item)
-        self.prev = QTextEdit(); self.prev.setReadOnly(True)
-        split = QSplitter(Qt.Horizontal); split.addWidget(self.list); split.addWidget(self.prev)
-        layout.addWidget(split)
+        # PyQt6: QAbstractItemView.SelectionMode.ExtendedSelection
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._refresh_list()
+        
+        self.prev = QTextEdit()
+        self.prev.setReadOnly(True)
+        self.prev.setPlaceholderText("选择左侧记录以预览内容...")
+        
+        split.addWidget(self.list)
+        split.addWidget(self.prev)
+        split.setSizes([300, 600])
+        
+        layout.addWidget(split, 1) # 分割器占据主要空间
+
+        # 底部按钮区域
+        btn_layout = QHBoxLayout()
+        self.del_btn = QPushButton("删除选中记录")
+        self.del_btn.setObjectName("deleteButton")
+        self.del_btn.setFixedWidth(120)
+        
+        self.load_btn = QPushButton("加载选中记录")
+        self.load_btn.setFixedHeight(35)
+        self.load_btn.setFixedWidth(150)
+        
+        btn_layout.addWidget(self.del_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.load_btn)
+        
+        layout.addLayout(btn_layout)
+
+        # 信号连接
         self.list.currentItemChanged.connect(self.show_prev)
         self.list.itemDoubleClicked.connect(self.load)
-    def show_prev(self, curr):
+        self.load_btn.clicked.connect(self.load)
+        self.del_btn.clicked.connect(self.delete_records)
+
+    def _refresh_list(self):
+        self.list.clear()
+        for i, r in enumerate(reversed(self.data)):
+            item = QListWidgetItem(f"{r.get('id')} - {r.get('project_name')}")
+            # PyQt6: Qt.ItemDataRole.UserRole
+            item.setData(Qt.ItemDataRole.UserRole, len(self.data)-1-i)
+            self.list.addItem(item)
+
+    def show_prev(self, curr, prev_item):
         if curr:
-            r = self.data[curr.data(Qt.UserRole)]
-            self.prev.setPlainText(f"项目: {r['project_name']}\n\nPrompt:\n{r['final_prompt']}")
+            r = self.data[curr.data(Qt.ItemDataRole.UserRole)]
+            files_str = "\n".join([f"• {f.get('filename')}" for f in r.get('files', [])])
+            self.prev.setPlainText(f"项目: {r.get('project_name')}\n\n文件列表:\n{files_str}\n\nPrompt:\n{r.get('final_prompt')}")
+
+    def delete_records(self):
+        items = self.list.selectedItems()
+        if not items: return
+        if QMessageBox.question(self, "确认", f"确定删除这 {len(items)} 条历史记录吗？") == QMessageBox.StandardButton.Yes:
+            indices = sorted([it.data(Qt.ItemDataRole.UserRole) for it in items], reverse=True)
+            for idx in indices:
+                if 0 <= idx < len(self.data): del self.data[idx]
+            # 同步到文件
+            try:
+                with open(HISTORY_FILE, 'w') as f: json.dump(self.data, f, indent=4, ensure_ascii=False)
+            except: pass
+            self._refresh_list()
+            self.prev.clear()
+
     def load(self):
         if self.list.currentItem():
-            self.record_selected.emit(self.data[self.list.currentItem().data(Qt.UserRole)])
+            self.record_selected.emit(self.data[self.list.currentItem().data(Qt.ItemDataRole.UserRole)])
             self.accept()
 
 # ==================== 主窗口 ====================
@@ -239,21 +339,24 @@ class MainWindow(QWidget):
         self.file_blocks = []
         self.file_block_splitters = []
         self.init_ui()
-        self._restore_settings()
 
     def init_ui(self):
-        self.setWindowTitle("代码与Prompt整合工具")
-        self.resize(1400, 900)
+        self.setWindowTitle("代码与Prompt整合工具 (PyQt6)")
+        
+        # 这里的 resize 依然保留，作为窗口非最大化时的初始大小
+        self.resize(1600, 1000)
+        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5) # 减小窗口边距
 
-        self.main_splitter = QSplitter(Qt.Vertical)
+        # PyQt6: Qt.Orientation.Vertical
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.setHandleWidth(1)
 
-        # --- 优化：压缩后的顶部区域 ---
+        # --- 1. 顶部区域 ---
         top_widget = QWidget()
         top_layout = QHBoxLayout(top_widget)
-        top_layout.setContentsMargins(10, 2, 10, 2) # 极窄的上下边距
-        
+        top_layout.setContentsMargins(10, 5, 10, 5)
         fixed_label = QLabel("我有一个新开发的应用程序.")
         fixed_label.setStyleSheet("font-size: 14px; color: #88C0D0; font-weight: bold;")
         top_layout.addWidget(fixed_label)
@@ -269,7 +372,7 @@ class MainWindow(QWidget):
         top_widget.setFixedHeight(45) 
         self.main_splitter.addWidget(top_widget)
 
-        # --- 中部：文件块 ---
+        # --- 2. 中部：文件块区域 ---
         mid_widget = QWidget()
         mid_layout = QHBoxLayout(mid_widget)
         mid_layout.setContentsMargins(0, 0, 0, 0)
@@ -280,44 +383,49 @@ class MainWindow(QWidget):
         
         self.add_btn = QPushButton("+"); self.add_btn.setFixedSize(30, 30)
         self.add_btn.clicked.connect(self._add_block_and_select_file)
-        mid_layout.addWidget(self.add_btn, 0, Qt.AlignTop)
-        
+        # PyQt6: Qt.AlignmentFlag.AlignTop
+        mid_layout.addWidget(self.add_btn, 0, Qt.AlignmentFlag.AlignTop)
         for _ in range(3): self._add_file_block_widget(True)
         self.main_splitter.addWidget(mid_widget)
 
-        # --- 底部：Prompt ---
+        # --- 3. 底部：Prompt 指令输入区域 (修正：已添加到 splitter) ---
         bot_widget = QWidget()
         bot_layout = QVBoxLayout(bot_widget)
         bot_layout.setContentsMargins(5, 5, 5, 5)
         bot_layout.addWidget(QLabel("最终Prompt指令:"))
+        
         self.prompt_input = QTextEdit()
-        self.prompt_input.setObjectName("prompt_input")
+        self.prompt_input.setObjectName("prompt_input_field") # 设置 ObjectName 以便 QSS 识别
+        self.prompt_input.setPlaceholderText("在这里输入你的指令...")
         bot_layout.addWidget(self.prompt_input)
         
         btns = QHBoxLayout()
         self.hist_btn = QPushButton("历史记录"); self.hist_btn.clicked.connect(self.show_history)
-        self.gen_btn = QPushButton("生成最终文本"); self.gen_btn.setObjectName("generateButton")
+        self.gen_btn = QPushButton("生成最终文本并保存记录"); self.gen_btn.setObjectName("generateButton")
         self.gen_btn.setFixedHeight(35); self.gen_btn.clicked.connect(self.generate)
         btns.addWidget(self.hist_btn); btns.addStretch(); btns.addWidget(self.gen_btn)
         bot_layout.addLayout(btns)
         
+        # 将底部挂件添加到分割器
         self.main_splitter.addWidget(bot_widget)
-        
-        # 设置初始分配比例：顶部固定，中部和底部平分
+
+        # 强制设置初始分配比例：顶部固定，中部占70%，底部占30%
         self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 3)
-        self.main_splitter.setStretchFactor(2, 1)
+        self.main_splitter.setStretchFactor(1, 4)
+        self.main_splitter.setStretchFactor(2, 6)
         
         layout.addWidget(self.main_splitter)
         self.project_name_input.setFocus()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape: self.close()
+        # PyQt6: Qt.Key.Key_Escape
+        if event.key() == Qt.Key.Key_Escape: self.close()
         else: super().keyPressEvent(event)
 
     def _add_file_block_widget(self, add_ref=False, data=None):
         if not self.file_block_splitters or self.file_block_splitters[-1].count() >= 5:
-            s = QSplitter(Qt.Horizontal); self.container_layout.addWidget(s)
+            s = QSplitter(Qt.Orientation.Horizontal); self.container_layout.addWidget(s)
+            s.setHandleWidth(1)
             self.file_block_splitters.append(s)
         block = FileBlockWidget()
         block.delete_requested.connect(self._handle_delete)
@@ -337,7 +445,8 @@ class MainWindow(QWidget):
         if block in self.file_blocks: self.file_blocks.remove(block)
         p = block.parentWidget(); block.setParent(None); block.deleteLater()
         if isinstance(p, QSplitter) and p.count() == 0:
-            self.file_block_splitters.remove(p); p.deleteLater()
+            if p in self.file_block_splitters: self.file_block_splitters.remove(p)
+            p.deleteLater()
 
     def _add_block_and_select_file(self): self._add_file_block_widget(True).select_file()
 
@@ -361,43 +470,42 @@ class MainWindow(QWidget):
             try: 
                 with open(HISTORY_FILE, 'r') as f: history = json.load(f)
             except: history = []
-            history.append({"id": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "project_name": p_name, "files": rec_files, "final_prompt": self.prompt_input.toPlainText()})
-            with open(HISTORY_FILE, 'w') as f: json.dump(history[-50:], f, indent=4, ensure_ascii=False)
+            history.append({
+                "id": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                "project_name": p_name, 
+                "files": rec_files, 
+                "final_prompt": self.prompt_input.toPlainText()
+            })
+            with open(HISTORY_FILE, 'w') as f: json.dump(history, f, indent=4, ensure_ascii=False)
         except: pass
-
         output = [fixed_desc, f'\n\n"{p_name}"', "\n" + "\n".join(tree)] + contents + [f"\n\n{self.prompt_input.toPlainText()}"]
-        OutputDialog("".join(output), self).exec_()
+        # PyQt6: exec()
+        OutputDialog("".join(output), self).exec()
 
     def show_history(self):
         try:
+            if not os.path.exists(HISTORY_FILE): return
             with open(HISTORY_FILE, 'r') as f: data = json.load(f)
             if data:
                 d = HistoryDialog(data, self)
                 d.record_selected.connect(self.load_record)
-                d.exec_()
+                d.exec()
+            else: QMessageBox.information(self, "提示", "暂无历史记录")
         except: pass
 
     def load_record(self, data):
         self.project_name_input.setText(data.get("project_name", ""))
         self.prompt_input.setPlainText(data.get("final_prompt", ""))
+        # 清除现有块并重新加载
         for s in self.file_block_splitters: s.deleteLater()
         self.file_block_splitters.clear(); self.file_blocks.clear()
         for f in data.get("files", []): self._add_file_block_widget(True, f)
         while len(self.file_blocks) < 3: self._add_file_block_widget(True)
-
-    def _restore_settings(self):
-        s = QSettings("MyTools", "PromptApp")
-        if s.value("geo"): self.restoreGeometry(s.value("geo"))
-        if s.value("split"): self.main_splitter.restoreState(s.value("split"))
-
-    def closeEvent(self, event):
-        s = QSettings("MyTools", "PromptApp")
-        s.setValue("geo", self.saveGeometry()); s.setValue("split", self.main_splitter.saveState())
-        super().closeEvent(event)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyleSheet(NORD_QSS)
     win = MainWindow()
     win.show()
-    sys.exit(app.exec_())
+    # PyQt6: exec()
+    sys.exit(app.exec())
