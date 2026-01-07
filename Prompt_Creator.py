@@ -182,18 +182,29 @@ class FileContentTextEdit(QTextEdit):
 class FileBlockWidget(QWidget):
     delete_requested = pyqtSignal(QWidget)
     files_selected = pyqtSignal(list)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
+        
         path_layout = QHBoxLayout()
         self.path_btn = QPushButton("☜"); self.path_btn.setFixedWidth(30)
         self.path_btn.clicked.connect(self.select_file)
+        
         self.path_input = QLineEdit(); self.path_input.setPlaceholderText("路径...")
+        
+        # =========== 【恢复的功能：绑定编辑完成信号】 ============
+        # 当输入框失去焦点（例如点击了下方内容框）或按回车时，触发加载
+        self.path_input.editingFinished.connect(self.load_from_input)
+        # ======================================================
+
         self.del_btn = QPushButton("X"); self.del_btn.setObjectName("deleteButton"); self.del_btn.setFixedSize(24, 24)
         self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self))
+        
         path_layout.addWidget(self.path_btn); path_layout.addWidget(self.path_input); path_layout.addWidget(self.del_btn)
         layout.addLayout(path_layout)
+        
         self.content_edit = FileContentTextEdit()
         layout.addWidget(self.content_edit)
 
@@ -205,10 +216,13 @@ class FileBlockWidget(QWidget):
             self.files_selected.emit(f_paths)
 
     def populate_with_file(self, f_path):
+        # 统一将路径填入输入框（如果是手动输入的，这一步是重复的但无害）
         self.path_input.setText(f_path)
         try:
-            with open(f_path, 'r', encoding='utf-8') as f: self.content_edit.setPlainText(f.read())
-        except: self.content_edit.setPlaceholderText("无法读取或二进制文件")
+            with open(f_path, 'r', encoding='utf-8') as f: 
+                self.content_edit.setPlainText(f.read())
+        except: 
+            self.content_edit.setPlaceholderText("无法读取或二进制文件")
 
     def get_file_info(self):
         p = self.path_input.text().strip()
@@ -216,6 +230,17 @@ class FileBlockWidget(QWidget):
 
     def load_data(self, path, content):
         self.path_input.setText(path); self.content_edit.setPlainText(content)
+
+    # =========== 【恢复的功能：手动输入加载逻辑】 ============
+    def load_from_input(self):
+        p = self.path_input.text().strip()
+        # 处理某些系统复制路径可能带有的 file:// 前缀
+        if p.startswith("file://"):
+            p = p[7:]
+        
+        # 只有当路径存在且是文件时才加载，避免清空已有的手动编辑内容
+        if p and os.path.exists(p) and os.path.isfile(p):
+            self.populate_with_file(p)
 
 # ==================== 恢复：带快捷键和自动关闭的输出对话框 ====================
 class OutputDialog(QDialog):
