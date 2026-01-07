@@ -244,18 +244,26 @@ on NewsOperation(methodType, poeMode, methodType2)
 					end if
 					
 				else
-					-- >>>>> 分支 2: 关闭了英文总结 (省钱模式) <<<<<
+					-- >>>>> 分支 2: 关闭了英文总结 (新模式：直接输出原文) <<<<<
 					
-					-- 既然中文已经成功，且用户不需要英文，那么本次任务算作圆满成功
+					-- 【新增逻辑开始】
+					-- 既然不使用 API 总结英文，我们将之前保存的 cleaned 原文 (rawArticleContent) 放回剪贴板
+					set the clipboard to rawArticleContent
+					delay 0.2
+					
+					-- 直接调用现有的 Python 脚本，它会将剪贴板内容（此时是原文）追加到 TXT 文件中
+					-- 这样格式和位置与 AI 总结的版本完全一致
+					my runPythonScript("Append_English_News.py", {}) 
+					-- 【新增逻辑结束】
+
 					set consecutiveErrors to 0 -- 重置计数器
 					
-					-- 直接关闭标签页
+					-- 关闭标签页
 					tell application "Google Chrome"
 						close active tab of front window
 					end tell
 					delay 0.5
 					
-					-- log "已跳过英文总结，仅处理中文"
 				end if
 				
 			else
@@ -271,6 +279,10 @@ on NewsOperation(methodType, poeMode, methodType2)
 			end if
 			
 		else if currentTabURL contains "cn.wsj.com" then
+			-- 【新增】在此处添加滚屏代码
+			my Scroll(2)
+			delay 0.5
+
 			my Operation()
 			my runPythonScript("Article_Copier.py", {currentTabURL})
 			set myMessage to "等待下载图片...."

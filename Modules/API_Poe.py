@@ -135,7 +135,7 @@ class ResponseWindow(QMainWindow):
         """启动API请求"""
         try:
             client = openai.OpenAI(
-                api_key="F9SywF8ZA8B3Ju-1Swd7ooD3uMLSlc6EjBU3nP8IDmM",
+                api_key="pjn9pS-BMSBpXmZYs3OoH2gqWw11SxttCm9E47J07SE",
                 base_url="https://api.poe.com/v1"
             )
             
