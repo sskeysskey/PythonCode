@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import subprocess
 
 # 确保当前目录在 Python 搜索路径中，以便能找到同目录下的其他 py 文件
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,6 +45,17 @@ def run_task(module_name, module_obj):
     # 任务之间稍作停顿，让系统资源缓冲一下
     time.sleep(2)
 
+def activate_terminal():
+    """将终端窗口置于前台"""
+    script = '''
+    delay 0.5
+    tell application "Terminal"
+        activate
+    end tell
+    '''
+    # 运行AppleScript
+    subprocess.run(['osascript', '-e', script])
+
 def main():
     total_start = time.time()
     print(f"🕒 开始全量更新任务，当前时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -57,7 +69,9 @@ def main():
         print(f"❌ 第一阶段 (JavaScript News) 执行失败: {e}")
         # 即使第一阶段失败，也继续尝试第二阶段
     
-    time.sleep(3) # 阶段切换缓冲
+    time.sleep(2) # 阶段切换缓冲
+    activate_terminal()
+    time.sleep(1)
 
     # ================= 第二阶段：Selenium Headless 抓取 =================
     # 包括: WSJ(CN), Economist, TechReview, Nikkei, WaPo, NYTimes

@@ -161,7 +161,9 @@ def main():
 
             # --- 步骤 C: 逻辑过滤 (纯 Python 处理) ---
             # 定义排除关键字
-            exclude_keywords = ['podcasts', 'sports', '/music/', 'weather', '/books/', 'food']
+            exclude_keywords = ['podcasts', 'sports', '/music/', 'weather', '/books/',
+                                'food', '/advice/', '/tv/', '/entertainment/',
+                                '/national-security/', '/opinions/']
 
             for href, title_text in raw_data_list:
                 # 1. 关键字过滤
