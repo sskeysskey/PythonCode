@@ -225,39 +225,43 @@ def main() -> None:
     # 拼接最终内容
     clipboard_content = get_clipboard_content()
     if clipboard_content:
+        # =========== 修改 1：全局去除 # 和 * ===========
+        # 放在最前面，确保后续的逻辑（如 splitlines）处理的是干净的文本
+        clipboard_content = clipboard_content.replace('#', '').replace('*', '')
+
         # 将内容按行分割，方便处理第一行
         lines = clipboard_content.splitlines()
+        
         if lines:  # 确保内容不为空
-            first_line = lines[0]
+            first_line = lines[0].strip() # 加上 strip() 更加保险，防止开头有不可见空格影响判断
 
-        # 新增：处理只包含"以下是...总结："的情况
-        if first_line.startswith("以下") and "总结：" in first_line:
-            # 将第一行之后的内容重新组合成新的剪贴板内容
-            clipboard_content = "\n".join(lines[1:]).lstrip()
-            
-        # 规则2和3：如果第一段包含"以下"和"翻译"或"全译"，则删除整个第一段
-        elif "以下" in first_line and ("翻译" in first_line or "全译" in first_line):
-            # 将第一行之后的内容重新组合成新的剪贴板内容
-            clipboard_content = "\n".join(lines[1:]).lstrip()
+            # =========== 修改 2：简化第一段删除逻辑 ===========
+            # 只要第一段以 "以下" 开头，直接删除整个第一段
+            if first_line.startswith(("以下", "这是", "这篇")):
+                # 将第一行之后的内容重新组合成新的剪贴板内容
+                clipboard_content = "\n".join(lines[1:]).lstrip()
 
-        # 规则1 (优化版): 如果第一段包含"总结"或"以下"等引导词，则尝试清理引导句
-        # 这个更通用的正则表达式会匹配从句末标点（。或，）开始，
-        # 包含“总结”、“以下”、“方面”、“几点”等关键词，直到最后冒号的整个部分。
-        # 这样可以更灵活地处理像“我将从以下几个方面进行总结：”这样的句子。
-        elif any(keyword in first_line for keyword in ["总结", "以下", "方面", "几点"]):
-            # 正则表达式解释:
-            # [，。]       - 匹配一个中文逗号或句号
-            # \s*         - 匹配0个或多个空白符
-            # .*?         - 非贪婪匹配任意字符，允许"我将从"这样的前缀
-            # (?:总结|以下|方面|几点) - 匹配核心关键词之一
-            # .*?         - 非贪婪匹配任意字符，允许"进行阐述"这样的后缀
-            # [:：]        - 匹配中英文冒号
-            modified_first_line = re.sub(r'[，。]\s*.*?(?:总结|以下|方面|几点).*?[:：]', '：', first_line, count=1)
+            # --- 下面保留你原有的其他补充逻辑 (作为 elif) ---
             
-            # 仅在正则表达式成功匹配并作出改变时才更新内容
-            if modified_first_line != first_line:
-                lines[0] = modified_first_line
-                clipboard_content = "\n".join(lines)
+            # 原规则：如果第一段包含"以下"且包含"翻译/全译"（处理"以下"不在开头但在句中的情况）
+            elif "以下" in first_line and ("翻译" in first_line or "全译" in first_line):
+                clipboard_content = "\n".join(lines[1:]).lstrip()
+
+            # 原规则：正则清理引导句（处理 "我将从以下几个方面..." 这种开头不为"以下"的情况）
+            elif any(keyword in first_line for keyword in ["总结", "以下", "方面", "几点"]):
+                # 正则表达式解释:
+                # [，。]       - 匹配一个中文逗号或句号
+                # \s*         - 匹配0个或多个空白符
+                # .*?         - 非贪婪匹配任意字符
+                # (?:总结|以下|方面|几点) - 匹配核心关键词之一
+                # .*?         - 非贪婪匹配任意字符
+                # [:：]        - 匹配中英文冒号
+                modified_first_line = re.sub(r'[，。]\s*.*?(?:总结|以下|方面|几点).*?[:：]', '：', first_line, count=1)
+                
+                # 仅在正则表达式成功匹配并作出改变时才更新内容
+                if modified_first_line != first_line:
+                    lines[0] = modified_first_line
+                    clipboard_content = "\n".join(lines)
 
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)

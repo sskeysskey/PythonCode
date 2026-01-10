@@ -901,7 +901,12 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
                 # 数据清洗
                 nu = normalize_url(original_url)
                 title_decoded = html.unescape(title_raw)
-                topic = re.sub(r'^[0-9０-９]+[、,，]\s*', '', title_decoded)
+                
+                # --- 修改点：移除 title_decoded 中间的所有换行和空格 ---
+                title_decoded = re.sub(r'\s+', '', title_decoded)
+                
+                # 移除开头的数字序号
+                topic = re.sub(r'^[0-9０-９]+[、,，.]\s*', '', title_decoded)
                 
                 # 存入 map
                 cnh_map[nu] = (site, topic, original_url, topic_eng)
