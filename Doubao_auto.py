@@ -3,6 +3,7 @@ import cv2
 import time
 import pyautogui
 import numpy as np
+import sys  # <--- 1. 确保引入 sys
 from PIL import ImageGrab
 from time import sleep
 
@@ -40,7 +41,7 @@ def main():
         templates[key] = template
 
     found = False
-    timeout_duration = 30  # 设置30秒超时
+    timeout_duration = 60  # 设置30秒超时
     timeout_stop = time.time() + timeout_duration
     
     print("开始监控豆包复制按钮...")
@@ -51,21 +52,25 @@ def main():
         
         if location:
             found = True
-            # 计算点击坐标 (针对 Retina 屏通常需要除以 2)
-            # location 是像素坐标，pyautogui 需要的是点坐标
-            center_x = (location[0] + shape[1] // 2) // 2
-            center_y = (location[1] + shape[0] // 2) // 2
-            
-            pyautogui.click(center_x, center_y)
-            print(f"找到并点击图片位置: {center_x}, {center_y}")
-            sleep(1) # 点击后稍作停顿，确保剪贴板刷新
+            sleep(3)
+            location, shape = find_image_on_screen(templates["doubaocopy"])
+            if location:
+                # 计算点击坐标 (针对 Retina 屏通常需要除以 2)
+                # location 是像素坐标，pyautogui 需要的是点坐标
+                center_x = (location[0] + shape[1] // 2) // 2
+                center_y = (location[1] + shape[0] // 2) // 2
+                
+                pyautogui.click(center_x, center_y)
+                print(f"找到并点击图片位置: {center_x}, {center_y}")
+                sleep(1) # 点击后稍作停顿，确保剪贴板刷新
         else:
             print("未找到复制按钮，尝试向下滚动...")
             pyautogui.scroll(-80)
             sleep(1)
 
     if not found:
-        print("在60秒内未找到图片，退出程序。")
+        print("错误：在超时时间内未找到复制按钮。") 
+        sys.exit(1)  # <--- 2. 核心修改：找不到图片时，强制返回错误码 1
         
 if __name__ == '__main__':
     main()

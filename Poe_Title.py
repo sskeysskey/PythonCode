@@ -80,6 +80,22 @@ def remove_empty_lines(text):
     """移除文本中的空行."""
     return '\n'.join(line for line in text.splitlines() if line.strip())
 
+# --- [新增功能] 过滤非数字开头的行 ---
+def filter_lines_starting_with_digit(text):
+    """
+    只保留以数字开头的行。
+    例如：
+    "1. Hello" -> 保留
+    "2023年..." -> 保留
+    "这是标题" -> 删除
+    """
+    filtered_lines = []
+    for line in text.splitlines():
+        # strip() 去除首尾空格，re.match(r'^\d') 匹配开头是否为数字
+        if line.strip() and re.match(r'^\d', line.strip()):
+            filtered_lines.append(line)
+    return '\n'.join(filtered_lines)
+
 def main():
     directory = "/tmp/"
     file_path = '/Users/yanzhang/Coding/News/today_chn.txt'
@@ -87,12 +103,29 @@ def main():
     try:
         # 获取剪贴板内容并计算非空行数
         clipboard_content = pyperclip.paste()
-        # 先处理多空行情况
+
+        # --- 新增防御逻辑开始 ---
+        # 如果剪贴板里包含发送给 AI 的标签 <document> 或者 prompt 里的关键词
+        # 说明没有成功复制到翻译结果，直接报错，触发重试
+        if "<document>" in clipboard_content or "只输出翻译内容" in clipboard_content:
+            print("错误：检测到剪贴板内容仍为输入提示词，未获取到有效翻译！")
+            sys.exit(1) # 强制报错
+        # --- 新增防御逻辑结束 ---
+
+        # 1. 先处理多空行/格式整理 (保留你原有的逻辑)
         clipboard_content = process_content_with_empty_lines(clipboard_content)
+
+        # 2. >>> [关键修改点] 执行过滤：只保留以数字开头的行 <<<
+        # 这一步会把非数字开头的“杂质”行清除
+        clipboard_content = filter_lines_starting_with_digit(clipboard_content)
+        
+        # 3. 计算非空行数 (此时内容已经是过滤干净的了)
         clipboard_lines = count_non_empty_lines(clipboard_content)
         
+        print(f"处理后剪贴板行数: {clipboard_lines}") # 方便调试查看
+
         if clipboard_lines == 0:
-            print("剪贴板为空或内容无效。")
+            print("剪贴板为空或内容无效（没有以数字开头的行）。")
             return
         
         # 查找最小数字的 segment 文件
@@ -104,14 +137,15 @@ def main():
                 file_content = f.read()
             file_lines = count_non_empty_lines(file_content)
             
-            # 比较行数
+            # 4. 比较行数
             if clipboard_lines != file_lines:
                 # 如果不同，创建 diff.txt
                 diff_file = os.path.join(directory, 'diff.txt')
                 with open(diff_file, 'w', encoding='utf-8') as diff:
                     diff.write(f"剪贴板行数: {clipboard_lines}\n文件行数: {file_lines}\n")
-                print(f"行数不同。已创建 {diff_file}")
+                print(f"行数不同 (剪贴板:{clipboard_lines} vs 文件:{file_lines})。已创建 {diff_file}")
             else:
+                # 写入的是经过过滤的内容
                 NewsTitle_File(clipboard_content, file_path)
                 rename_first_segment_file(directory)
                 print("行数相同。程序执行完毕。")

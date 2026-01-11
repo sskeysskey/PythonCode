@@ -1,95 +1,266 @@
--- ==================================================
--- Trans_Selection_Doubao.scpt
--- 移植版：划词/选中文本 -> Doubao 网页版翻译 -> 结果存入剪贴板
--- ==================================================
-
 -- 定义基础文件路径
 property pythonPath : "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
-property scriptFolder : "/Users/yanzhang/Coding/python_code/Modules/"
--- 注意：这里假设 screenshot.py 和 Doubao_auto.py 都在 scriptFolder 或者其父目录下
--- 根据你之前的脚本，screenshot.py 似乎在 "/Users/yanzhang/Coding/python_code/"
--- 为了兼容，我们定义一个 rootScriptFolder
-property rootScriptFolder : "/Users/yanzhang/Coding/python_code/"
+property scriptFolder : "/Users/yanzhang/Coding/python_code/"
 
--- 获取当前激活应用的名称
+-- ==================================================
+-- <<<< 定义全局连续错误计数器
+-- ==================================================
+property consecutiveErrors : 0
+
+-- ==================================================
+-- <<<< 脚本启动时重置计数器
+-- ==================================================
+set consecutiveErrors to 0
+
+-- 设置文件夹路径
+set downloadsFolder to "/private/tmp/"
+set segmentFileName to "segment_"
+set doneFileName to "done_"
+set newsFilePath to "/Users/yanzhang/Coding/News/today_chn.txt"
+
+-- 检查Segments文件夹中是否存在包含"segment"的txt文件
 tell application "System Events"
-	set activeApp to name of first application process whose frontmost is true
+	set segmentFileExists to false
+	set filesList to files of folder downloadsFolder whose name contains segmentFileName and name extension is "txt"
+	if (count of filesList) > 0 then
+		set segmentFileExists to true
+	end if
 end tell
 
--- 根据应用名称执行不同的代码
-if activeApp is "Google Chrome" then
-	-- 当前激活程序是 Google Chrome
-	tell application "Google Chrome"
-		try
-			set currentTab to active tab of window 1
-			set theScript to "window.getSelection().toString()"
-			set selectedText to execute currentTab javascript theScript
-		on error
-			set selectedText to ""
-		end try
-	end tell
-	
-	if selectedText is not "" then
-		set the clipboard to selectedText
-		my Format()
-		my TransDoubao()
-	else
-		-- 如果 JS 获取失败，尝试格式化剪贴板现有内容（或你可以恢复之前的 popup 逻辑）
-		my Format()
-		my TransDoubao()
+tell application "System Events"
+	set doneFileExists to false
+	set filesList to files of folder downloadsFolder whose name contains doneFileName and name extension is "txt"
+	if (count of filesList) > 0 then
+		set doneFileExists to true
 	end if
+end tell
+
+-- 检查今天的新闻文件是否存在
+tell application "System Events"
+	set newsFileExists to false
+	if exists file newsFilePath then
+		set newsFileExists to true
+	end if
+end tell
+
+if segmentFileExists then
+	delay 0.1
 else
-	-- 当前激活程序不是 Google Chrome
-	-- 保存当前剪贴板内容
-	set originalClipboard to the clipboard
-	
-	-- 执行复制操作 (Cmd+C)
-	tell application "System Events"
-		keystroke "c" using {command down}
-	end tell
-	delay 0.5
-	
-	-- 获取新的剪贴板内容
-	set newClipboard to the clipboard
-	
-	-- 比较剪贴板内容
-	if newClipboard is equal to originalClipboard then
-		-- 剪贴板内容相同（可能没选中文字），直接处理当前剪贴板
-		my Format()
-		my TransDoubao()
+	if doneFileExists then
+		if newsFileExists then
+			delay 0.1
+		else
+			set pythonScriptPath to "/Users/yanzhang/Coding/python_code/Selenium_News/Title_Read.py"
+			-- 执行 Python 脚本并检查结果
+			set pythonResult to ""
+			try
+				set pythonResult to do shell script "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath
+			on error errMsg number errNum
+				display dialog "Python 脚本执行时发生错误：" & return & return & errMsg & return & "(错误码: " & errNum & ")" with title "脚本错误" buttons {"终止"} default button "终止"
+				error number -128
+			end try
+			
+			if pythonResult contains "USE_FALLBACK_AND_TERMINATE" then
+				display dialog "未找到 today_eng.html，但检测到备用文件 today_wsjcn.html，可直接使用。" & return & return & "脚本将按要求终止。" with title "文件提示" buttons {"好的"} default button "好的"
+				error "脚本根据指令正常终止。" number -128
+			end if
+		end if
 	else
-		-- 剪贴板内容不同（复制成功），处理新内容
-		my Format()
-		my TransDoubao()
+		set pythonScriptPath to "/Users/yanzhang/Coding/python_code/Selenium_News/Title_Read.py"
+		-- 执行 Python 脚本并检查结果
+		set pythonResult to ""
+		try
+			set pythonResult to do shell script "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath
+		on error errMsg number errNum
+			display dialog "Python 脚本执行时发生错误：" & return & return & errMsg & return & "(错误码: " & errNum & ")" with title "脚本错误" buttons {"终止"} default button "终止"
+			error number -128
+		end try
+		
+		if pythonResult contains "USE_FALLBACK_AND_TERMINATE" then
+			display dialog "未找到 today_eng.html，但检测到备用文件 today_wsjcn.html，可直接使用。" & return & return & "脚本将按要求终止。" with title "文件提示" buttons {"好的"} default button "好的"
+			error "脚本根据指令正常终止。" number -128
+		end if
 	end if
 end if
 
--- ===================================================================
--- 核心处理函数
--- ===================================================================
+repeat
+	set folderPath to "/tmp/"
+	set fileIndex to 1
+	set fileFound to false
+	
+	tell application "System Events"
+		repeat until fileFound or fileIndex > 15
+			set posixFilePath to folderPath & "segment_" & fileIndex & ".txt"
+			if exists file posixFilePath then
+				set fileFound to true
+				exit repeat
+			else
+				set fileIndex to fileIndex + 1
+			end if
+		end repeat
+		
+		if fileFound then
+			set loopCount to 0
+			set maxLoops to 3
+			repeat while loopCount < maxLoops
+				set appleScriptFilePath to POSIX file posixFilePath as alias
+				tell application "TextEdit"
+					open appleScriptFilePath
+					activate
+					delay 0.2
+					-- 模拟全选 Command + A
+					tell application "System Events"
+						key code 0 using command down
+						delay 0.5
+						keystroke "c" using command down
+						delay 0.5
+						-- Command + Q
+						key code 12 using command down
+						delay 0.5
+					end tell
+				end tell
+				
+				-- ==================================================
+				-- 步骤 1: 准备 Prompt
+				-- ==================================================
+				set finalMethodType to "---按照数字标号逐行翻译成精准地道的简体中文，保持行数不变，记住：只输出翻译内容，其他什么都不要说。"
+				
+				-- 获取当前剪贴板的内容
+				set clipboardContent to the clipboard
+				
+				-- 在内容前后添加指定的标签 (参考 Doubao 脚本的格式，或者保持原有的 document 格式)
+				-- 这里采用直接拼接的方式，确保 Doubao 能理解
+				set newContent to "<document>" & clipboardContent & "</document>"
+				set finalInput to newContent & finalMethodType
+				set the clipboard to finalInput
 
-on Format()
-	-- 这里保留你原脚本的提示词
-	set appendText to return & return & "——将以上内容完整翻译成地道的中文"
-	set clipboardContent to the clipboard
-	set clipboardContent to my trimWhitespace(clipboardContent)
-	set newContent to clipboardContent & appendText
-	set the clipboard to newContent
-end Format
+				set successFlag to false -- 1. 设置一个成功标志位
+				
+				-- ==================================================
+				-- 步骤 2: 调用 Doubao 进行自动化处理
+				-- ==================================================
+				try
+					-- 2.1 激活 Doubao 标签页并发送
+					my doubao()
+					
+					do shell script "/opt/homebrew/bin/cliclick m:852,854"
+					
+					-- 2.3 等待生成 (标题通常较短，5-8秒应该足够，根据网络调整)
+					delay 6
+					-- 如果按照第一步修改了 py 文件，这里找不到图片会报错，跳到 on error
+					-- 2.4 运行 Doubao_auto.py 提取网页上的回答到剪贴板
+					my runPythonScript("Doubao_auto.py", {})
+					
+					-- ==================================================
+					-- 步骤 3: 处理提取到的结果
+					-- ==================================================
+					
+					-- 只要脚本没报错，就认为成功，重置错误计数
+					set consecutiveErrors to 0
+					
+					-- 运行 Poe_Title.py 对剪贴板中的翻译结果进行清洗/保存
+					-- 如果按照第二步修改了 py 文件，这里发现内容不对也会报错
+					my runPythonScript("Poe_Title.py", {})
+					
+					-- 如果能走到这里，说明 Python 脚本都执行成功了
+                    set successFlag to true -- 标记成功
+				on error errMsg
+					-- 自动化过程出错
+					set consecutiveErrors to consecutiveErrors + 1
+					log "Doubao 自动化失败 (" & errMsg & ")。当前连续错误次数: " & consecutiveErrors
+					
+					if consecutiveErrors is greater than or equal to 5 then
+						display dialog "⚠️ 警告：Doubao 自动化已连续报错 5 次。" & return & return & "程序将强制终止。" buttons {"终止"} default button "终止" with icon stop
+						error "API/自动化连续报错达到上限，程序强制终止。" number -128
+					end if
+					-- 出错后，强制刷新一下网页或者等待更久，为下一次重试做准备
+                    delay 2
+				end try
+				
+				delay 0.1
+				
+				
+				-- 逻辑修改：只有在 successFlag 为 true 时，才去检查 diff.txt 决定是否退出
+                if successFlag is true then
+                    -- 检查 diff.txt
+                    set targetFile to "/tmp/diff.txt"
+                    if exists file targetFile then
+                        try
+                            delete file targetFile
+                            set loopCount to loopCount + 1
+                            log "行数不匹配 (diff.txt)，重试。循环次数：" & loopCount
+                        on error
+                             -- 删除失败忽略
+                        end try
+                    else
+                        log "执行成功且无 diff 文件。退出内部循环。"
+                        exit repeat -- 只有成功且没有行数差异时，才退出循环，处理下一个文件
+                    end if
+                else
+                    -- 如果 successFlag 是 false (即 Python 报错了)
+                    set loopCount to loopCount + 1
+                    log "Python 脚本报错，触发重试。循环次数：" & loopCount
+                end if
+				
+				-- 在每次迭代结束时检查循环计数
+				if loopCount ≥ maxLoops then
+					log "达到最大循环次数。退出内部循环。"
+					exit repeat
+				end if
+			end repeat
+			
+			-- 处理完当前segment文件后，将其重命名为done文件
+			try
+				set oldName to name of file posixFilePath
+				set newName to "done_" & text 9 thru -1 of oldName -- 假设 "segment_" 总是前8个字符
+				set newPath to (container of file posixFilePath as text) & newName
+				
+				tell application "Finder"
+					set name of file posixFilePath to newName
+				end tell
+				log "已处理并重命名文件：" & posixFilePath & " 到 " & newPath
+			on error errMsg
+				log "重命名文件 " & posixFilePath & " 时出错：" & errMsg
+			end try
+		else
+			-- 所有分段文件处理完毕，进行写入
+			my runPythonScript("Selenium_News/Title_Write.py", {})
+			exit repeat
+		end if
+	end tell
+end repeat
 
-on TransDoubao()
+-- ==================================================
+-- 以下为新增/移植的 Handler 函数
+-- ==================================================
+
+on runPythonScript(scriptName, args)
+	set scriptPath to scriptFolder & scriptName
+	set argString to ""
+	repeat with arg in args
+		set argString to argString & " " & quoted form of arg
+	end repeat
+	set pythonResult to do shell script pythonPath & " " & quoted form of scriptPath & argString
+	delay 0.5
+	return pythonResult
+end runPythonScript
+
+on doubao()
 	set foundMapsTab to false
 	set mapsTabIndex to 0
-	
-	-- 1. 寻找或打开 Doubao
 	tell application "Google Chrome"
 		set windowList to every window
+		
+		-- 遍历每一个窗口
 		repeat with aWindow in windowList
 			set tabList to every tab of aWindow
 			set tabIndex to 0
+			
+			-- 遍历每一个标签页
 			repeat with aTab in tabList
 				set tabIndex to tabIndex + 1
 				set tabURL to URL of aTab
+				
 				if tabURL contains "doubao.com" then
 					set foundMapsTab to true
 					set mapsTabIndex to tabIndex
@@ -98,14 +269,16 @@ on TransDoubao()
 					exit repeat
 				end if
 			end repeat
-			if foundMapsTab then exit repeat
+			
+			if foundMapsTab then
+				exit repeat
+			end if
 		end repeat
 	end tell
 	
-	-- 2. 导航到聊天界面
 	if foundMapsTab then
 		tell application "System Events"
-			key code 37 using command down -- ⌘L
+			key code 37 using command down -- L键: 定位地址栏
 			delay 0.2
 			keystroke "doubao.com/chat/"
 			delay 0.5
@@ -116,6 +289,7 @@ on TransDoubao()
 			activate
 			delay 0.5
 		end tell
+		
 		tell application "System Events"
 			keystroke "t" using command down
 			delay 0.5
@@ -125,88 +299,41 @@ on TransDoubao()
 		end tell
 	end if
 	
-	-- 激活 Chrome 窗口
-	tell application "Google Chrome" to activate
-	delay 0.5
-	
-	-- 点击页面空白处确保焦点
 	do shell script "/opt/homebrew/bin/cliclick m:852,854"
 	
-	-- 3. 截图校验页面加载
-	-- 注意：这里路径指向 rootScriptFolder (python_code/) 而不是 Modules/
-	set pythonScriptPath to rootScriptFolder & "screenshot.py"
-	
-	-- 校验 doubao_share.png
+	-- 截图校验逻辑（保留原逻辑，如果你不需要截图校验可以注释掉）
+	set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
 	set imageName to "doubao_share.png"
 	set clickValue to "false"
 	set Opposite to "true"
-	set commandString to pythonPath & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+	
+	set commandString to "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
 	do shell script commandString
 	delay 0.5
 	
-	-- 校验 doubao_launch.png 并点击输入框
+	-- 截图校验逻辑（保留原逻辑，如果你不需要截图校验可以注释掉）
+	set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
 	set imageName to "doubao_launch.png"
 	set clickValue to "true"
 	set Opposite to "false"
 	set x_offset to "0"
 	set y_offset to "-47"
-	set commandString to pythonPath & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " " & x_offset & " " & y_offset
+	
+	set commandString to "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " " & x_offset & " " & y_offset
 	do shell script commandString
 	delay 0.5
 	
-	-- 4. 提交内容 (剪贴板此时已经是 Format 过的 "原文+提示词")
 	my Submit()
-	
-	-- 5. 等待生成并复制结果
-	do shell script "/opt/homebrew/bin/cliclick m:852,854"
-	delay 2
-	
-	-- 使用 Doubao_auto.py 等待生成结束并复制
-	-- 注意：Doubao_auto.py 应该也在 rootScriptFolder
-	my runPythonScript("Doubao_auto.py", {})
-	
-	-- 6. 通知用户完成
-	display notification "翻译内容已复制到剪贴板" with title "Doubao 翻译完成"
-	
-end TransDoubao
+end doubao
 
 on Submit()
 	-- 粘贴 + 回车
 	tell application "System Events"
 		keystroke "v" using {command down}
-		delay 0.5
-		key code 36 -- ↩︎
+		delay 0.1
+		key code 36 -- Enter
 	end tell
 	
-	-- 移动鼠标防止遮挡
+	-- 模拟点击发送按钮位置（请确保坐标适合你的屏幕）
 	do shell script "/opt/homebrew/bin/cliclick m:740,616"
 end Submit
-
-on trimWhitespace(theText)
-	-- 清理文本前后的空白字符
-	repeat while theText begins with space or theText begins with return or theText begins with tab
-		set theText to text 2 thru -1 of theText
-	end repeat
-	repeat while theText ends with space or theText ends with return or theText ends with tab
-		set theText to text 1 thru -2 of theText
-	end repeat
-	return theText
-end trimWhitespace
-
--- 辅助函数：运行 Python 脚本
-on runPythonScript(scriptName, args)
-	-- 这里的 scriptName 假设是在 rootScriptFolder 下
-	set scriptPath to rootScriptFolder & scriptName
-	set argString to ""
-	repeat with arg in args
-		set argString to argString & " " & quoted form of arg
-	end repeat
-	
-	try
-		set pythonResult to do shell script pythonPath & " " & quoted form of scriptPath & argString
-		delay 0.5
-		return pythonResult
-	on error errMsg number errNum
-		error "Python 脚本 " & scriptName & " 执行失败：" & errMsg number errNum
-	end try
-end runPythonScript

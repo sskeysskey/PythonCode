@@ -1,4 +1,5 @@
 import os
+import re  # <--- 新增这一行
 import time
 import pyautogui
 import pyperclip
@@ -175,6 +176,11 @@ try:
             # 获取对应的中文翻译
             chn_text = translated_texts[i]
             
+            # --- 新增：使用正则去除行首的 "数字+、" ---
+            # 匹配逻辑：开头(^) + 数字(\d+) + 顿号(、) + 可能存在的空格(\s*)
+            chn_text = re.sub(r'^\d+[、.。\s：:\)）]+\s*', '', chn_text)
+            # -------------------------------------
+
             # 替换链接文本为中文
             link.string = chn_text
             
