@@ -7,16 +7,35 @@ import shutil
 import glob
 import subprocess
 import sys
+import tempfile # <--- 新增
 from datetime import datetime
 from time import sleep
 
-# 常量定义
-TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
-HTML_DIRECTORY = '/Users/yanzhang/Coding/Website/news'
-# SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
-SEGMENT_FILE_PATH = '/tmp/segment.txt'
-SITE_FILE_PATH = '/tmp/site.txt'
-RATIO_FILE_PATH = '/tmp/english_ratio_result.txt'
+# ================= 配置区域 (跨平台修改) =================
+
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义基础 Coding 目录
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 具体业务路径
+TXT_DIRECTORY = os.path.join(BASE_CODING_DIR, "News")
+HTML_DIRECTORY = os.path.join(BASE_CODING_DIR, "Website", "news")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 4. 临时文件路径 (混合策略)
+# Windows 下使用系统临时目录，Mac 下保持 /tmp 以兼容可能的外部 AppleScript
+if os.name == 'nt':
+    TEMP_DIR = tempfile.gettempdir()
+else:
+    TEMP_DIR = "/tmp"
+
+SEGMENT_FILE_PATH = os.path.join(TEMP_DIR, 'segment.txt')
+SITE_FILE_PATH = os.path.join(TEMP_DIR, 'site.txt')
+RATIO_FILE_PATH = os.path.join(TEMP_DIR, 'english_ratio_result.txt')
+
+# ========================================================
 
 SEGMENT_TO_HTML_FILE = {
     "technologyreview": "technologyreview.html",
@@ -56,6 +75,7 @@ def check_english_ratio() -> bool:
     
     english_ratio = english_chars / total_chars
     
+    # 使用动态路径写入结果
     with open(RATIO_FILE_PATH, 'w') as f:
         f.write('true' if english_ratio > 0.5 else 'false')
     
@@ -64,7 +84,7 @@ def check_english_ratio() -> bool:
 def get_clipboard_content() -> str:
     """
     获取剪贴板内容，去除空白行。
-    如果行数小于 3，直接返回原内容，否则去掉第一行和最后一行后再返回。
+    如果行数小于 3，直接返回原内容，否则去掉第一行和最后一行后再返回(注释掉的部分)。
     """
     content = pyperclip.paste()
     if not content:
@@ -80,7 +100,12 @@ def get_clipboard_content() -> str:
 def read_file(file_path: str) -> str:
     """
     读取指定文件并返回其内容（去除首尾空白）。
+    增加文件存在性检查，防止报错。
     """
+    if not os.path.exists(file_path):
+        # 如果文件不存在，返回空字符串，避免 crash
+        return ""
+        
     with open(file_path, 'r', encoding='utf-8-sig') as f:
         return f.read().strip()
 
@@ -88,6 +113,9 @@ def write_html_skeleton(file_path: str, title: str) -> None:
     """
     创建并写入 HTML 骨架。
     """
+    # 确保父目录存在
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    
     with open(file_path, 'w', encoding='utf-8-sig') as f:
         f.write(f"""
         <!DOCTYPE html>
@@ -117,6 +145,9 @@ def append_to_html(file_path: str, current_time: str, content: str) -> None:
     """
     将新的条目（时间和内容）以行的形式插入到指定的 HTML 文件第一行记录之后。
     """
+    if not os.path.exists(file_path):
+        return
+
     with open(file_path, 'r+', encoding='utf-8-sig') as f:
         escaped_content = html.escape(content).replace('\n', '<br>\n')
         html_content = f.read()
@@ -149,80 +180,83 @@ def remove_file(file_path: str) -> None:
     try:
         os.remove(file_path)
     except OSError as e:
-        print(f"Error removing {file_path}: {e}")
+        # 在调试时可以打印，生产环境可以选择忽略
+        # print(f"Error removing {file_path}: {e}")
+        pass
+
+def move_and_record_images(url: str) -> None:
+    """
+    移动多种格式图片并记录到article_copier.txt
+    (从 main 函数中提取出来，并使用动态路径)
+    """
+    source_dir = DOWNLOADS_DIR
+    today = datetime.now().strftime("%y%m%d")
+    target_dir = os.path.join(DOWNLOADS_DIR, "news_images")
+    record_file = os.path.join(TXT_DIRECTORY, f"article_copier_{today}.txt")
+    
+    # 支持的图片格式
+    image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
+    
+    # 确保目标目录存在
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(record_file), exist_ok=True)
+    
+    # 获取所有图片文件
+    image_files = []
+    for format in image_formats:
+        image_files.extend(glob.glob(os.path.join(source_dir, format)))
+    
+    moved_files = []
+    # 移动文件
+    for image_file in image_files:
+        filename = os.path.basename(image_file)
+        target_path = os.path.join(target_dir, filename)
+        try:
+            shutil.move(image_file, target_path)
+            moved_files.append(filename)
+        except Exception as e:
+            print(f"Error moving file {image_file}: {e}")
+
+    # 写入记录文件，无论是否有移动文件都写入URL
+    content = f"{url}\n\n"
+    if moved_files:
+        content += "\n".join(moved_files) + "\n\n"
+    
+    with open(record_file, 'a', encoding='utf-8') as f:
+        f.write(content)
 
 def main() -> None:
     """
-    主流程：
-    1. 检查剪贴板中英文字符占比并写入临时文件。
-    2. 读取结果判断是否执行 Poe_auto.py。
-    3. 读取 segment.txt 和 site.txt，并生成最终文本写入 TXT。
-    4. 在对应的 HTML 中追加记录并关闭 HTML 标签。
-    5. 执行关闭新闻 Tab 的 AppleScript 脚本。
-    6. 删除临时文件。
+    主流程
     """
     # 获取传入的URL参数
     url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
 
-    def move_and_record_images(url):
-        """
-        移动多种格式图片并记录到article_copier.txt
-        """
-        source_dir = "/Users/yanzhang/Downloads"
-        today = datetime.now().strftime("%y%m%d")
-        target_dir = f"/Users/yanzhang/Downloads/news_images"
-        record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
-        
-        # 支持的图片格式
-        image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
-
-        # 确保目标目录存在
-        os.makedirs(target_dir, exist_ok=True)
-        os.makedirs(os.path.dirname(record_file), exist_ok=True)
-
-        # 获取所有图片文件
-        image_files = []
-        for format in image_formats:
-            image_files.extend(glob.glob(os.path.join(source_dir, format)))
-        moved_files = []
-
-        # 移动文件
-        for image_file in image_files:
-            filename = os.path.basename(image_file)
-            target_path = os.path.join(target_dir, filename)
-            shutil.move(image_file, target_path)
-            moved_files.append(filename)
-
-        # 写入记录文件，无论是否有移动文件都写入URL
-        content = f"{url}\n\n"
-        if moved_files:
-            content += "\n".join(moved_files) + "\n\n"
-        
-        with open(record_file, 'a', encoding='utf-8') as f:
-            f.write(content)
-
+    # 1. 检查英文比例
     check_english_ratio()
     sleep(0.2)
     
     try:
-        with open(RATIO_FILE_PATH, 'r') as f:
-            is_english = (f.read().strip().lower() == 'true')
-        remove_file(RATIO_FILE_PATH)
-        
-        if is_english:
-            try:
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                poe_auto_path = os.path.join(current_dir, 'Poe_auto.py')
-                # 执行 Poe_auto.py，带参数"short"
-                subprocess.run([sys.executable, poe_auto_path, 'short'], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Error executing Poe_auto.py: {e}")
-            except Exception as e:
-                print(f"Unexpected error running Poe_auto.py: {e}")
+        # 读取刚刚写入的临时文件
+        if os.path.exists(RATIO_FILE_PATH):
+            with open(RATIO_FILE_PATH, 'r') as f:
+                is_english = (f.read().strip().lower() == 'true')
+            remove_file(RATIO_FILE_PATH)
+            
+            if is_english:
+                try:
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    poe_auto_path = os.path.join(current_dir, 'Poe_auto.py')
+                    # 执行 Poe_auto.py，带参数"short"
+                    subprocess.run([sys.executable, poe_auto_path, 'short'], check=True)
+                except subprocess.CalledProcessError as e:
+                    print(f"Error executing Poe_auto.py: {e}")
+                except Exception as e:
+                    print(f"Unexpected error running Poe_auto.py: {e}")
     except Exception as e:
-        print(f"Error reading english_ratio_result.txt: {e}")
+        print(f"Error checking english ratio: {e}")
     
-    # 拼接最终内容
+    # 2. 处理剪贴板内容
     clipboard_content = get_clipboard_content()
     if clipboard_content:
         # =========== 修改 1：全局去除 # 和 * ===========
@@ -263,20 +297,25 @@ def main() -> None:
                     lines[0] = modified_first_line
                     clipboard_content = "\n".join(lines)
 
+    # 3. 读取站点和 segment 信息
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)
     
     site_content_with_tags = f'{site_content}'
     final_content = f"{site_content_with_tags}\n\n{clipboard_content}"
     
-    # 写入 TXT 文件
+    # 4. 写入 TXT 文件
     now = datetime.now()
     txt_file_name = f"News_{now.strftime('%y_%m_%d')}.txt"
     txt_file_path = os.path.join(TXT_DIRECTORY, txt_file_name)
+    
+    # 确保目录存在
+    os.makedirs(TXT_DIRECTORY, exist_ok=True)
+    
     with open(txt_file_path, 'a', encoding='utf-8-sig') as txt_file:
         txt_file.write(final_content + '\n\n')
     
-    # 写入 HTML 文件
+    # 5. 写入 HTML 文件
     html_file_name = SEGMENT_TO_HTML_FILE.get(segment_content.lower(), "other.html")
     html_file_path = os.path.join(HTML_DIRECTORY, html_file_name)
     
@@ -288,18 +327,12 @@ def main() -> None:
     if os.path.isfile(html_file_path):
         close_html_skeleton(html_file_path)
     
-    # =========== 修改处开始：注释掉关闭标签页的代码 ===========
-    # 我们不在这里关闭标签页了，改为在 AppleScript 最后统一关闭
-    # try:
-    #     result = subprocess.run(['osascript', SCRIPT_PATH], check=True, text=True, stdout=subprocess.PIPE)
-    #     print(result.stdout.strip())
-    # except subprocess.CalledProcessError as e:
-    #     print(f"Error running AppleScript: {e}")
-    # =========== 修改处结束 ===========
-    
+    # 6. 处理图片
+    # 调用提取出来的函数
     move_and_record_images(url)
     sleep(0.3)
-    # 删除临时文件
+    
+    # 7. 删除临时文件
     remove_file(SEGMENT_FILE_PATH)
     remove_file(SITE_FILE_PATH)
 

@@ -2,9 +2,6 @@ import argparse
 import tkinter as tk
 
 def show_toast(message, duration=2000, bg='green', fg='white', font=('Helvetica', 22)):
-    """
-    在屏幕右下角弹出一个无边框悬浮窗，duration 毫秒后自动销毁。
-    """
     # 新建一个顶层窗口
     root = tk.Tk()
     root.overrideredirect(True)           # 去掉标题栏和边框

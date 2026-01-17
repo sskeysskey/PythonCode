@@ -7,17 +7,40 @@ import glob
 import sys
 import pyperclip
 import subprocess
-# import pyautogui
+import tempfile
 import numpy as np
 from PIL import ImageGrab
 from datetime import datetime
 
-# 常量定义
-TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
-HTML_DIRECTORY = '/Users/yanzhang/Coding/Website/news'
-SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
-SEGMENT_FILE_PATH = '/tmp/segment.txt'
-SITE_FILE_PATH = '/tmp/site.txt'
+# ================= 配置区域 =================
+
+# 1. 动态获取当前用户的主目录
+# Mac: /Users/yanzhang
+# Windows: C:\Users\yanzhang
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义你的 Coding 根目录
+# 默认假设 Coding 文件夹在主目录下。如果换了电脑想换位置，只需修改这一行即可。
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 定义下载目录
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 4. 获取临时目录 (关键修改！)
+if os.name == 'nt':
+    # 如果是 Windows 系统，使用系统标准临时目录 (通常是 AppData\Local\Temp)
+    SYSTEM_TEMP_DIR = tempfile.gettempdir()
+else:
+    # 如果是 macOS 或 Linux，保持使用 /tmp 以兼容你现有的 AppleScript/Shell 流程
+    SYSTEM_TEMP_DIR = '/tmp'
+
+# ================= 常量定义 (路径拼接) =================
+
+TXT_DIRECTORY = os.path.join(BASE_CODING_DIR, 'News')
+HTML_DIRECTORY = os.path.join(BASE_CODING_DIR, 'Website', 'news')
+
+SEGMENT_FILE_PATH = os.path.join(SYSTEM_TEMP_DIR, 'segment.txt')
+SITE_FILE_PATH = os.path.join(SYSTEM_TEMP_DIR, 'site.txt')
 
 SEGMENT_TO_HTML_FILE = {
     "technologyreview": "technologyreview.html",
@@ -27,20 +50,24 @@ SEGMENT_TO_HTML_FILE = {
     "bloomberg": "bloomberg.html",
     "hbr": "hbr.html",
     "ft": "ft.html",
-    "wsj": "wsj.html"
+    "wsj": "wsj.html",
+    "rfi": "rfi.html",
+    "dw": "dw.html"
 }
 
-# <--- 修改 1: 将 move_and_record_images 函数移出 main，使其成为一个独立的顶级函数。
+# ================= 函数定义 =================
+
 def move_and_record_images(url):
     """
-    移动多种格式图片并记录到article_copier.txt
+    移动多种格式图片并记录到 article_copier.txt
     """
-    source_dir = "/Users/yanzhang/Downloads"
-    today = datetime.now().strftime("%y%m%d")
-    # <--- 修改 2: 目标目录名修正，确保和 AppleScript 中的检查逻辑一致
-    target_dir = f"/Users/yanzhang/Downloads/news_images"
-    record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
+    # 使用前面定义的动态变量
+    source_dir = DOWNLOADS_DIR
+    target_dir = os.path.join(DOWNLOADS_DIR, "news_images")
     
+    today = datetime.now().strftime("%y%m%d")
+    record_file = os.path.join(TXT_DIRECTORY, f"article_copier_{today}.txt")
+
     # 支持的图片格式
     image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
 
@@ -51,13 +78,15 @@ def move_and_record_images(url):
     # 获取所有图片文件
     image_files = []
     for format in image_formats:
+        # glob 在 Windows 下也能正常工作
         image_files.extend(glob.glob(os.path.join(source_dir, format)))
-    moved_files = []
 
+    moved_files = []
     # 移动文件
     for image_file in image_files:
         filename = os.path.basename(image_file)
         target_path = os.path.join(target_dir, filename)
+
         try:
             shutil.move(image_file, target_path)
             moved_files.append(filename)
@@ -189,43 +218,6 @@ def close_html_skeleton(file_path):
 def main():
     # 获取传入的URL参数
     url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
-    
-    def move_and_record_images(url):
-        """
-        移动多种格式图片并记录到article_copier.txt
-        """
-        source_dir = "/Users/yanzhang/Downloads"
-        today = datetime.now().strftime("%y%m%d")
-        target_dir = f"/Users/yanzhang/Downloads/news_images"
-        record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
-        
-        # 支持的图片格式
-        image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
-
-        # 确保目标目录存在
-        os.makedirs(target_dir, exist_ok=True)
-        os.makedirs(os.path.dirname(record_file), exist_ok=True)
-
-        # 获取所有图片文件
-        image_files = []
-        for format in image_formats:
-            image_files.extend(glob.glob(os.path.join(source_dir, format)))
-        moved_files = []
-
-        # 移动文件
-        for image_file in image_files:
-            filename = os.path.basename(image_file)
-            target_path = os.path.join(target_dir, filename)
-            shutil.move(image_file, target_path)
-            moved_files.append(filename)
-
-        # 写入记录文件，无论是否有移动文件都写入URL
-        content = f"{url}\n\n"
-        if moved_files:
-            content += "\n".join(moved_files) + "\n\n"
-        
-        with open(record_file, 'a', encoding='utf-8') as f:
-            f.write(content)
 
     # 跳转到clipboard_content处理部分
     clipboard_content = get_clipboard_content()
@@ -269,15 +261,6 @@ def main():
     # 4.3 移动图片并写入 article_copier.txt (这是最关键的冲突点)
     # 我们把它放在所有其他文件写入之后，执行外部脚本之前
     move_and_record_images(url)
-
-    # === 步骤 5: 最后执行外部动作 (调用AppleScript) ===
-    try:
-        result = subprocess.run(['osascript', SCRIPT_PATH], check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(result.stdout.strip())
-        if result.stderr:
-            print(f"Error from AppleScript: {result.stderr.strip()}", file=sys.stderr)
-    except subprocess.CalledProcessError as e:
-        print(f"Error running AppleScript: {e}\nStdout: {e.stdout}\nStderr: {e.stderr}")
 
 if __name__ == '__main__':
     main()

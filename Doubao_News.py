@@ -1,4 +1,3 @@
-# o1优化后代码
 import html
 import os
 import re
@@ -7,16 +6,33 @@ import shutil
 import glob
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from time import sleep
 
-# 常量定义
-TXT_DIRECTORY = '/Users/yanzhang/Coding/News'
-HTML_DIRECTORY = '/Users/yanzhang/Coding/Website/news'
-# SCRIPT_PATH = '/Users/yanzhang/Coding/ScriptEditor/Close_Tab_News.scpt'
-SEGMENT_FILE_PATH = '/tmp/segment.txt'
-SITE_FILE_PATH = '/tmp/site.txt'
-RATIO_FILE_PATH = '/tmp/english_ratio_result.txt'
+# ================= 配置区域 (跨平台修改) =================
+
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义基础 Coding 目录
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 具体业务路径
+TXT_DIRECTORY = os.path.join(BASE_CODING_DIR, "News")
+HTML_DIRECTORY = os.path.join(BASE_CODING_DIR, "Website", "news")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 4. 临时文件路径 (混合策略)
+# Windows 下使用系统临时目录，Mac 下保持 /tmp 以兼容可能的外部 AppleScript
+if os.name == 'nt':
+    TEMP_DIR = tempfile.gettempdir()
+else:
+    TEMP_DIR = "/tmp"
+
+SEGMENT_FILE_PATH = os.path.join(TEMP_DIR, 'segment.txt')
+SITE_FILE_PATH = os.path.join(TEMP_DIR, 'site.txt')
+RATIO_FILE_PATH = os.path.join(TEMP_DIR, 'english_ratio_result.txt')
 
 SEGMENT_TO_HTML_FILE = {
     "technologyreview": "technologyreview.html",
@@ -28,7 +44,6 @@ SEGMENT_TO_HTML_FILE = {
     "ft": "ft.html",
     "wsj": "wsj.html",
     "reuters": "reuters.html",
-    "nytimes": "nytimes.html",
     "washingtonpost": "washingtonpost.html",
     "nikkeiasia": "nikkei_asia.html"
 }
@@ -41,46 +56,38 @@ def is_english_char(char: str) -> bool:
 
 def check_english_ratio() -> bool:
     """
-    从剪贴板获取文本，计算其中英文字母占比并将结果写入 /tmp/english_ratio_result.txt。
+    从剪贴板获取文本，计算其中英文字母占比并将结果写入临时文件。
     返回英文字母占比是否大于 0.5。
     """
     text = pyperclip.paste()
     if not text:
         return False
-    
     english_chars = sum(1 for char in text if is_english_char(char))
     total_chars = sum(1 for char in text if not char.isspace())
-    
     if total_chars == 0:
         return False
-    
     english_ratio = english_chars / total_chars
-    
-    with open(RATIO_FILE_PATH, 'w') as f:
+    with open(RATIO_FILE_PATH, 'w', encoding='utf-8') as f:
         f.write('true' if english_ratio > 0.5 else 'false')
-    
     return english_ratio > 0.5
 
 def get_clipboard_content() -> str:
     """
     获取剪贴板内容，去除空白行。
-    如果行数小于 3，直接返回原内容，否则去掉第一行和最后一行后再返回。
     """
     content = pyperclip.paste()
     if not content:
         return ""
     
     lines = [line.strip() for line in content.splitlines() if line.strip()]
-    
-    # 移除第一行和最后一行
-    # filtered_lines = lines[1:-1]
-    
     return "\n".join(lines)
 
 def read_file(file_path: str) -> str:
     """
     读取指定文件并返回其内容（去除首尾空白）。
     """
+    if not os.path.exists(file_path):
+        return ""
     with open(file_path, 'r', encoding='utf-8-sig') as f:
         return f.read().strip()
 
@@ -88,6 +95,7 @@ def write_html_skeleton(file_path: str, title: str) -> None:
     """
     创建并写入 HTML 骨架。
     """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w', encoding='utf-8-sig') as f:
         f.write(f"""
         <!DOCTYPE html>
@@ -117,6 +125,8 @@ def append_to_html(file_path: str, current_time: str, content: str) -> None:
     """
     将新的条目（时间和内容）以行的形式插入到指定的 HTML 文件第一行记录之后。
     """
+    if not os.path.exists(file_path):
+        return
     with open(file_path, 'r+', encoding='utf-8-sig') as f:
         escaped_content = html.escape(content).replace('\n', '<br>\n')
         html_content = f.read()
@@ -148,159 +158,137 @@ def remove_file(file_path: str) -> None:
     """
     try:
         os.remove(file_path)
-    except OSError as e:
-        print(f"Error removing {file_path}: {e}")
+    except OSError:
+        pass
+
+def move_and_record_images(url: str) -> None:
+    """
+    移动多种格式图片并记录到article_copier.txt
+    (已提取为独立函数，并使用动态路径)
+    """
+    source_dir = DOWNLOADS_DIR
+    today = datetime.now().strftime("%y%m%d")
+    target_dir = os.path.join(DOWNLOADS_DIR, "news_images")
+    record_file = os.path.join(TXT_DIRECTORY, f"article_copier_{today}.txt")
+    image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(record_file), exist_ok=True)
+    image_files = []
+    for fmt in image_formats:
+        image_files.extend(glob.glob(os.path.join(source_dir, fmt)))
+    moved_files = []
+    for image_file in image_files:
+        filename = os.path.basename(image_file)
+        target_path = os.path.join(target_dir, filename)
+        try:
+            shutil.move(image_file, target_path)
+            moved_files.append(filename)
+        except Exception as e:
+            print(f"Error moving file {image_file}: {e}")
+    content = f"{url}\n\n"
+    if moved_files:
+        content += "\n".join(moved_files) + "\n\n"
+    with open(record_file, 'a', encoding='utf-8') as f:
+        f.write(content)
 
 def main() -> None:
     """
-    主流程：
-    1. 检查剪贴板中英文字符占比并写入临时文件。
-    2. 读取结果判断是否执行 Poe_auto.py。
-    3. 读取 segment.txt 和 site.txt，并生成最终文本写入 TXT。
-    4. 在对应的 HTML 中追加记录并关闭 HTML 标签。
-    5. 执行关闭新闻 Tab 的 AppleScript 脚本。
-    6. 删除临时文件。
+    主流程
     """
     # 获取传入的URL参数
     url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
-
-    def move_and_record_images(url):
-        """
-        移动多种格式图片并记录到article_copier.txt
-        """
-        source_dir = "/Users/yanzhang/Downloads"
-        today = datetime.now().strftime("%y%m%d")
-        target_dir = f"/Users/yanzhang/Downloads/news_images"
-        record_file = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
-        
-        # 支持的图片格式
-        image_formats = ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.avif", "*.gif"]
-
-        # 确保目标目录存在
-        os.makedirs(target_dir, exist_ok=True)
-        os.makedirs(os.path.dirname(record_file), exist_ok=True)
-
-        # 获取所有图片文件
-        image_files = []
-        for format in image_formats:
-            image_files.extend(glob.glob(os.path.join(source_dir, format)))
-        moved_files = []
-
-        # 移动文件
-        for image_file in image_files:
-            filename = os.path.basename(image_file)
-            target_path = os.path.join(target_dir, filename)
-            shutil.move(image_file, target_path)
-            moved_files.append(filename)
-
-        # 写入记录文件，无论是否有移动文件都写入URL
-        content = f"{url}\n\n"
-        if moved_files:
-            content += "\n".join(moved_files) + "\n\n"
-        
-        with open(record_file, 'a', encoding='utf-8') as f:
-            f.write(content)
-
     check_english_ratio()
     sleep(0.2)
-    
-    try:
-        with open(RATIO_FILE_PATH, 'r') as f:
-            is_english = (f.read().strip().lower() == 'true')
-        remove_file(RATIO_FILE_PATH)
-        
-        if is_english:
-            try:
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                poe_auto_path = os.path.join(current_dir, 'Poe_auto.py')
-                # 执行 Poe_auto.py，带参数"short"
-                subprocess.run([sys.executable, poe_auto_path, 'short'], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Error executing Poe_auto.py: {e}")
-            except Exception as e:
-                print(f"Unexpected error running Poe_auto.py: {e}")
-    except Exception as e:
-        print(f"Error reading english_ratio_result.txt: {e}")
     
     # 拼接最终内容
     clipboard_content = get_clipboard_content()
     if clipboard_content:
-        # =========== 修改 1：全局去除 # 和 * ===========
-        # 放在最前面，确保后续的逻辑（如 splitlines）处理的是干净的文本
+        # 全局去除 # 和 *
         clipboard_content = clipboard_content.replace('#', '').replace('*', '')
+        lines = [line.strip() for line in clipboard_content.splitlines()]
 
-        # 将内容按行分割，方便处理第一行
-        lines = clipboard_content.splitlines()
-        
-        if lines:  # 确保内容不为空
-            first_line = lines[0].strip()
-
-            # 步骤 1：先清理 "中文分模块总结" 短语
-            if "中文分模块总结" in first_line:
-                # 替换掉该短语，并去除可能留下的首尾空格
-                first_line = first_line.replace("中文分模块总结", "").strip()
-                # 更新 lines 列表中的第一行
-                lines[0] = first_line
-                # 立即更新 clipboard_content，确保如果后续没有触发整行删除，这里修改也能生效
-                clipboard_content = "\n".join(lines)
-
-            # 步骤 2：准备数据
-            # 重新统计中文字数
-            chinese_char_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
-            # 判断是否全是横线 (移除所有-后是否为空)
-            is_dash_line = (len(first_line) > 0 and first_line.replace('-', '') == '')
-
-            # =========== 步骤 3：综合判断逻辑 ===========
+        # =========================================================
+        #   逻辑块 A：处理头部 (Header Processing) - 递归/顺序清理
+        # =========================================================
+        changed = True
+        while changed and lines:
+            changed = False
+            first_line = lines[0]
             
-            # 【新增】判断 A：如果第一行全是横线 -> 删除
-            if is_dash_line:
-                clipboard_content = "\n".join(lines[1:]).lstrip()
+            # 1. 文本修饰：移除“分模块总结”或“核心内容总结”
+            chinese_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
+            # 注意顺序：长词在前，短词在后
+            target_keywords = ["分模块总结", "核心内容总结", "核心内容"]
+            if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
+                # 正则表达式：匹配关键词及其前后的标点
+                # 使用 (?:A|B|C) 非捕获分组
+                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容)[，。：；！？、,.?:;]*'
+                lines[0] = re.sub(pattern, '', first_line).strip()
+                first_line = lines[0]
+                changed = True
 
-            # 判断 B：核心内容 + 总结 + 字数<=10 -> 删除
-            elif "核心内容" in first_line and "总结" in first_line and chinese_char_count <= 10:
-                clipboard_content = "\n".join(lines[1:]).lstrip()
+            # 2. 关键词密度删除 (Step 1)
+            check_keywords = ["中文", "英文", "分模块", "总结", "文章", "新闻", "核心内容"]
+            hit_count = sum(1 for key in check_keywords if key in first_line)
+            if hit_count >= 2 and len(first_line) <= 12:
+                lines.pop(0)
+                changed = True
+                continue
 
-            # 判断 C：以特定词开头 -> 删除
+            # 3. 文本特征判断 (Step 3)
+            should_remove = False
+            if first_line.startswith(("中文译文", "译文")) and len(re.findall(r'[\u4e00-\u9fff]', first_line)) < 10:
+                should_remove = True
             elif first_line.startswith(("以下", "这是", "这篇")):
-                clipboard_content = "\n".join(lines[1:]).lstrip()
-
-            # 判断 D：包含“以下”且包含“翻译/全译”
+                should_remove = True
             elif "以下" in first_line and ("翻译" in first_line or "全译" in first_line):
-                clipboard_content = "\n".join(lines[1:]).lstrip()
-
-            # 原规则：正则清理引导句（处理 "我将从以下几个方面..." 这种开头不为"以下"的情况）
-            elif any(keyword in first_line for keyword in ["总结", "以下", "方面", "几点"]):
-                # 正则表达式解释:
-                # [，。]       - 匹配一个中文逗号或句号
-                # \s*         - 匹配0个或多个空白符
-                # .*?         - 非贪婪匹配任意字符
-                # (?:总结|以下|方面|几点) - 匹配核心关键词之一
-                # .*?         - 非贪婪匹配任意字符
-                # [:：]        - 匹配中英文冒号
-                modified_first_line = re.sub(r'[，。]\s*.*?(?:总结|以下|方面|几点).*?[:：]', '：', first_line, count=1)
-                
-                # 仅在正则表达式成功匹配并作出改变时才更新内容
-                if modified_first_line != first_line:
-                    lines[0] = modified_first_line
-                    clipboard_content = "\n".join(lines)
-
-    # =========== 在这里插入新代码：处理最后一段 ===========
-    
-    if clipboard_content:
-        # 重新分割，因为上面的逻辑可能已经删除了第一行或修改了内容
-        current_lines = clipboard_content.splitlines()
-        
-        # 检查最后一行
-        if current_lines:
-            last_line = current_lines[-1].strip()
+                should_remove = True
             
-            # 【新增】判断是否全是横线
-            is_last_line_dash = (len(last_line) > 0 and last_line.replace('-', '') == '')
-            
-            # 如果以“需要我”开头 OR 全是横线，则删除最后一行
-            if last_line.startswith("需要我") or is_last_line_dash:
-                clipboard_content = "\n".join(current_lines[:-1])
+            if should_remove:
+                lines.pop(0)
+                changed = True
+                continue
 
+            # 4. 正则清理引导句 (不删除整行，只修改)
+            if any(kw in first_line for kw in ["总结", "以下", "方面", "几点"]):
+                modified = re.sub(r'[，。]\s*.*?(?:总结|以下|方面|几点).*?[:：]', '：', first_line, count=1)
+                if modified != first_line:
+                    lines[0] = modified.strip()
+                    # 这里不设置 changed=True 避免死循环，除非逻辑需要
+
+            # 5. 横线判断 (Dash Check) - 放在最后，如果前面删除了行，这里会检查“新”的第一行
+            if lines:
+                current_first = lines[0]
+                if len(current_first) > 0 and current_first.replace('-', '').strip() == '':
+                    lines.pop(0)
+                    changed = True
+                    continue
+
+        # =========================================================
+        #   逻辑块 B：处理尾部 (Footer Processing) - 顺序清理
+        # =========================================================
+        changed = True
+        while changed and lines:
+            changed = False
+            last_line = lines[-1]
+
+            # 1. 文本特征判断
+            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以")):
+                lines.pop(-1)
+                changed = True
+                continue
+
+            # 2. 横线判断 - 只有在文本特征判断之后（或独立）检查
+            if lines:
+                current_last = lines[-1]
+                if len(current_last) > 0 and current_last.replace('-', '').strip() == '':
+                    lines.pop(-1)
+                    changed = True
+                    continue
+
+        clipboard_content = "\n".join(lines)
+
+    # 拼接最终内容
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)
     
@@ -311,32 +299,26 @@ def main() -> None:
     now = datetime.now()
     txt_file_name = f"News_{now.strftime('%y_%m_%d')}.txt"
     txt_file_path = os.path.join(TXT_DIRECTORY, txt_file_name)
+    
+    # 确保目录存在
+    os.makedirs(TXT_DIRECTORY, exist_ok=True)
+    
     with open(txt_file_path, 'a', encoding='utf-8-sig') as txt_file:
         txt_file.write(final_content + '\n\n')
     
     # 写入 HTML 文件
     html_file_name = SEGMENT_TO_HTML_FILE.get(segment_content.lower(), "other.html")
     html_file_path = os.path.join(HTML_DIRECTORY, html_file_name)
-    
     if not os.path.isfile(html_file_path):
         write_html_skeleton(html_file_path, segment_content)
-    
     append_to_html(html_file_path, now.strftime('%Y-%m-%d %H:%M:%S'), clipboard_content)
     
     if os.path.isfile(html_file_path):
         close_html_skeleton(html_file_path)
     
-    # =========== 修改处开始：注释掉关闭标签页的代码 ===========
-    # 我们不在这里关闭标签页了，改为在 AppleScript 最后统一关闭
-    # try:
-    #     result = subprocess.run(['osascript', SCRIPT_PATH], check=True, text=True, stdout=subprocess.PIPE)
-    #     print(result.stdout.strip())
-    # except subprocess.CalledProcessError as e:
-    #     print(f"Error running AppleScript: {e}")
-    # =========== 修改处结束 ===========
-    
     move_and_record_images(url)
     sleep(0.3)
+    
     # 删除临时文件
     remove_file(SEGMENT_FILE_PATH)
     remove_file(SITE_FILE_PATH)

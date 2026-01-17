@@ -7,22 +7,41 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException # 新增引用
+from selenium.common.exceptions import StaleElementReferenceException
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
+import sys
+import platform # <--- 新增
 
-# ================= 配置区域 =================
+# ================= 配置区域 (跨平台修改) =================
 
-# 1. 路径配置 (适配 Beta 版)
-# Chrome Beta 浏览器程序路径
-CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-# Chrome Beta 驱动路径
-CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
 
-# 文件路径
-FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
-NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/nikkei_asia.html"
-TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+# 2. 定义基础路径
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 3. 浏览器与驱动路径 (跨平台适配)
+if platform.system() == 'Darwin':
+    # macOS 配置 (保持原样)
+    CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver_beta")
+elif platform.system() == 'Windows':
+    # Windows 配置 (默认使用标准版 Chrome)
+    CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not os.path.exists(CHROME_BINARY_PATH):
+        CHROME_BINARY_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver.exe")
+else:
+    # Linux
+    CHROME_BINARY_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+
+# 4. 业务文件路径
+OLD_FILE_PATTERN = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "nikkei_asia.html")
+NEW_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "nikkei_asia.html")
+TODAY_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
 
 # 设置超时时间
 TIMEOUT = 20 
@@ -39,7 +58,7 @@ EXCLUDED_TITLES = {
     "Kyrgyzstan", "Australia", "New Zealand", "Papua New Guinea",
     "Pacific Islands", "Middle East", "Russia & Caucasus", "North America",
     "Latin America", "Europe", "Africa", "Trading Asia", "Opinion", "Life & Arts",
-    "Politics", "Economy", "Business", "Tech", "Spotlight"
+    "Politics", "Economy", "Business", "Tech", "Spotlight", "Tech Asia"
 }
 
 # ================= 工具函数 =================
@@ -62,43 +81,54 @@ def main():
     current_datetime = datetime.now()
     formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
-    # --- 1. 初始化 Selenium ---
+    # ================= 1. 初始化 Selenium (核心移植部分) =================
+    print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
+    
     options = webdriver.ChromeOptions()
-    options.binary_location = CHROME_BINARY_PATH # 指定 Beta 浏览器位置
+    if os.path.exists(CHROME_BINARY_PATH):
+        options.binary_location = CHROME_BINARY_PATH
+    else:
+        print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
     options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
-
+    
     # --- 伪装设置 (User-Agent & 去除自动化特征) ---
     user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     options.add_argument(f'user-agent={user_agent}')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    
-    # 性能优化
+
+    # --- 性能优化 ---
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--no-sandbox")
-    options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
+    options.add_argument("--blink-settings=imagesEnabled=false")
     options.page_load_strategy = 'eager'
 
-    # 检查驱动是否存在
+    # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
         print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        print("请下载对应版本的 ChromeDriver 并放置在该路径下。")
         return
 
     service = Service(executable_path=CHROME_DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Selenium 启动失败: {e}")
+        return
+        
     driver.set_page_load_timeout(30)
     
     # 初始化数据容器
     new_rows = []
     new_rows1 = []
     old_content = []
-    old_file_list = glob.glob(FILE_PATTERN) # 提前获取
+    old_file_list = glob.glob(OLD_FILE_PATTERN)
 
     try:
         print("正在访问 Nikkei Asia...")
@@ -142,7 +172,6 @@ def main():
 
         # --- 3. 抓取新内容 ---
         all_links = [old_link for _, _, old_link in old_content if old_link]
-
         print("开始滚动页面以加载更多内容...")
         # 即使在 Headless 模式下，execute_script 依然有效
         for i in range(4):
@@ -191,7 +220,7 @@ def main():
             
             print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
 
-            # === [核心修改 3]：对静态数据进行逻辑过滤 (纯 Python 操作，不会报错) ===
+            # === [核心修改 3]：对静态数据进行逻辑过滤 ===
             for href, title_text in raw_data_list:
                 
                 # 1. 检查是否在黑名单中
@@ -228,7 +257,7 @@ def main():
                             skip_due_to_structure = True
                 except ValueError:
                     skip_due_to_structure = True
-
+                
                 if skip_due_to_structure:
                     continue
 
@@ -237,7 +266,6 @@ def main():
                     new_rows.append([formatted_datetime, title_text, href])
                     new_rows1.append(["NikkeiAsia", title_text, href])
                     all_links.append(href)
-                    # print(f"发现新文章: {title_text}")
 
             # 日志
             print("-" * 40)
@@ -249,13 +277,15 @@ def main():
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
-
     finally:
         driver.quit()
 
-    # --- 4. 文件写入操作 (逻辑保持不变) ---
+    # --- 4. 文件写入操作 ---
     
-    # 删除旧文件
+    # 确保目标目录存在
+    os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
+
     if old_file_list:
         try:
             if os.path.exists(old_file_list[0]):

@@ -6,27 +6,53 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
+import sys
+import platform # <--- 新增
 
-# ================= 配置区域 (移植自 b.py) =================
+# ================= 配置区域 (跨平台修改) =================
 
-# 1. 浏览器与驱动路径 (改为 Beta 版配置)
-CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
 
-# 2. 文件路径 (保持 a.py 原有配置)
-OLD_FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
-NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/technologyreview.html"
-TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+# 2. 定义基础路径
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 3. 浏览器与驱动路径 (跨平台适配)
+if platform.system() == 'Darwin':
+    # macOS 配置 (保持原样)
+    CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver_beta")
+elif platform.system() == 'Windows':
+    # Windows 配置 (默认使用标准版 Chrome)
+    CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not os.path.exists(CHROME_BINARY_PATH):
+        CHROME_BINARY_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver.exe")
+else:
+    # Linux
+    CHROME_BINARY_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+
+# 4. 业务文件路径
+OLD_FILE_PATTERN = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "technologyreview.html")
+NEW_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "technologyreview.html")
+TODAY_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
 
 # ================= 工具函数 =================
 
 def open_html_file(file_path):
-    webbrowser.open('file://' + os.path.realpath(file_path), new=2)
+    # <--- 跨平台修改：处理 Windows 路径反斜杠和 file:// 格式 --->
+    real_path = os.path.realpath(file_path)
+    if os.name == 'nt':
+        url = 'file:///' + real_path.replace('\\', '/')
+    else:
+        url = 'file://' + real_path
+    webbrowser.open(url, new=2)
 
 def main():
     # 获取当前日期
@@ -34,10 +60,13 @@ def main():
     formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
     # ================= 1. 初始化 Selenium (核心移植部分) =================
-    print("正在初始化 Chrome Beta 驱动...")
+    print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
     
     options = webdriver.ChromeOptions()
-    options.binary_location = CHROME_BINARY_PATH  # 指定 Beta 浏览器位置
+    if os.path.exists(CHROME_BINARY_PATH):
+        options.binary_location = CHROME_BINARY_PATH
+    else:
+        print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
     options.add_argument('--headless=new') 
@@ -61,10 +90,15 @@ def main():
     # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
         print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        print("请下载对应版本的 ChromeDriver 并放置在该路径下。")
         return
 
     service = Service(executable_path=CHROME_DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Selenium 启动失败: {e}")
+        return
     
     # 容器初始化
     new_rows = []
@@ -76,16 +110,15 @@ def main():
         print("正在访问 MIT Technology Review...")
         driver.get("https://www.technologyreview.com/")
 
-        # ================= 2. 滚动加载 (移植自 b.py) =================
+        # ================= 2. 滚动加载 =================
         print("开始滚动页面以加载更多内容...")
         for i in range(3):  # 滚动3次，可根据需要调整
             driver.execute_script("window.scrollBy(0, 800);")
             time.sleep(1)
         print("滚动完成。")
 
-        # ================= 3. 读取旧文件逻辑 (保持 a.py 原有逻辑) =================
+        # ================= 3. 读取旧文件逻辑 =================
         old_file_list = glob.glob(OLD_FILE_PATTERN)
-        
         if old_file_list:
             old_file_path = old_file_list[0]
             # 这里改成保留更长时间的数据，防止误删，比如40天
@@ -114,7 +147,7 @@ def main():
         
         # 获取所有旧链接用于排重
         all_links = [old_link for _, _, old_link in old_content if old_link]
-
+        
         # 构造选择器：针对今年的文章
         css_selector = f"a[href*='technologyreview.com/{current_datetime.year}/']"
         
@@ -127,7 +160,7 @@ def main():
             titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
             print(f"找到了 {len(titles_elements)} 个潜在链接元素。")
 
-            # --- 步骤 B: 快速提取数据 (避免 StaleElementReferenceException) ---
+            # --- 步骤 B: 快速提取数据 ---
             raw_data_list = []
             for element in titles_elements:
                 try:
@@ -144,12 +177,12 @@ def main():
                     continue # 元素失效则跳过
                 except Exception:
                     continue
-
+            
             print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
 
-            # --- 步骤 C: 逻辑过滤 (纯 Python 处理) ---
+            # --- 步骤 C: 逻辑过滤 ---
             for href, title_text in raw_data_list:
-                # 1. Podcast 过滤 (a.py 原有逻辑)
+                # 1. Podcast 过滤
                 if 'podcasts' in href:
                     continue
                 
@@ -177,11 +210,14 @@ def main():
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
-
     finally:
         driver.quit()
 
-    # ================= 5. 文件写入操作 (保持 a.py 原有逻辑) =================
+    # ================= 5. 文件写入操作 =================
+    
+    # 确保目标目录存在
+    os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
 
     # 删除旧文件
     if old_file_list and os.path.exists(old_file_list[0]):
@@ -222,7 +258,7 @@ def main():
         for row in new_rows1:
             clickable_title = f"<a href='{row[2]}' target='_blank'>{row[1]}</a>"
             append_content += f"<tr><td>{row[0]}</td><td>{clickable_title}</td></tr>\n"
-
+        
         try:
             if not file_exists:
                 with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
@@ -234,8 +270,10 @@ def main():
                 with open(TODAY_HTML_PATH, 'r', encoding='utf-8') as html_file:
                     content = html_file.read()
                 
+                # 尝试多种换行格式的结束标签
                 if closing_tag in content:
                     content = content.replace(closing_tag, "")
+                content = content.replace("</table>\n</body>\n</html>", "")
                 
                 new_file_content = content + append_content + closing_tag
                 

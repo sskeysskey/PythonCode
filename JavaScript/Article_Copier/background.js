@@ -12,7 +12,9 @@ chrome.action.onClicked.addListener(async (tab) => {
     tab.url.includes("reuters.com") ||
     tab.url.includes("nytimes.com") ||
     tab.url.includes("washingtonpost.com") ||
-    tab.url.includes("asia.nikkei.com") // 新增 Nikkei Asia
+    tab.url.includes("asia.nikkei.com") ||
+    tab.url.includes("dw.com") ||
+    tab.url.includes("rfi.fr")
   ) {
     try {
       // 执行文本提取与复制操作
@@ -992,6 +994,296 @@ function extractAndCopy() {
       }
     }
   }
+
+  // ==========================================
+  // 2. 【新增】DW (德国之声) 处理逻辑
+  // ==========================================
+  else if (window.location.hostname.includes("dw.com")) {
+    // DW 的内容通常在 article 标签内
+    const contentRoot = document.querySelector('article') || document.querySelector('#main-content') || document;
+
+    if (contentRoot) {
+      // 1. 提取文本
+      // DW 的正文和标题通常在 data-tracking-name="rich-text" 的 div 下
+      const textSelectors = [
+        'div[data-tracking-name="rich-text"] h2',
+        'div[data-tracking-name="rich-text"] h3',
+        'div[data-tracking-name="rich-text"] p'
+      ];
+
+      const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
+      let uniqueElements = [...new Set(allElements)];
+
+      textContent = uniqueElements
+        .map(el => {
+          // 1. 过滤视频容器
+          if (el.closest('.vjs-wrapper')) return '';
+          if (el.textContent.includes("To view this video please enable JavaScript")) return '';
+
+          const tagName = el.tagName.toLowerCase();
+
+          // 2. 基础文本清理
+          let text = el.textContent.trim()
+            .replace(/\s+/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .trim();
+
+          // ★★★ 修改点：精准过滤包含“长平观察：”的整段内容 ★★★
+          if (text.includes("长平观察：")) {
+            return '';
+          }
+
+          // 3. ★★★ 新增：过滤社交媒体推广和版权声明 ★★★
+          if (
+            text.includes("DW中文有Instagram") ||
+            text.includes("摘编自其他媒体") ||
+            text.includes("dw.chinese") ||
+            text.includes("德国之声版权声明") ||
+            text.startsWith("© 20") // 匹配 © 2026年...
+          ) {
+            return '';
+          }
+
+          // 4. 过滤无效字符
+          if (!text || text.length <= 1 || ['@', '•', '∞'].includes(text)) {
+            return '';
+          }
+
+          // 5. 标题格式化
+          if (tagName === 'h2' || tagName === 'h3') {
+            return `\n【${text}】\n`;
+          }
+          return text;
+        })
+        .filter(text => text.length > 0)
+        .join('\n\n');
+
+
+      // 2. 提取并下载图片
+      if (textContent) {
+        // DW 的图片通常在 figure 标签内
+        let allImages = [...document.querySelectorAll('article figure img')];
+
+        // 去重
+        allImages = [...new Set(allImages)];
+
+        if (allImages.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const processedUrls = new Set();
+
+          allImages.forEach(img => {
+            if (img) {
+              // 查找高清图 URL (复用 WSJ 的 srcset 解析逻辑)
+              let highestResUrl = img.src;
+              if (img.srcset) {
+                const cleanSrcset = img.srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+                const srcsetEntries = cleanSrcset.split(',').map(entry => {
+                  // DW 的 srcset 格式通常是 "url width_descriptor"
+                  const parts = entry.trim().split(/\s+/);
+                  // 取最后一部分作为宽度，去掉 'w'
+                  const widthStr = parts[parts.length - 1];
+                  const url = parts[0];
+                  const widthNum = parseInt(widthStr?.replace(/[^0-9]/g, '') || '0');
+                  return { url: url, width: widthNum };
+                });
+
+                // 找到宽度最大的图片
+                const highestResSrc = srcsetEntries.reduce((prev, current) => {
+                  return (current.width > prev.width) ? current : prev;
+                }, srcsetEntries[0]);
+
+                if (highestResSrc && highestResSrc.url) {
+                  highestResUrl = highestResSrc.url;
+                }
+              }
+
+              // 清理 URL
+              const finalUrl = highestResUrl.split('?')[0];
+
+              if (!processedUrls.has(finalUrl)) {
+                processedUrls.add(finalUrl);
+
+                // 提取图片描述
+                let altText = '';
+                const figure = img.closest('figure');
+                if (figure) {
+                  const figcaption = figure.querySelector('figcaption');
+                  if (figcaption) {
+                    // 移除版权信息等杂质
+                    const clone = figcaption.cloneNode(true);
+                    const smalls = clone.querySelectorAll('small, .copyright');
+                    smalls.forEach(s => s.remove());
+                    altText = clone.textContent.trim();
+                  }
+                }
+                // 兜底描述
+                if (!altText) altText = img.title || img.alt || 'dw_image';
+
+                // 生成文件名
+                const processFileName = (text) => {
+                  text = text.replace(/[\\/?%*:|"<>+]/g, '-')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  if (text.length > 100) {
+                    text = text.substr(0, 96) + '...';
+                  }
+                  return `${text}.jpg`;
+                };
+
+                chrome.runtime.sendMessage({
+                  action: 'downloadImage',
+                  url: finalUrl,
+                  filename: processFileName(altText)
+                });
+              }
+            }
+          });
+        }
+      }
+    }
+  }
+
+  // --- 修复版：处理 rfi.fr ---
+  else if (window.location.hostname.includes("rfi.fr")) {
+    const article = document.querySelector('article') || document.getElementById('main-content');
+
+    if (article) {
+      // 1. 提取正文
+      // 修复点1：兼容 .t-content_body (单下划线) 和 .t-content__body (双下划线)
+      const bodyContainer = article.querySelector('.t-content__body, .t-content_body');
+
+      if (bodyContainer) {
+        // 修复点2：改用 childNodes 遍历。
+        // 因为你的源码显示有 "＜p>" 这种奇怪的标签，还有直接裸露在 div 里的文本。
+        // querySelectorAll('p') 抓不到它们，遍历节点最稳妥。
+        textContent = Array.from(bodyContainer.childNodes)
+          .map(node => {
+            // 排除广告容器 (通过类名判断)
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              // 1. 排除广告和推广容器
+              if (node.closest && (node.closest('.o-self-promo') || node.closest('.m-interstitial'))) return '';
+              // 如果是元素，取其文本
+              return node.textContent.trim();
+            }
+            // 如果是文本节点（为了抓取那些裸露的文本）
+            if (node.nodeType === Node.TEXT_NODE) {
+              return node.textContent.trim();
+            }
+            return '';
+          })
+          .filter(t => {
+            // 基础过滤
+            if (!t || t.length <= 1) return false;
+
+            // ★★★ 新增：精准过滤“广告”二字 ★★★
+            if (t === '广告') return false;
+
+            // 过滤无效符号
+            if (['@', '•', '∞', 'flex', '::before', '::after'].includes(t)) return false;
+
+            // 过滤空白行
+            if (/^\s*$/.test(t)) return false;
+            return true;
+          })
+          .map(t => {
+            // 额外清理：去掉可能残留的 "＜p>" 或类似标签文本
+            return t.replace(/^＜p>/, '').trim();
+          })
+          .join('\n\n');
+      }
+
+      // 2. 提取图片
+      if (textContent) {
+        const figures = Array.from(article.querySelectorAll('figure.m-item-image'));
+
+        if (figures.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const processedUrls = new Set();
+
+          figures.forEach((figure, idx) => {
+            const img = figure.querySelector('img');
+            if (!img) return;
+
+            // RFI 图片通常在 picture > source 中有高清源
+            let bestUrl = '';
+            const sources = figure.querySelectorAll('source');
+
+            // 尝试从 source 中找最大的
+            let maxW = 0;
+            sources.forEach(src => {
+              if (src.srcset) {
+                const candidates = src.srcset.split(',').map(s => {
+                  const parts = s.trim().split(/\s+/);
+                  const url = parts[0];
+                  const wStr = parts[1] || '';
+                  const w = parseInt(wStr.replace(/\D/g, '')) || 0;
+                  return { url, w };
+                });
+                const localMax = candidates.sort((a, b) => b.w - a.w)[0];
+                if (localMax && localMax.w > maxW) {
+                  maxW = localMax.w;
+                  bestUrl = localMax.url;
+                }
+              }
+            });
+
+            // 回退 img 标签
+            if (!bestUrl) {
+              if (img.srcset) {
+                const candidates = img.srcset.split(',').map(s => {
+                  const parts = s.trim().split(/\s+/);
+                  return { url: parts[0], w: parseInt(parts[1]?.replace(/\D/g, '') || '0') };
+                }).sort((a, b) => b.w - a.w);
+                if (candidates[0]) bestUrl = candidates[0].url;
+              }
+            }
+
+            if (!bestUrl) bestUrl = img.src;
+
+            if (!bestUrl) return;
+            try {
+              bestUrl = new URL(bestUrl, window.location.href).href;
+            } catch (e) { return; }
+
+            if (processedUrls.has(bestUrl)) return;
+            processedUrls.add(bestUrl);
+
+            // 提取 Caption
+            let caption = '';
+            const figcaption = figure.querySelector('figcaption');
+            if (figcaption) {
+              caption = Array.from(figcaption.querySelectorAll('span'))
+                .map(s => s.textContent.trim())
+                .join(' ')
+                .trim();
+            }
+            if (!caption && img.alt) caption = img.alt.trim();
+
+            let ext = 'jpg';
+            if (bestUrl.includes('.webp')) ext = 'webp';
+            else if (bestUrl.includes('.png')) ext = 'png';
+
+            let filename = (caption || `rfi-image-${Date.now()}-${idx}`)
+              .replace(/[\\/?%*:|"<>+]/g, '-')
+              .replace(/\s+/g, ' ')
+              .substring(0, 150)
+              .trim();
+
+            filename = `${filename}.${ext}`;
+
+            chrome.runtime.sendMessage({
+              action: 'downloadImage',
+              url: bestUrl,
+              filename: filename
+            });
+          });
+        }
+      }
+    }
+  }
+
 
   // 处理 economist.com
   else if (window.location.hostname.includes("economist.com")) {
@@ -2717,6 +3009,11 @@ function extractAndCopy() {
     }
   }
 
+  // ==========================================
+  // 3. 通用/收尾逻辑
+  // ==========================================
+
+  // 如果提取到了文本，执行复制
   if (textContent) {
     // 创建一个隐藏的 textarea 元素以复制文本
     const textarea = document.createElement('textarea');

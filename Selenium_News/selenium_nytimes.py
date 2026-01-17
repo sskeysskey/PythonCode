@@ -13,17 +13,38 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
+import sys
+import platform # <--- 新增
 
-# ================= 配置区域 =================
+# ================= 配置区域 (跨平台修改) =================
 
-# 1. 路径配置
-CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
 
-# 文件路径
-FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/nytimes.html"
-NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/nytimes.html"
-TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+# 2. 定义基础路径
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 3. 浏览器与驱动路径 (跨平台适配)
+if platform.system() == 'Darwin':
+    # macOS 配置 (保持原样)
+    CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver_beta")
+elif platform.system() == 'Windows':
+    # Windows 配置 (默认使用标准版 Chrome)
+    CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not os.path.exists(CHROME_BINARY_PATH):
+        CHROME_BINARY_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver.exe")
+else:
+    # Linux
+    CHROME_BINARY_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+
+# 4. 业务文件路径
+OLD_FILE_PATTERN = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "nytimes.html")
+NEW_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "nytimes.html")
+TODAY_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
 
 # 设置超时时间
 TIMEOUT = 20 
@@ -40,7 +61,13 @@ GENERIC_LABELS = {
 # ================= 工具函数 =================
 
 def open_html_file(file_path):
-    webbrowser.open('file://' + os.path.realpath(file_path), new=2)
+    # <--- 跨平台修改：处理 Windows 路径反斜杠和 file:// 格式 --->
+    real_path = os.path.realpath(file_path)
+    if os.name == 'nt':
+        url = 'file:///' + real_path.replace('\\', '/')
+    else:
+        url = 'file://' + real_path
+    webbrowser.open(url, new=2)
 
 def is_similar(url1, url2):
     if not url1 or not url2:
@@ -56,19 +83,27 @@ def main():
     current_year = current_datetime.year
     formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
-    # --- 1. 初始化 Selenium ---
+    # ================= 1. 初始化 Selenium (核心移植部分) =================
+    print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
+    
     options = webdriver.ChromeOptions()
-    options.binary_location = CHROME_BINARY_PATH 
+    if os.path.exists(CHROME_BINARY_PATH):
+        options.binary_location = CHROME_BINARY_PATH
+    else:
+        print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
+
+    # --- Headless模式 & 伪装设置 ---
     options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
-
+    
+    # --- 伪装设置 (User-Agent & 去除自动化特征) ---
     user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     options.add_argument(f'user-agent={user_agent}')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    
-    # 性能优化
+
+    # --- 性能优化 ---
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-dev-shm-usage")
@@ -76,12 +111,19 @@ def main():
     options.add_argument("--blink-settings=imagesEnabled=false")
     options.page_load_strategy = 'eager'
 
+    # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
         print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        print("请下载对应版本的 ChromeDriver 并放置在该路径下。")
         return
 
     service = Service(executable_path=CHROME_DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Selenium 启动失败: {e}")
+        return
+        
     driver.set_page_load_timeout(30)
     wait = WebDriverWait(driver, 10)
 
@@ -89,7 +131,7 @@ def main():
     new_rows = []
     new_rows1 = []
     old_content = []
-    old_file_list = glob.glob(FILE_PATTERN)
+    old_file_list = glob.glob(OLD_FILE_PATTERN)
 
     try:
         print("正在访问 NYTimes...")
@@ -140,7 +182,6 @@ def main():
                 try:
                     href = link.get_attribute('href')
                     final_title = ""
-
                     # 1. 优先尝试找 h3 (最标准的标题)
                     try:
                         h3_text = link.find_element(By.TAG_NAME, "h3").text.strip()
@@ -148,7 +189,7 @@ def main():
                             final_title = h3_text
                     except:
                         pass
-
+                    
                     # 2. 如果 h3 不存在或被判定为垃圾词，尝试找 p (摘要/副标题)
                     if not final_title:
                         try:
@@ -172,9 +213,10 @@ def main():
                             if valid_parts:
                                 # 假设真正的标题是里面最长的那段话
                                 final_title = max(valid_parts, key=len)
-
+                    
                     # 4. 清理标题中的 "MIN READ" 等噪音
-                    final_title = re.sub(r'\d+\s+MIN\s+READ', '', final_title, flags=re.IGNORECASE).strip()
+                    if final_title:
+                        final_title = re.sub(r'\d+\s+MIN\s+READ', '', final_title, flags=re.IGNORECASE).strip()
                     
                     if href and final_title:
                         raw_data_list.append((href, final_title))
@@ -185,7 +227,7 @@ def main():
                     continue
 
             print(f"提取到 {len(raw_data_list)} 条原始数据，开始排重过滤...")
-
+            
             # 过滤逻辑
             blacklist_urls = [
                 'podcasts', 'theathletic', '/athletic/', # 体育
@@ -193,19 +235,19 @@ def main():
                 'sports', 'crosswords', 'cooking', # 生活
                 'new-books-recommendations', 'magazine', 'wirecutter',
                 '/live/', # 直播流
-                '/nyregion/', # 纽约本地新闻 (新添加)
-                '/obituaries/', # 讣告 (通常不需要)
+                '/nyregion/', # 纽约本地新闻
+                '/obituaries/', # 讣告
                 '/style/', # 时尚
                 '/arts/', # 艺术
-                '/theater/' # 戏剧
+                '/theater/', # 戏剧
+                '/books/' # 书籍
             ]
-
+            
             for href, title_text in raw_data_list:
                 
                 # 1. 标题长度硬性过滤 (防止漏网的 "Live" 或 "Video")
                 if len(title_text) < 5:
                     continue
-
                 # 2. URL 黑名单过滤
                 if any(sub.lower() in href.lower() for sub in blacklist_urls):
                     continue
@@ -228,11 +270,15 @@ def main():
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
-
     finally:
         driver.quit()
 
     # --- 5. 文件写入 ---
+    
+    # 确保目标目录存在
+    os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
+
     if old_file_list:
         try:
             if os.path.exists(old_file_list[0]):
@@ -267,8 +313,11 @@ def main():
             if file_exists:
                 with open(TODAY_HTML_PATH, 'r', encoding='utf-8') as html_file:
                     content = html_file.read()
+                
                 if closing_tag in content:
                     content = content.replace(closing_tag, "")
+                content = content.replace("</table>\n</body>\n</html>", "")
+                
                 new_content = content + append_content + closing_tag
                 with open(TODAY_HTML_PATH, 'w', encoding='utf-8') as html_file:
                     html_file.write(new_content)

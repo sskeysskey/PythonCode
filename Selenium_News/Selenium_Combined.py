@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import subprocess
+import platform
 
 # 确保当前目录在 Python 搜索路径中，以便能找到同目录下的其他 py 文件
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,11 +16,14 @@ try:
     
     # 2. 导入 Selenium 爬虫 (作为第二阶段)
     import selenium_wsj_cn
+    import selenium_dw_cn
+    import selenium_rfi_cn
     import selenium_economist
     import selenium_techreview
     import selenium_nikkei_asia
     import selenium_washingtonpost
     import selenium_nytimes
+
 except ImportError as e:
     print(f"❌ 导入模块失败: {e}")
     print("请确保 javascript_news.py 和其他 selenium_*.py 文件在同一个文件夹内。")
@@ -46,15 +50,40 @@ def run_task(module_name, module_obj):
     time.sleep(2)
 
 def activate_terminal():
-    """将终端窗口置于前台"""
-    script = '''
-    delay 0.5
-    tell application "Terminal"
-        activate
-    end tell
-    '''
-    # 运行AppleScript
-    subprocess.run(['osascript', '-e', script])
+    """
+    跨平台：将终端/命令行窗口置于前台
+    """
+    system_name = platform.system()
+    
+    if system_name == 'Darwin':
+        # macOS: 使用 AppleScript
+        script = '''
+        delay 0.5
+        tell application "Terminal"
+            activate
+        end tell
+        '''
+        try:
+            subprocess.run(['osascript', '-e', script], check=True)
+        except Exception as e:
+            print(f"尝试置顶终端失败 (macOS): {e}")
+            
+    elif system_name == 'Windows':
+        # Windows: 使用 ctypes 调用 Win32 API
+        try:
+            import ctypes
+            # 获取当前控制台窗口句柄
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd != 0:
+                # SW_RESTORE = 9 (如果窗口最小化了，恢复它)
+                ctypes.windll.user32.ShowWindow(hwnd, 9)
+                # 将窗口带到前台
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"尝试置顶终端失败 (Windows): {e}")
+    else:
+        # Linux 其他系统暂不处理
+        pass
 
 def main():
     total_start = time.time()
@@ -64,20 +93,29 @@ def main():
     # 包括: FT, WSJ(Eng), Bloomberg, Reuters
     # 注意：这部分会控制鼠标，且不是 Headless 的
     try:
+        # 确保 Javascript_News 模块已经按照之前的建议修改为跨平台版本
         Javascript_News.main()
     except Exception as e:
         print(f"❌ 第一阶段 (JavaScript News) 执行失败: {e}")
         # 即使第一阶段失败，也继续尝试第二阶段
     
     time.sleep(2) # 阶段切换缓冲
+    
+    # 尝试将控制权交回终端窗口
     activate_terminal()
     time.sleep(1)
 
     # ================= 第二阶段：Selenium Headless 抓取 =================
     # 包括: WSJ(CN), Economist, TechReview, Nikkei, WaPo, NYTimes
-
-    # 1. WSJ CN
+    
+    # 1.1 WSJ CN
     run_task("Wall Street Journal (CN)", selenium_wsj_cn)
+
+    # 1.2 RFI CN
+    run_task("法广头条", selenium_rfi_cn)
+
+    # 1.3 DE CN
+    run_task("德国之声", selenium_dw_cn)
 
     # 2. The Economist
     run_task("The Economist", selenium_economist)
@@ -96,6 +134,7 @@ def main():
 
     total_end = time.time()
     duration = total_end - total_start
+
     print("=" * 60)
     print(f"🎉 所有任务执行完成！总耗时: {duration:.2f} 秒")
     print("=" * 60)

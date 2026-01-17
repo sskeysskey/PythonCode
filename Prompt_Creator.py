@@ -12,16 +12,30 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextDocument, QTextCursor, QKeySequence
 
-# ==================== Nord 主题 QSS (保持不变) ====================
+# ==================== 配置区域 (跨平台修改) ====================
+
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义基础编码目录 (假设结构一致，如果不同请手动调整)
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 具体文件路径
+HISTORY_FILE = os.path.join(BASE_CODING_DIR, "python_code", "Modules", "Prompt_history.json")
+DEFAULT_FILE_SELECTION_PATH = BASE_CODING_DIR
+LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
+
+# ==================== Nord 主题 QSS (跨平台优化) ====================
+
 NORD_QSS = """
 QWidget {
     background-color: #2E3440;
     color: #D8DEE9;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 13px; /* 稍微调小全局字体 */
+    /* 跨平台字体适配: Segoe UI (Win), San Francisco (Mac), Roboto (Android/Linux), YaHei (Fallback) */
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Microsoft YaHei", sans-serif;
+    font-size: 13px;
     border: none;
 }
-
 QLineEdit, QTextEdit, QListWidget {
     background-color: #3B4252;
     color: #E5E9F0;
@@ -30,14 +44,12 @@ QLineEdit, QTextEdit, QListWidget {
     padding: 4px;
     selection-background-color: #4C566A;
 }
-
 /* 针对 Prompt 指令输入框的特殊样式 - 字体调大 */
 #prompt_input_field {
-    font-size: 16px; /* 在这里调整你想要的字体大小 */
+    font-size: 16px;
     line-height: 1.5;
     padding: 8px;
 }
-
 QListWidget {
     border: 1px solid #434C5E;
     outline: none;
@@ -51,11 +63,9 @@ QListWidget::item:selected {
     color: #ECEFF4;
     border-radius: 2px;
 }
-
 QLineEdit:focus, QTextEdit:focus, QListWidget:focus {
     border: 1px solid #5E81AC;
 }
-
 QPushButton {
     background-color: #434C5E;
     color: #ECEFF4;
@@ -63,23 +73,19 @@ QPushButton {
     padding: 6px 12px;
     border-radius: 4px;
 }
-
 QPushButton:hover { background-color: #4C566A; }
 QPushButton:pressed { background-color: #5E81AC; }
-
 QPushButton#generateButton {
     background-color: #A3BE8C;
     color: #2E3440;
     font-weight: bold;
 }
-
 QPushButton#deleteButton {
     color: #BF616A;
     font-weight: bold;
     background-color: transparent;
 }
 QPushButton#deleteButton:hover { color: #D08770; }
-
 /* 优化：减小项目名称输入框的尺寸 */
 #project_name_input {
     font-size: 14px; 
@@ -87,14 +93,12 @@ QPushButton#deleteButton:hover { color: #D08770; }
     padding: 4px;
     height: 25px;
 }
-
 /* 分割线设为极细且与背景同色 */
 QSplitter::handle { 
     background-color: #2E3440; 
 }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
-
 /* 滚动条美化 */
 QScrollBar:vertical {
     border: none;
@@ -108,10 +112,6 @@ QScrollBar::handle:vertical {
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 """
-
-HISTORY_FILE = "/Users/yanzhang/Coding/python_code/Modules/Prompt_history.json"
-DEFAULT_FILE_SELECTION_PATH = "/Users/yanzhang/Coding"
-LAST_FILE_SELECTION_PATH = DEFAULT_FILE_SELECTION_PATH
 
 # --- 查找替换对话框 (PyQt6 适配版) ---
 class SearchReplaceDialog(QDialog):
@@ -173,6 +173,7 @@ class FileContentTextEdit(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.search_dialog = None
+
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.StandardKey.Find):
             if not self.search_dialog: self.search_dialog = SearchReplaceDialog(self, self.window())
@@ -198,7 +199,6 @@ class FileBlockWidget(QWidget):
         # 当输入框失去焦点（例如点击了下方内容框）或按回车时，触发加载
         self.path_input.editingFinished.connect(self.load_from_input)
         # ======================================================
-
         self.del_btn = QPushButton("X"); self.del_btn.setObjectName("deleteButton"); self.del_btn.setFixedSize(24, 24)
         self.del_btn.clicked.connect(lambda: self.delete_requested.emit(self))
         
@@ -210,26 +210,41 @@ class FileBlockWidget(QWidget):
 
     def select_file(self):
         global LAST_FILE_SELECTION_PATH
+        # 确保路径存在，否则回退到主目录
+        if not os.path.exists(LAST_FILE_SELECTION_PATH):
+            LAST_FILE_SELECTION_PATH = USER_HOME
+
         f_paths, _ = QFileDialog.getOpenFileNames(self, "选择文件", LAST_FILE_SELECTION_PATH)
         if f_paths:
             LAST_FILE_SELECTION_PATH = os.path.dirname(f_paths[0])
             self.files_selected.emit(f_paths)
 
     def populate_with_file(self, f_path):
-        # 统一将路径填入输入框（如果是手动输入的，这一步是重复的但无害）
+        # <--- 跨平台：标准化路径分隔符 (Windows上将 / 变为 \)
+        f_path = os.path.normpath(f_path)
+        
         self.path_input.setText(f_path)
         try:
             with open(f_path, 'r', encoding='utf-8') as f: 
                 self.content_edit.setPlainText(f.read())
+        except UnicodeDecodeError:
+            # 尝试 GBK 兼容 Windows 旧文件
+            try:
+                with open(f_path, 'r', encoding='gbk') as f:
+                    self.content_edit.setPlainText(f.read())
+            except:
+                self.content_edit.setPlaceholderText("无法读取或二进制文件")
         except: 
-            self.content_edit.setPlaceholderText("无法读取或二进制文件")
+            self.content_edit.setPlaceholderText("无法读取文件")
 
     def get_file_info(self):
         p = self.path_input.text().strip()
         return p, os.path.basename(p), self.content_edit.toPlainText()
 
     def load_data(self, path, content):
-        self.path_input.setText(path); self.content_edit.setPlainText(content)
+        if path:
+            self.path_input.setText(os.path.normpath(path))
+        self.content_edit.setPlainText(content)
 
     # =========== 【恢复的功能：手动输入加载逻辑】 ============
     def load_from_input(self):
@@ -238,7 +253,9 @@ class FileBlockWidget(QWidget):
         if p.startswith("file://"):
             p = p[7:]
         
-        # 只有当路径存在且是文件时才加载，避免清空已有的手动编辑内容
+        # <--- 跨平台：处理 Windows 路径引号问题 (e.g. "C:\Path\To\File")
+        p = p.strip('"').strip("'")
+        
         if p and os.path.exists(p) and os.path.isfile(p):
             self.populate_with_file(p)
 
@@ -272,6 +289,7 @@ class OutputDialog(QDialog):
 # ==================== 历史记录对话框 (PyQt6 适配版) ====================
 class HistoryDialog(QDialog):
     record_selected = pyqtSignal(dict)
+
     def __init__(self, data, parent=None):
         super().__init__(parent)
         self.setWindowTitle("历史记录")
@@ -282,7 +300,6 @@ class HistoryDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15) # 增加外边距
         layout.setSpacing(10) # 增加组件间距
-
         # PyQt6: Qt.Orientation.Horizontal
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(1)
@@ -301,7 +318,6 @@ class HistoryDialog(QDialog):
         split.setSizes([300, 600])
         
         layout.addWidget(split, 1) # 分割器占据主要空间
-
         # 底部按钮区域
         btn_layout = QHBoxLayout()
         self.del_btn = QPushButton("删除选中记录")
@@ -317,7 +333,6 @@ class HistoryDialog(QDialog):
         btn_layout.addWidget(self.load_btn)
         
         layout.addLayout(btn_layout)
-
         # 信号连接
         self.list.currentItemChanged.connect(self.show_prev)
         self.list.itemDoubleClicked.connect(self.load)
@@ -347,7 +362,7 @@ class HistoryDialog(QDialog):
                 if 0 <= idx < len(self.data): del self.data[idx]
             # 同步到文件
             try:
-                with open(HISTORY_FILE, 'w') as f: json.dump(self.data, f, indent=4, ensure_ascii=False)
+                with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(self.data, f, indent=4, ensure_ascii=False)
             except: pass
             self._refresh_list()
             self.prev.clear()
@@ -368,16 +383,13 @@ class MainWindow(QWidget):
     def init_ui(self):
         self.setWindowTitle("代码与Prompt整合工具 (PyQt6)")
         
-        # 这里的 resize 依然保留，作为窗口非最大化时的初始大小
         self.resize(1600, 1000)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5) # 减小窗口边距
-
         # PyQt6: Qt.Orientation.Vertical
         self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         self.main_splitter.setHandleWidth(1)
-
         # --- 1. 顶部区域 ---
         top_widget = QWidget()
         top_layout = QHBoxLayout(top_widget)
@@ -410,9 +422,10 @@ class MainWindow(QWidget):
         self.add_btn.clicked.connect(self._add_block_and_select_file)
         # PyQt6: Qt.AlignmentFlag.AlignTop
         mid_layout.addWidget(self.add_btn, 0, Qt.AlignmentFlag.AlignTop)
+        
         for _ in range(3): self._add_file_block_widget(True)
         self.main_splitter.addWidget(mid_widget)
-
+        
         # --- 3. 底部：Prompt 指令输入区域 (修正：已添加到 splitter) ---
         bot_widget = QWidget()
         bot_layout = QVBoxLayout(bot_widget)
@@ -433,7 +446,7 @@ class MainWindow(QWidget):
         
         # 将底部挂件添加到分割器
         self.main_splitter.addWidget(bot_widget)
-
+        
         # 强制设置初始分配比例：顶部固定，中部占70%，底部占30%
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 4)
@@ -452,11 +465,13 @@ class MainWindow(QWidget):
             s = QSplitter(Qt.Orientation.Horizontal); self.container_layout.addWidget(s)
             s.setHandleWidth(1)
             self.file_block_splitters.append(s)
+        
         block = FileBlockWidget()
         block.delete_requested.connect(self._handle_delete)
         block.files_selected.connect(self.handle_files)
         if data: block.load_data(data.get("path"), data.get("content"))
         self.file_block_splitters[-1].addWidget(block)
+        
         if add_ref: self.file_blocks.append(block)
         return block
 
@@ -485,24 +500,30 @@ class MainWindow(QWidget):
         for b in self.file_blocks:
             path, fname, content = b.get_file_info()
             if path or content.strip():
+                # <--- 跨平台：标准化路径用于存储
+                path = os.path.normpath(path) if path else ""
+                
                 rec_files.append({"path": path, "filename": fname, "content": content})
                 tree.append(f"├── {fname}")
                 contents.append(f'\n\n{path if path else "临时内容"}\n“{content}”；')
-
+        
         # 保存历史
         try:
             if not os.path.exists(HISTORY_FILE): os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
             try: 
-                with open(HISTORY_FILE, 'r') as f: history = json.load(f)
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f: history = json.load(f)
             except: history = []
+            
             history.append({
                 "id": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
                 "project_name": p_name, 
                 "files": rec_files, 
                 "final_prompt": self.prompt_input.toPlainText()
             })
-            with open(HISTORY_FILE, 'w') as f: json.dump(history, f, indent=4, ensure_ascii=False)
-        except: pass
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as f: json.dump(history, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"保存历史失败: {e}")
+
         output = [fixed_desc, f'\n\n"{p_name}"', "\n" + "\n".join(tree)] + contents + [f"\n\n{self.prompt_input.toPlainText()}"]
         # PyQt6: exec()
         OutputDialog("".join(output), self).exec()
@@ -510,7 +531,7 @@ class MainWindow(QWidget):
     def show_history(self):
         try:
             if not os.path.exists(HISTORY_FILE): return
-            with open(HISTORY_FILE, 'r') as f: data = json.load(f)
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f: data = json.load(f)
             if data:
                 d = HistoryDialog(data, self)
                 d.record_selected.connect(self.load_record)
@@ -524,6 +545,7 @@ class MainWindow(QWidget):
         # 清除现有块并重新加载
         for s in self.file_block_splitters: s.deleteLater()
         self.file_block_splitters.clear(); self.file_blocks.clear()
+        
         for f in data.get("files", []): self._add_file_block_widget(True, f)
         while len(self.file_blocks) < 3: self._add_file_block_widget(True)
 

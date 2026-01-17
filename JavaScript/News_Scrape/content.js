@@ -65,7 +65,10 @@ function scrapeBloomberg() {
 
     links.forEach(link => {
         const href = link.href;
-        let titleText = link.textContent.trim();
+
+        // 修改为如下，解决主副标题粘连问题：
+        // 进阶版：只有当前面没有标点符号时，才添加句号
+        let titleText = link.innerText.replace(/([^\.\?\!])[\n\r]+/g, '$1. ').replace(/[\n\r]+/g, ' ').trim();
 
         if (titleText.startsWith("Newsletter: ")) {
             titleText = titleText.substring(11);

@@ -4,8 +4,43 @@ import codecs
 import re
 import sys
 import pyperclip
-sys.path.append('/Users/yanzhang/Coding/python_code/Modules')
-from Rename_segment import rename_first_segment_file
+import tempfile  # <--- 新增：用于获取跨平台临时目录
+
+# ================= 配置区域 (跨平台修改) =================
+
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义基础 Coding 目录
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 定义模块路径并添加到 sys.path
+MODULES_DIR = os.path.join(BASE_CODING_DIR, "python_code", "Modules")
+if MODULES_DIR not in sys.path:
+    sys.path.append(MODULES_DIR)
+
+# 4. 定义新闻文件路径
+NEWS_FILE_PATH = os.path.join(BASE_CODING_DIR, "News", "today_chn.txt")
+
+# 5. 定义临时目录 (Mac下兼容 /tmp, Windows下自动适配)
+# 注意：如果你的上游程序(生成segment文件的程序)在Mac上写死了 /tmp/，
+# 这里在Mac上最好也保持 /tmp/。
+if os.name == 'nt':
+    TEMP_DIR = tempfile.gettempdir()
+else:
+    TEMP_DIR = "/tmp"
+
+# ========================================================
+
+# 尝试导入模块，如果失败则打印警告 (防止在没部署 Modules 的新电脑上直接报错)
+try:
+    from Rename_segment import rename_first_segment_file
+except ImportError:
+    print(f"警告: 无法从 {MODULES_DIR} 导入 Rename_segment。")
+    print("请确保该文件存在，或者手动修改路径。")
+    # 定义一个空函数防止程序崩溃
+    def rename_first_segment_file(directory):
+        print("模拟执行: rename_first_segment_file")
 
 def process_content_with_empty_lines(text):
     """
@@ -54,6 +89,7 @@ def extract_number(filename):
     return int(match.group(1)) if match else None
 
 def find_min_segment_file(directory):
+    # 使用 os.path.join 确保路径拼接跨平台正确
     search_pattern = os.path.join(directory, 'segment_*.txt')
     files = glob.glob(search_pattern)
     valid_files = [f for f in files if extract_number(f) is not None]
@@ -64,12 +100,21 @@ def NewsTitle_File(clipboard_content, file_path):
     # 再移除所有空行
     clipboard_content = remove_empty_lines(clipboard_content)
     
+    # 确保目标目录存在
+    target_dir = os.path.dirname(file_path)
+    if not os.path.exists(target_dir):
+        try:
+            os.makedirs(target_dir)
+        except OSError:
+            pass
+
     # 如果文件为空，直接写入内容并添加换行符。如果文件不为空且最后一个字符不是换行符，添加一个换行符后再写入新内容，否则直接写入新内容。
     if clipboard_content:
         with codecs.open(file_path, 'a+', 'utf-8') as file:
             file.seek(0, os.SEEK_END)
             if file.tell() > 0:
                 file.seek(file.tell() - 1, os.SEEK_SET)
+                # 读取时注意编码，虽然这里只读1个字节判断换行
                 if file.read(1) != '\n':
                     file.write('\n')
             file.write(clipboard_content + '\n')
@@ -97,13 +142,13 @@ def filter_lines_starting_with_digit(text):
     return '\n'.join(filtered_lines)
 
 def main():
-    directory = "/tmp/"
-    file_path = '/Users/yanzhang/Coding/News/today_chn.txt'
+    # 使用之前定义的跨平台变量
+    directory = TEMP_DIR
+    file_path = NEWS_FILE_PATH
     
     try:
         # 获取剪贴板内容并计算非空行数
         clipboard_content = pyperclip.paste()
-
         # --- 新增防御逻辑开始 ---
         # 如果剪贴板里包含发送给 AI 的标签 <document> 或者 prompt 里的关键词
         # 说明没有成功复制到翻译结果，直接报错，触发重试
@@ -123,7 +168,6 @@ def main():
         clipboard_lines = count_non_empty_lines(clipboard_content)
         
         print(f"处理后剪贴板行数: {clipboard_lines}") # 方便调试查看
-
         if clipboard_lines == 0:
             print("剪贴板为空或内容无效（没有以数字开头的行）。")
             return
@@ -150,10 +194,13 @@ def main():
                 rename_first_segment_file(directory)
                 print("行数相同。程序执行完毕。")
         else:
-            print("未找到符合条件的 segment 文件。")
+            print(f"在 {directory} 未找到符合条件的 segment 文件。")
     
     except Exception as e:
         print(f"程序出错: {e}")
+        # 在调试阶段，或者在命令行运行时，可能希望看到完整的错误堆栈
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

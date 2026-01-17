@@ -10,21 +10,39 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-# 引入异常处理，防止滚动后元素失效
 from selenium.common.exceptions import StaleElementReferenceException
+import sys
+import platform # <--- 新增
 
-# ================= 配置区域 =================
+# ================= 配置区域 (跨平台修改) =================
 
-# 1. 路径配置 (适配 Beta 版)
-# Chrome Beta 浏览器程序路径 (必须指定，因为使用了 Beta 版驱动)
-CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-# Chrome Beta 驱动路径
-CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
 
-# 文件路径
-FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/economist.html"
-NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/economist.html"
-TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+# 2. 定义基础路径
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 3. 浏览器与驱动路径 (跨平台适配)
+if platform.system() == 'Darwin':
+    # macOS 配置 (保持原样)
+    CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver_beta")
+elif platform.system() == 'Windows':
+    # Windows 配置 (默认使用标准版 Chrome)
+    CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not os.path.exists(CHROME_BINARY_PATH):
+        CHROME_BINARY_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver.exe")
+else:
+    # Linux
+    CHROME_BINARY_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+
+# 4. 业务文件路径
+OLD_FILE_PATTERN = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "economist.html")
+NEW_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "economist.html")
+TODAY_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
 
 # 设置超时时间
 TIMEOUT = 20 
@@ -32,8 +50,13 @@ TIMEOUT = 20
 # ================= 工具函数 =================
 
 def open_html_file(file_path):
-    """打开生成的HTML文件"""
-    webbrowser.open('file://' + os.path.realpath(file_path), new=2)
+    # <--- 跨平台修改：处理 Windows 路径反斜杠和 file:// 格式 --->
+    real_path = os.path.realpath(file_path)
+    if os.name == 'nt':
+        url = 'file:///' + real_path.replace('\\', '/')
+    else:
+        url = 'file://' + real_path
+    webbrowser.open(url, new=2)
 
 def is_similar(url1, url2):
     """
@@ -44,7 +67,6 @@ def is_similar(url1, url2):
         
     parsed_url1 = urlparse(url1)
     parsed_url2 = urlparse(url2)
-
     # 比较基本部分：协议、主机名
     if parsed_url1.netloc != parsed_url2.netloc:
         return False
@@ -72,14 +94,19 @@ def is_similar(url1, url2):
 # ================= 主程序逻辑 =================
 
 def main():
-    # --- 1. 初始化 Selenium ---
+    # ================= 1. 初始化 Selenium (核心移植部分) =================
+    print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
+    
     options = webdriver.ChromeOptions()
-    options.binary_location = CHROME_BINARY_PATH # 指定浏览器可执行文件位置
+    if os.path.exists(CHROME_BINARY_PATH):
+        options.binary_location = CHROME_BINARY_PATH
+    else:
+        print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
     options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
-
+    
     # --- 伪装设置 (User-Agent & 去除自动化特征) ---
     user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     options.add_argument(f'user-agent={user_agent}')
@@ -95,15 +122,20 @@ def main():
     options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
     options.page_load_strategy = 'eager'  # DOM准备好就开始
 
-    # 检查驱动是否存在
+    # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
         print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        print("请下载对应版本的 ChromeDriver 并放置在该路径下。")
         return
 
     # 启动浏览器
     service = Service(executable_path=CHROME_DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
-    
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Selenium 启动失败: {e}")
+        return
+        
     # 设置页面加载超时
     driver.set_page_load_timeout(30)
     wait = WebDriverWait(driver, 10)
@@ -112,7 +144,7 @@ def main():
     new_rows = []
     new_rows1 = []
     old_content = []
-    old_file_list = glob.glob(FILE_PATTERN) # 提前获取
+    old_file_list = glob.glob(OLD_FILE_PATTERN)
 
     try:
         print("正在访问 The Economist...")
@@ -186,7 +218,7 @@ def main():
                     continue # 忽略失效的元素
                 except Exception:
                     continue
-
+            
             print(f"提取到 {len(raw_data_list)} 个原始链接，开始处理逻辑...")
 
             # [核心修改] 第二步：处理逻辑 (过滤和排重)
@@ -202,9 +234,7 @@ def main():
                     if not is_old_duplicate and not is_new_duplicate:
                         new_rows.append([formatted_datetime, title_text, href])
                         new_rows1.append(["Economist", title_text, href])
-                        # print(f"新发现: {title_text[:30]}...") 
 
-            # ==================== 日志区域 ====================
             print("-" * 40)
             if new_rows:
                 print(f"✅ 统计报告: 本次共抓取到 {len(new_rows)} 条新新闻！")
@@ -214,14 +244,16 @@ def main():
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
-
     finally:
         # 关闭驱动
         driver.quit()
 
     # --- 5. 文件写入操作 ---
+    
+    # 确保目标目录存在
+    os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
 
-    # 删除旧文件
     if old_file_list:
         try:
             if os.path.exists(old_file_list[0]):

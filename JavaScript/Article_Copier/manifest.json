@@ -19,7 +19,9 @@
     "*://*.reuters.com/*",
     "*://*.nytimes.com/*",
     "*://*.washingtonpost.com/*",
-    "*://*.asia.nikkei.com/*"
+    "*://*.asia.nikkei.com/*",
+    "*://*.dw.com/*",
+    "*://*.rfi.fr/*"
   ],
   "action": {
     "default_title": "Copy Article"

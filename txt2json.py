@@ -6,8 +6,8 @@ import shutil
 import json
 import html
 import subprocess
+import platform  # <--- 新增：用于判断操作系统
 from urllib.parse import urlsplit, urlunsplit
-
 # ------  整个pdf逻辑部分开始  ------#
 from datetime import datetime, timedelta
 from reportlab.pdfgen import canvas
@@ -18,24 +18,49 @@ from reportlab.lib import colors
 from PIL import Image
 import math
 
+# ================= 配置区域 =================
+
+# 1. 动态获取当前用户的主目录
+USER_HOME = os.path.expanduser("~")
+
+# 2. 定义 Coding 根目录
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+
+# 3. 定义 Downloads 目录
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
+
+# 4. 定义 News 相关目录
+NEWS_DIRECTORY = os.path.join(BASE_CODING_DIR, "News")
+LOCAL_SERVER_DIR = os.path.join(BASE_CODING_DIR, "LocalServer", "Resources", "ONews")
+
+# ===========================================
+
 MAJOR_SITES = {s.upper() for s in (
     'FT','WSJ','BLOOMBERG','REUTERS','NYTIMES',
-    'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'OTHER'
+    'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'RFI', 'DW', 'OTHER'
 )}
 
 def alert_and_exit(message):
     """
-    尝试用 macOS 弹窗提醒；若失败则退回到打印。随后立即退出程序。
+    跨平台弹窗提醒；若失败则退回到打印。随后立即退出程序。
     """
     try:
-        # 仅在 macOS 有效；其他平台会抛错
-        subprocess.run([
-            "osascript", "-e",
-            f'display alert "缺少必要文件" message "{message}" as critical'
-        ], check=False)
+        # <--- 修改：区分操作系统
+        if platform.system() == 'Darwin':  # macOS
+            subprocess.run([
+                "osascript", "-e",
+                f'display alert "缺少必要文件" message "{message}" as critical'
+            ], check=False)
+        else:
+            # Windows/Linux 可以打印醒目日志，或者使用 ctypes (可选)
+            print("\n" + "!" * 50)
+            print(f"CRITICAL ERROR: {message}")
+            print("!" * 50 + "\n")
     except Exception:
         pass
-    print(message)
+    
+    # 无论如何都要打印并退出
+    print(f"Alert: {message}")
     raise SystemExit(1)
 
 def find_today_cnh_html(today, news_directory):
@@ -204,7 +229,8 @@ def distribute_images_in_content(content, url_images):
             processed_content.append(article)
     
     # 移除最后一个网站名称标记的换行符（因为是最后一篇文章）
-    if processed_content and processed_content[-1].strip() in {"FT", "WSJ", "Bloomberg", "Technology Review", "The Economist", "Other"}:
+    if processed_content and processed_content[-1].strip() in {'FT','WSJ','BLOOMBERG','REUTERS','NYTIMES',
+    'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'RFI', 'DW', 'OTHER'}:
         processed_content[-1] = processed_content[-1].strip()
     
     # 合并所有处理后的内容
@@ -229,6 +255,7 @@ def clean_and_format_text(txt_path, article_copier_path, image_dir):
         
         for img_placeholder in re.finditer(r'--IMAGE_PLACEHOLDER_(.*?)--(?:\n|$)', cleaned_content):
             img_name = img_placeholder.group(1).strip()
+            # <--- 路径拼接
             img_path = os.path.join(image_dir, img_name)
             all_placeholders.append(img_name)
             
@@ -274,6 +301,35 @@ def clean_and_format_text(txt_path, article_copier_path, image_dir):
         print(f"处理文本时出现错误: {str(e)}")
         return None, []
 
+def get_font_path():
+    """
+    <--- 新增：跨平台获取中文字体路径
+    """
+    system = platform.system()
+    if system == 'Darwin':
+        # macOS 优先使用苹方，备选黑体
+        candidates = [
+            '/System/Library/Fonts/PingFang.ttc',
+            '/Library/Fonts/FangZhengHeiTiJianTi-1.ttf',
+            '/System/Library/Fonts/STHeiti Light.ttc'
+        ]
+    elif system == 'Windows':
+        # Windows 优先使用微软雅黑
+        candidates = [
+            r'C:\Windows\Fonts\msyh.ttc',
+            r'C:\Windows\Fonts\msyh.ttf',
+            r'C:\Windows\Fonts\simhei.ttf'
+        ]
+    else: # Linux
+        candidates = [
+            '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
+        ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
 def txt_to_pdf_with_formatting(txt_path, pdf_path, article_copier_path, image_dir):
     try:
         content, images = clean_and_format_text(txt_path, article_copier_path, image_dir)
@@ -291,24 +347,28 @@ def txt_to_pdf_with_formatting(txt_path, pdf_path, article_copier_path, image_di
             # 绘制黑色背景
             c.setFillColor(colors.black)
             c.rect(0, 0, width, height, fill=1)
-            # 重置填充颜色为白色用于文本
-            # c.setFillColor(colors.white)
-            c.setFillColor(colors.HexColor('#D3D3D3'))  # 米色 浅灰色: '#E0E0E0' 暖灰色: '#D3D3D3' 象牙色: '#FFFFF0'
+            # 重置填充颜色
+            c.setFillColor(colors.HexColor('#D3D3D3'))
         
-        # 设置中文字体
+        # <--- 修改：动态设置中文字体
+        font_path = get_font_path()
+        font_name = 'CustomChineseFont' # 自定义一个通用的内部名称
+        font_size = 40
+        
         try:
-            pdfmetrics.registerFont(TTFont('PingFang', '/Users/yanzhang/Library/Fonts/FangZhengHeiTiJianTi-1.ttf'))
-            font_name = 'PingFang'
-            font_size = 40  # 增加字体大小，原来是12
-        except:
-            print("无法加载中文字体，使用默认字体")
+            if font_path:
+                pdfmetrics.registerFont(TTFont(font_name, font_path))
+                print(f"成功加载字体: {font_path}")
+            else:
+                raise Exception("未找到适合的中文字体文件")
+        except Exception as e:
+            print(f"无法加载中文字体 ({e})，使用默认字体")
             font_name = 'Helvetica'
             font_size = 14
             
         def set_font():
             c.setFont(font_name, font_size)
-            # c.setFillColor(colors.white)  # 设置文字颜色为白色
-            c.setFillColor(colors.HexColor('#D3D3D3'))  # 米色 浅灰色: '#E0E0E0' 暖灰色: '#D3D3D3' 象牙色: '#FFFFF0'
+            c.setFillColor(colors.HexColor('#D3D3D3'))
             
         draw_black_background()  # 初始页面绘制黑色背景
         set_font()  # 初始设置字体
@@ -322,6 +382,7 @@ def txt_to_pdf_with_formatting(txt_path, pdf_path, article_copier_path, image_di
         for paragraph in paragraphs:
             if '--IMAGE_PLACEHOLDER_' in paragraph:
                 img_filename = paragraph.replace('--IMAGE_PLACEHOLDER_', '').replace('--', '').strip()
+                # <--- 路径拼接
                 img_path = os.path.join(image_dir, img_filename)
                 
                 if os.path.exists(img_path):
@@ -435,18 +496,6 @@ def txt_to_pdf_with_formatting(txt_path, pdf_path, article_copier_path, image_di
                 text = text.lstrip('\ufeff').lstrip("：:。.，,")
                 upper = text.upper()
 
-                # 检查是否是主要新闻网站名称
-                # major_news_sites = {
-                #     'FT',
-                #     'WSJ',
-                #     'BLOOMBERG',
-                #     'REUTERS',
-                #     'NYTIMES',
-                #     'WASHINGTONPOST',
-                #     'ECONOMIST',
-                #     'TECHNOLOGYREVIEW',
-                #     'OTHER',
-                # }
                 # if text.upper() in {site.upper() for site in major_news_sites}:
                 if any(upper.startswith(site) for site in MAJOR_SITES):
                     # 保存当前字体设置和颜色
@@ -525,10 +574,14 @@ def extract_site_name(url):
         url = re.sub(r'^https?://(www\.)?', '', url.lower())
         
         # 常见新闻网站的特殊处理
-        if 'ft.com' in url:  # 修改为使用包含判断
+        if 'ft.com' in url:
             return 'FT'
-        elif 'wsj.com' in url:  # 修改为使用包含判断，这样cn.wsj.com也能被正确识别
+        elif 'wsj.com' in url:
             return 'WSJ'
+        elif 'rfi.fr' in url:
+            return 'RFI'
+        elif 'dw.com' in url:
+            return 'DW'
         elif 'bloomberg.com' in url:
             return 'BLOOMBERG'
         elif 'reuters.com' in url:
@@ -610,8 +663,10 @@ SITE_DISPLAY_MAP = {
     'washingtonpost': '华盛顿邮报',
     'economist':      '经济学人',
     'technologyreview': '麻省理工技术评论',
-    'techreview':       '麻省理工技术评论',   # 以防 HTML 里写的是 TechReview
+    'techreview':       '麻省理工技术评论',
     'wsj':            '华尔街日报',
+    'rfi':            '法广头条',
+    'dw':            '德国之声',
     'wsjcn':          '华尔街日报中文网',
     'reuters':        '路透社',
     'bloomberg':      '布隆伯格金融',
@@ -623,6 +678,8 @@ REVERSE_SITE_MAPPING = {
     "华尔街日报": "wsj",
     "华尔街日报中文网": "wsjcn",
     "伦敦金融时报": "ft",
+    "法广头条": "rfi",
+    "德国之声": "dw",
     "布隆伯格金融": "bloomberg",
     "路透社": "reuters",
     "经济学人": "economist",
@@ -639,10 +696,174 @@ def compute_md5(path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+# --- 重要修改：backup_news_assets ---
+def backup_news_assets(local_dir):
+    timestamp = datetime.now().strftime("%y%m%d")
+    
+    # <--- 修改：使用动态路径
+    src_img_dir = os.path.join(DOWNLOADS_DIR, "news_images")
+    src_json = os.path.join(NEWS_DIRECTORY, "onews.json")
+    
+    # 目标位置
+    local_img_target = os.path.join(local_dir, f"news_images_{timestamp}")
+    local_json_target = os.path.join(local_dir, f"onews_{timestamp}.json")
+    
+    # 备份目录位置
+    backup_dir = os.path.join(DOWNLOADS_DIR, "backup")
+    backup_file_dir = os.path.join(NEWS_DIRECTORY, "done")
+    
+    # 1) 合并图片目录
+    if os.path.exists(src_img_dir):
+        os.makedirs(local_img_target, exist_ok=True)
+        # Python 3.8+ 支持 dirs_exist_ok
+        shutil.copytree(src_img_dir, local_img_target, dirs_exist_ok=True)
+        print(f"已将图片合并到: {local_img_target}")
+        # 3) 删除原目录
+        shutil.rmtree(src_img_dir)
+        print(f"已删除原始图片目录: {src_img_dir}")
+    else:
+        print(f"未找到源图片目录: {src_img_dir}")
+        
+    # 1) 备份到 Downloads/backup
+    backup_img_target = os.path.join(backup_dir, f"news_images_{timestamp}")
+    if os.path.exists(backup_img_target):
+        shutil.rmtree(backup_img_target)
+    shutil.copytree(local_img_target, backup_img_target)
+    print(f"图片目录已备份到: {backup_img_target}")
+    
+    # 2) 合并 JSON 文件
+    if os.path.exists(src_json):
+        tmp_json = os.path.join(local_dir, f"onews_{timestamp}_new.json")
+        shutil.copy2(src_json, tmp_json)
+        if os.path.exists(local_json_target):
+            merge_json_groupwise(local_json_target, tmp_json)
+            os.remove(tmp_json)
+        else:
+            os.rename(tmp_json, local_json_target)
+            print(f"已备份 JSON 到: {local_json_target}")
+        os.remove(src_json)
+        print(f"已删除原始JSON文件: {src_json}")
+    else:
+        print(f"未找到源 JSON 文件: {src_json}")
+        
+    # 1) 备份到 Coding/News/done
+    backup_file_target = os.path.join(backup_file_dir, f"onews_{timestamp}.json")
+    shutil.copy2(local_json_target, backup_file_target)
+    print(f"JSON文件已备份到: {backup_file_target}")
+    
+    update_version_json(local_dir, timestamp)
+
+# ... (update_version_json, prune_old_assets, merge_json_groupwise, update_version_json_fake 等函数内部逻辑通用，只需确保调用时传入的路径是 os.path.join 生成的即可) ...
+
+def update_version_json(local_dir, timestamp):
+    version_path = os.path.join(local_dir, "version.json")
+    if not os.path.exists(version_path):
+        data = {"version": "1.0", "files": []}
+    else:
+        with open(version_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+    for item in data.get("files", []):
+        if item.get("type") == "json":
+            file_path = os.path.join(local_dir, item["name"])
+            if os.path.isfile(file_path):
+                new_md5 = compute_md5(file_path)
+                if item.get("md5") != new_md5:
+                    item["md5"] = new_md5
+                    
+    to_add = []
+    json_name = f"onews_{timestamp}.json"
+    json_path = os.path.join(local_dir, json_name)
+    if os.path.isfile(json_path):
+        to_add.append({
+            "name": json_name,
+            "type": "json",
+            "md5": compute_md5(json_path)
+        })
+    img_name = f"news_images_{timestamp}"
+    to_add.append({
+        "name": img_name,
+        "type": "images"
+    })
+    
+    existing_names = { item["name"] for item in data["files"] }
+    for e in to_add:
+        if e["name"] not in existing_names:
+            data["files"].append(e)
+            print(f"已添加到 version.json: {e['name']}")
+            
+    with open(version_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"version.json 已更新")
+
+def prune_old_assets(local_dir, days_to_keep):
+    # 逻辑保持不变，路径拼接已在调用端处理
+    version_path = os.path.join(local_dir, "version.json")
+    if not os.path.exists(version_path): return
+    print(f"\n开始清理超过 {days_to_keep} 天的旧资产...")
+    with open(version_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+    files_to_keep = []
+    files_deleted_count = 0
+    date_pattern = re.compile(r'_(\d{6})')
+    for item in data.get("files", []):
+        item_name = item.get("name", "")
+        match = date_pattern.search(item_name)
+        if not match:
+            files_to_keep.append(item)
+            continue
+        try:
+            file_date = datetime.strptime(match.group(1), "%y%m%d")
+        except ValueError:
+            files_to_keep.append(item)
+            continue
+            
+        if file_date < cutoff_date:
+            path_to_delete = os.path.join(local_dir, item_name)
+            try:
+                if item.get("type") == "json" and os.path.isfile(path_to_delete):
+                    os.remove(path_to_delete)
+                    files_deleted_count += 1
+                    print(f"已删除: {item_name}")
+                elif item.get("type") == "images" and os.path.isdir(path_to_delete):
+                    shutil.rmtree(path_to_delete)
+                    files_deleted_count += 1
+                    print(f"已删除: {item_name}")
+            except Exception as e:
+                print(f"删除失败 {item_name}: {e}")
+        else:
+            files_to_keep.append(item)
+            
+    if files_deleted_count > 0:
+        data["files"] = files_to_keep
+        with open(version_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+
+def merge_json_groupwise(existing_path, new_path):
+    # 逻辑保持不变
+    with open(existing_path, 'r', encoding='utf-8') as f: data_old = json.load(f)
+    with open(new_path, 'r', encoding='utf-8') as f: data_new = json.load(f)
+    merged = {}
+    for group, lst in {**data_old, **data_new}.items():
+        a = data_old.get(group, [])
+        b = data_new.get(group, [])
+        combined = a + b
+        seen = set()
+        deduped = []
+        for item in combined:
+            key = (item.get("topic",""), item.get("url",""), item.get("article",""))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        merged[group] = deduped
+    with open(existing_path, 'w', encoding='utf-8') as f:
+        json.dump(merged, f, ensure_ascii=False, indent=4)
+
 def find_all_news_files(directory):
     pattern = os.path.join(directory, "News_*.txt")
     return sorted(glob.glob(pattern))
-
+    
 def move_cnh_file(source_dir):
     try:
         cnh_pattern = os.path.join(source_dir, "TodayCNH_*.html")
@@ -725,8 +946,7 @@ def move_processed_txt_files(directory):
             counter = 1
             # 循环查找一个不重复的文件名
             while os.path.exists(target_path):
-                new_basename = f"{base}_{counter}{ext}"
-                target_path = os.path.join(done_dir, new_basename)
+                target_path = os.path.join(done_dir, f"{base}_{counter}{ext}")
                 counter += 1
         
         # 移动文件到最终确定的路径
@@ -989,340 +1209,26 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
                 "article_eng": article_eng, # 新增英文部分
                 "images":  imgs
             })
-
+            
     out_path = os.path.join(news_directory, f"onews.json")
     with open(out_path, 'w', encoding='utf-8') as fp:
         json.dump(data, fp, ensure_ascii=False, indent=4)
     print(f"\n已生成 JSON 文件: {out_path}")
 
-def backup_news_assets(local_dir):
-    timestamp = datetime.now().strftime("%y%m%d")
-    # 原始资源位置
-    src_img_dir = "/Users/yanzhang/Downloads/news_images"
-    src_json = "/Users/yanzhang/Coding/News/onews.json"
-    
-    # 目标位置
-    local_img_target = os.path.join(local_dir, f"news_images_{timestamp}")
-    local_json_target = os.path.join(local_dir, f"onews_{timestamp}.json")
-
-    # 备份目录位置
-    backup_dir = "/Users/yanzhang/Downloads/backup"
-    backup_file_dir = "/Users/yanzhang/Coding/News/done"
-
-    # 1) 合并图片目录
-    if os.path.exists(src_img_dir):
-        os.makedirs(local_img_target, exist_ok=True)
-        # Python 3.8+ 支持 dirs_exist_ok
-        shutil.copytree(src_img_dir, local_img_target, dirs_exist_ok=True)
-        print(f"已将图片合并到: {local_img_target}")
-
-        # 3) 删除原目录
-        shutil.rmtree(src_img_dir)
-        print(f"已删除原始图片目录: {src_img_dir}")
-    else:
-        print(f"未找到源图片目录: {src_img_dir}")
-
-    # 1) 备份到 Downloads/backup
-    backup_img_target = os.path.join(backup_dir, f"news_images_{timestamp}")
-    if os.path.exists(backup_img_target):
-        shutil.rmtree(backup_img_target)
-    shutil.copytree(local_img_target, backup_img_target)
-    print(f"图片目录已备份到: {backup_img_target}")
-
-    # 2) 合并 JSON 文件
-    if os.path.exists(src_json):
-        # 先把最新的 JSON 拷贝到一个临时文件
-        tmp_json = os.path.join(local_dir, f"onews_{timestamp}_new.json")
-        shutil.copy2(src_json, tmp_json)
-        if os.path.exists(local_json_target):
-            # 如果已有同名文件，则合并
-            merge_json_groupwise(local_json_target, tmp_json)
-            os.remove(tmp_json)
-        else:
-            # 第一次备份，直接重命名
-            os.rename(tmp_json, local_json_target)
-            print(f"已备份 JSON 到: {local_json_target}")
-        
-        # 3) 删除原文件
-        os.remove(src_json)
-        print(f"已删除原始JSON文件: {src_json}")
-    else:
-        print(f"未找到源 JSON 文件: {src_json}")
-
-    # 1) 备份到 Coding/News/done
-    backup_file_target = os.path.join(backup_file_dir, f"onews_{timestamp}.json")
-    shutil.copy2(local_json_target, backup_file_target)
-    print(f"JSON文件已备份到: {backup_file_target}")
-
-    # 3) 更新 version.json（保持原有逻辑不变）
-    update_version_json(local_dir, timestamp)
-
-
-def update_version_json(local_dir, timestamp):
-    """
-    读取 local_dir/version.json，向 files 数组追加本次
-    onews_*.json 和 news_images_* 记录，并为 json 文件计算 MD5，
-    最后写回 version.json。
-    """
-    version_path = os.path.join(local_dir, "version.json")
-    
-    # 如果 version.json 不存在，则初始化一个空结构
-    if not os.path.exists(version_path):
-        data = {"version": "1.0", "files": []}
-    else:
-        with open(version_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    
-    # 2) 先遍历已有条目，如果是 json，就重新计算 MD5 并更新
-    for item in data.get("files", []):
-        if item.get("type") == "json":
-            file_path = os.path.join(local_dir, item["name"])
-            if os.path.isfile(file_path):
-                new_md5 = compute_md5(file_path)
-                if item.get("md5") != new_md5:
-                    print(f"更新 MD5: {item['name']} {item.get('md5','')} -> {new_md5}")
-                    item["md5"] = new_md5
-    
-    # 3) 准备本次要追加的条目
-    to_add = []
-    # JSON 文件
-    json_name = f"onews_{timestamp}.json"
-    json_path = os.path.join(local_dir, json_name)
-    if os.path.isfile(json_path):
-        to_add.append({
-            "name": json_name,
-            "type": "json",
-            "md5": compute_md5(json_path)
-        })
-    # 图片目录（这里我们不算 MD5，只用时间戳判断更新）
-    img_name = f"news_images_{timestamp}"
-    to_add.append({
-        "name": img_name,
-        "type": "images"
-    })
-    
-    # 4) 去重并追加
-    existing_names = { item["name"] for item in data["files"] }
-    for e in to_add:
-        if e["name"] not in existing_names:
-            data["files"].append(e)
-            print(f"已添加到 version.json: {e['name']}")
-        else:
-            # 如果已经存在，但是 JSON，我们之前已经更新过 MD5
-            if e["type"] == "json":
-                print(f"跳过添加 (已存在): {e['name']}，但 MD5 已刷新")
-            else:
-                print(f"跳过添加 (已存在): {e['name']}")
-    
-    # 写回 version.json（格式化，保留缩进）
-    with open(version_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"version.json 已更新: {version_path}")
-
-# --- 新增功能：清理旧的资产 ---
-def prune_old_assets(local_dir, days_to_keep):
-    """
-    清理 version.json 和本地目录中超过指定天数的旧文件和目录。
-
-    Args:
-        local_dir (str): 资产所在的目录 (例如 /Users/yanzhang/Coding/LocalServer/Resources/ONews)。
-        days_to_keep (int): 文件和目录保留的天数。
-    """
-    version_path = os.path.join(local_dir, "version.json")
-    if not os.path.exists(version_path):
-        print(f"未找到 version.json，跳过清理。")
-        return
-
-    print(f"\n开始清理超过 {days_to_keep} 天的旧资产...")
-
-    try:
-        with open(version_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError) as e:
-        print(f"读取 version.json 时出错: {e}。无法进行清理。")
-        return
-
-    # 计算截止日期
-    cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-    
-    files_to_keep = []
-    files_deleted_count = 0
-    
-    # 正则表达式用于从文件名中提取 YYMMDD 日期
-    date_pattern = re.compile(r'_(\d{6})')
-
-    for item in data.get("files", []):
-        item_name = item.get("name", "")
-        match = date_pattern.search(item_name)
-        
-        if not match:
-            # 如果文件名不符合 'name_YYMMDD' 格式，默认保留
-            print(f"警告: '{item_name}' 不含标准日期戳，将予以保留。")
-            files_to_keep.append(item)
-            continue
-            
-        date_str = match.group(1)
-        try:
-            file_date = datetime.strptime(date_str, "%y%m%d")
-        except ValueError:
-            # 日期格式错误，保留并警告
-            print(f"警告: '{item_name}' 中的日期 '{date_str}' 格式错误，将予以保留。")
-            files_to_keep.append(item)
-            continue
-
-        if file_date < cutoff_date:
-            # 此文件/目录已过期，需要删除
-            print(f"发现过期资产: {item_name} (日期: {file_date.strftime('%Y-%m-%d')})")
-            path_to_delete = os.path.join(local_dir, item_name)
-            
-            try:
-                if item.get("type") == "json" and os.path.isfile(path_to_delete):
-                    os.remove(path_to_delete)
-                    print(f"  - 已删除文件: {path_to_delete}")
-                    files_deleted_count += 1
-                elif item.get("type") == "images" and os.path.isdir(path_to_delete):
-                    shutil.rmtree(path_to_delete)
-                    print(f"  - 已删除目录: {path_to_delete}")
-                    files_deleted_count += 1
-                elif not os.path.exists(path_to_delete):
-                    print(f"  - 警告: 资产已不存在于磁盘，仅从 version.json 中移除。")
-                else:
-                    print(f"  - 警告: 类型未知或路径类型不匹配，跳过删除磁盘文件。")
-
-            except OSError as e:
-                print(f"  - 错误: 删除 '{path_to_delete}' 时失败: {e}")
-        else:
-            # 文件/目录未过期，保留
-            files_to_keep.append(item)
-
-    if files_deleted_count > 0 or len(files_to_keep) != len(data.get("files", [])):
-        # 如果有任何变动，则更新 version.json
-        data["files"] = files_to_keep
-        try:
-            with open(version_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            print(f"\nversion.json 已更新，移除了过期的条目。")
-        except IOError as e:
-            print(f"错误: 无法写回更新后的 version.json: {e}")
-    else:
-        print("\n没有找到需要清理的过期资产。")
-
-def merge_json_groupwise(existing_path, new_path):
-    """
-    将 new_path 中的 JSON 内容按 top-level key（组名）合并到 existing_path。
-    去重逻辑：如果同一组下出现完全相同的条目（topic+url+article），只保留一份。
-    """
-    def load(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    data_old = load(existing_path)
-    data_new = load(new_path)
-    merged = {}
-
-    for group, lst in {**data_old, **data_new}.items():
-        # 合并两个 dict 下同名 group 的列表
-        a = data_old.get(group, [])
-        b = data_new.get(group, [])
-        combined = a + b
-        # 去重：根据 topic + url + article 字段去重
-        seen = set()
-        deduped = []
-        for item in combined:
-            key = (
-                item.get("topic",""),
-                item.get("url",""),
-                item.get("article","")
-            )
-            if key not in seen:
-                seen.add(key)
-                deduped.append(item)
-        merged[group] = deduped
-
-    # 写回 existing_path
-    with open(existing_path, 'w', encoding='utf-8') as f:
-        json.dump(merged, f, ensure_ascii=False, indent=4)
-    print(f"合并并更新 JSON: {existing_path}")
-
-def compute_md5(path):
-    """计算文件的 MD5 哈希值"""
-    hash_md5 = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
-
-def update_version_json_fake(local_dir, timestamp):
-    """
-    读取 local_dir/version.json，向 files 数组追加本次
-    onews_*.json 和 news_images_* 记录，并为 json 文件计算 MD5，
-    最后写回 version.json。
-    """
-    version_path = os.path.join(local_dir, "version.json")
-    
-    # 如果 version.json 不存在，则初始化一个空结构
-    if not os.path.exists(version_path):
-        data = {"version": "1.0", "files": []}
-    else:
-        with open(version_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    
-    # 遍历已有条目，如果是 json，就重新计算 MD5 并更新
-    for item in data.get("files", []):
-        if item.get("type") == "json":
-            file_path = os.path.join(local_dir, item["name"])
-            if os.path.isfile(file_path):
-                new_md5 = compute_md5(file_path)
-                if item.get("md5") != new_md5:
-                    print(f"更新 MD5: {item['name']} {item.get('md5','')} -> {new_md5}")
-                    item["md5"] = new_md5
-    
-    # 准备本次要追加的条目
-    to_add = []
-    # JSON 文件
-    json_name = f"onews_{timestamp}.json"
-    json_path = os.path.join(local_dir, json_name)
-    if os.path.isfile(json_path):
-        to_add.append({
-            "name": json_name,
-            "type": "json",
-            "md5": compute_md5(json_path)
-        })
-    # 图片目录（这里我们不算 MD5，只用时间戳判断更新）
-    img_name = f"news_images_{timestamp}"
-    to_add.append({
-        "name": img_name,
-        "type": "images"
-    })
-    
-    # 去重并追加
-    existing_names = { item["name"] for item in data["files"] }
-    for e in to_add:
-        if e["name"] not in existing_names:
-            data["files"].append(e)
-            print(f"已添加到 version.json: {e['name']}")
-        else:
-            # 如果已经存在，但是 JSON，我们之前已经更新过 MD5
-            if e["type"] == "json":
-                print(f"跳过添加 (已存在): {e['name']}，但 MD5 已刷新")
-            else:
-                print(f"跳过添加 (已存在): {e['name']}")
-    
-    # 写回 version.json（格式化，保留缩进）
-    with open(version_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"version.json 已更新: {version_path}")
 
 if __name__ == "__main__":
     today = datetime.now().strftime("%y%m%d")
-    news_directory = "/Users/yanzhang/Coding/News/"
-    article_copier_path = f"/Users/yanzhang/Coding/News/article_copier_{today}.txt"
-    image_dir = f"/Users/yanzhang/Downloads/news_images"
-    downloads_path = '/Users/yanzhang/Downloads'
-    # 定义本地服务器资源目录，方便复用
-    local_server_dir = "/Users/yanzhang/Coding/LocalServer/Resources/ONews"
-
-    # 0. 先查找当天的 TodayCNH_<today>.html，优先 backup/backup，再回退到 News 根目录
+    
+    # <--- 使用前面定义的动态路径常量
+    news_directory = NEWS_DIRECTORY
+    article_copier_path = os.path.join(NEWS_DIRECTORY, f"article_copier_{today}.txt")
+    image_dir = os.path.join(DOWNLOADS_DIR, "news_images")
+    downloads_path = DOWNLOADS_DIR
+    local_server_dir = LOCAL_SERVER_DIR
+    
+    # 0. 先查找当天的 TodayCNH_<today>.html
     cnh_html_paths = find_today_cnh_html(today, news_directory)
+    
     if not cnh_html_paths:
         # 两处都找不到 -> 弹窗并终止
         alert_and_exit(
@@ -1395,4 +1301,4 @@ if __name__ == "__main__":
 
     # 2. 然后，执行原有的 version.json 更新逻辑
     #    它会为所有 json 文件（包括刚刚被修改的）重新计算 MD5
-    update_version_json_fake(local_server_dir, timestamp)
+    update_version_json(local_server_dir, timestamp)

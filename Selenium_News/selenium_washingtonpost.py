@@ -1,30 +1,48 @@
 import os
 import glob
 import time
-# import pyautogui  # 移除：Headless模式下无法使用GUI操作，已改用JS滚动
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
+import platform # <--- 新增
 
-# ================= 配置区域 =================
+# ================= 配置区域 (跨平台修改) =================
 
-# 1. 浏览器与驱动路径 (Beta 版配置)
-CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
-CHROME_DRIVER_PATH = "/Users/yanzhang/Downloads/backup/chromedriver_beta"
+# 1. 动态获取主目录
+USER_HOME = os.path.expanduser("~")
 
-# 2. 文件路径
-OLD_FILE_PATTERN = "/Users/yanzhang/Coding/News/backup/site/washingtonpost.html"
-NEW_HTML_PATH = "/Users/yanzhang/Coding/News/backup/site/washingtonpost.html"
-TODAY_HTML_PATH = "/Users/yanzhang/Coding/News/today_eng.html"
+# 2. 定义基础路径
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+DOWNLOADS_DIR = os.path.join(USER_HOME, "Downloads")
 
-# ================= 工具函数 =================
+# 3. 浏览器与驱动路径 (跨平台适配)
+if platform.system() == 'Darwin':
+    # macOS 配置 (保持原样)
+    CHROME_BINARY_PATH = "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver_beta")
+elif platform.system() == 'Windows':
+    # Windows 配置 (默认使用标准版 Chrome)
+    CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not os.path.exists(CHROME_BINARY_PATH):
+        CHROME_BINARY_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    CHROME_DRIVER_PATH = os.path.join(DOWNLOADS_DIR, "backup", "chromedriver.exe")
+else:
+    # Linux
+    CHROME_BINARY_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+
+# 4. 业务文件路径
+OLD_FILE_PATTERN = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "washingtonpost.html")
+NEW_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "backup", "site", "washingtonpost.html")
+TODAY_HTML_PATH = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
+
+# ========================================================
 
 def is_similar(url1, url2):
     """
@@ -44,10 +62,14 @@ def main():
     formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
     # ================= 1. 初始化 Selenium (优化版) =================
-    print("正在初始化 Chrome Beta 驱动...")
+    print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
     
     options = webdriver.ChromeOptions()
-    options.binary_location = CHROME_BINARY_PATH
+    # 仅当二进制文件存在时才设置，否则依赖 Selenium 自动查找
+    if os.path.exists(CHROME_BINARY_PATH):
+        options.binary_location = CHROME_BINARY_PATH
+    else:
+        print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
     options.add_argument('--headless=new') 
@@ -71,10 +93,15 @@ def main():
     # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
         print(f"错误：未找到驱动文件: {CHROME_DRIVER_PATH}")
+        print("请下载对应版本的 ChromeDriver 并放置在该路径下。")
         return
 
     service = Service(executable_path=CHROME_DRIVER_PATH)
-    driver = webdriver.Chrome(service=service, options=options)
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Selenium 启动失败: {e}")
+        return
     
     # 初始化容器
     new_rows = []
@@ -125,7 +152,7 @@ def main():
         # 既有的所有链接（用于排重）
         all_links = [old_link for _, _, old_link in old_content]
 
-        # 动态生成年份选择器，避免硬编码 2025
+        # 动态生成年份选择器，避免硬编码
         # 逻辑：查找包含当前年份链接的文章
         css_selector = f"a[href*='/{current_datetime.year}/']:not(.label-link)"
         
@@ -134,12 +161,12 @@ def main():
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
             )
-
+            
             # --- 步骤 A: 获取元素对象 ---
             titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
             print(f"找到了 {len(titles_elements)} 个潜在链接元素。")
 
-            # --- 步骤 B: 快速提取数据 (避免 StaleElementReferenceException) ---
+            # --- 步骤 B: 快速提取数据 ---
             raw_data_list = []
             for element in titles_elements:
                 try:
@@ -198,6 +225,10 @@ def main():
         driver.quit()
 
     # ================= 5. 文件写入操作 =================
+    
+    # 确保目标目录存在
+    os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
 
     # 删除旧文件
     if old_file_list and os.path.exists(old_file_list[0]):
@@ -241,8 +272,9 @@ def main():
                 with open(TODAY_HTML_PATH, 'r', encoding='utf-8') as html_file:
                     content = html_file.read()
                 
-                if closing_tag in content:
-                    content = content.replace(closing_tag, "")
+                # 尝试多种换行格式的结束标签
+                content = content.replace(closing_tag, "")
+                content = content.replace("</table>\n</body>\n</html>", "")
                 
                 new_content = content + append_content + closing_tag
                 
