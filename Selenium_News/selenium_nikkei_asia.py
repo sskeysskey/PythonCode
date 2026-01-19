@@ -58,7 +58,7 @@ EXCLUDED_TITLES = {
     "Kyrgyzstan", "Australia", "New Zealand", "Papua New Guinea",
     "Pacific Islands", "Middle East", "Russia & Caucasus", "North America",
     "Latin America", "Europe", "Africa", "Trading Asia", "Opinion", "Life & Arts",
-    "Politics", "Economy", "Business", "Tech", "Spotlight", "Tech Asia"
+    "Politics", "Economy", "Business", "Tech", "Spotlight", "Tech Asia", "Artificial intelligence"
 }
 
 # ================= 工具函数 =================

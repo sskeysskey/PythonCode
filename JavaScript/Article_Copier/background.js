@@ -1067,11 +1067,17 @@ function extractAndCopy() {
         // 去重
         allImages = [...new Set(allImages)];
 
+        // ★★★ 关键修改：过滤掉低清占位图 (lq-img) ★★★
+        // DW 页面中一个 figure 里通常有两个 img，一个是 lq-img (placeholder)，一个是 hq-img (real)
+        // 如果不过滤，会导致重复下载，且 lq-img 可能会导致文件名冲突或下载为 HTML
+        allImages = allImages.filter(img => !img.classList.contains('lq-img'));
+
         if (allImages.length === 0) {
-          chrome.runtime.sendMessage({ action: 'noImages' });
+          chrome.runtime.sendMessage({
+            action: 'noImages'
+          });
         } else {
           const processedUrls = new Set();
-
           allImages.forEach(img => {
             if (img) {
               // 查找高清图 URL (复用 WSJ 的 srcset 解析逻辑)
@@ -1085,14 +1091,16 @@ function extractAndCopy() {
                   const widthStr = parts[parts.length - 1];
                   const url = parts[0];
                   const widthNum = parseInt(widthStr?.replace(/[^0-9]/g, '') || '0');
-                  return { url: url, width: widthNum };
+                  return {
+                    url: url,
+                    width: widthNum
+                  };
                 });
 
                 // 找到宽度最大的图片
                 const highestResSrc = srcsetEntries.reduce((prev, current) => {
                   return (current.width > prev.width) ? current : prev;
                 }, srcsetEntries[0]);
-
                 if (highestResSrc && highestResSrc.url) {
                   highestResUrl = highestResSrc.url;
                 }
@@ -1120,9 +1128,13 @@ function extractAndCopy() {
                 // 兜底描述
                 if (!altText) altText = img.title || img.alt || 'dw_image';
 
-                // 生成文件名
+                // ★★★ 关键修改：增强文件名清理逻辑 ★★★
                 const processFileName = (text) => {
-                  text = text.replace(/[\\/?%*:|"<>+]/g, '-')
+                  text = text
+                    // 1. 移除中文引号和句号，防止文件名出现 ".." 或 ".html" 混淆
+                    .replace(/[“”。，,]/g, '')
+                    // 2. 移除系统非法字符
+                    .replace(/[\\/?%*:|"<>+]/g, '-')
                     .replace(/\s+/g, ' ')
                     .trim();
                   if (text.length > 100) {

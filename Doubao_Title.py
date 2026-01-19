@@ -161,13 +161,11 @@ def main():
         # 先获取所有非空行
         raw_lines = [line.strip() for line in clipboard_content.splitlines() if line.strip()]
         
-        # 只有当有效内容仅为 1 行时，才进行拒绝词检测
-        if len(raw_lines) == 1:
-            single_line_text = raw_lines[0]
-            # 检查是否包含关键词
-            if "抱歉" in single_line_text or "无法回答" in single_line_text:
-                print(f"FATAL_REFUSAL: 检测到单行拒绝内容 -> {single_line_text}")
-                sys.exit(1) # 抛出致命错误，通知 AppleScript
+        single_line_text = raw_lines[0]
+        # 检查是否包含关键词
+        if "抱歉" in single_line_text or "无法回答" in single_line_text:
+            print(f"FATAL_REFUSAL: 检测到单行拒绝内容 -> {single_line_text}")
+            sys.exit(1) # 抛出致命错误，通知 AppleScript
 
         # 1. 先处理多空行/格式整理 (保留你原有的逻辑)
         clipboard_content = process_content_with_empty_lines(clipboard_content)
