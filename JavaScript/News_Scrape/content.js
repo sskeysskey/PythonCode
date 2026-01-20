@@ -126,7 +126,7 @@ function scrapeReuters() {
     );
 
     // 要排除的路径片段
-    const excludePaths = ['/podcasts/', '/sports/', '/africa/'];
+    const excludePaths = ['/podcasts/', '/sports/', '/africa/', '/audio/'];
     const seen = new Set();
     const newRows = [];
 

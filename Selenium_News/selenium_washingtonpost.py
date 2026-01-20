@@ -191,8 +191,16 @@ def main():
             exclude_keywords = ['podcasts', 'sports', '/music/', 'weather', '/books/',
                                 'food', '/advice/', '/tv/', '/entertainment/',
                                 '/national-security/', '/opinions/']
-
+                                
             for href, title_text in raw_data_list:
+                lower_title = title_text.lower()
+                
+                # 逻辑解释：
+                # 1. "xi jinping" in lower_title -> 忽略大小写 (匹配 Xi Jinping, xi jinping, XI JINPING)
+                # 2. "Xi's" in title_text      -> 严格匹配 (只匹配 Xi's，不匹配 xi's 或 XI'S)
+                if "xi jinping" in lower_title or "Xi's" in title_text:
+                    continue
+                
                 # 1. 关键字过滤
                 if any(keyword in href for keyword in exclude_keywords):
                     continue

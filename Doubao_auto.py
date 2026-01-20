@@ -60,7 +60,7 @@ def find_image_on_screen(template, threshold=0.9):
     else:
         return None, None
 
-def is_content_qualified(text, min_chinese=50):
+def is_content_qualified(text, min_chinese=10):
     """校验内容是否包含足够多的中文"""
     if not text:
         return False

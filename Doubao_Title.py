@@ -162,10 +162,29 @@ def main():
         raw_lines = [line.strip() for line in clipboard_content.splitlines() if line.strip()]
         
         single_line_text = raw_lines[0]
-        # 检查是否包含关键词
-        if "抱歉" in single_line_text or "无法回答" in single_line_text:
-            print(f"FATAL_REFUSAL: 检测到单行拒绝内容 -> {single_line_text}")
+        
+        # --- [修复] 扩大拒绝词库，包含“违反规范”、“不喜欢”等豆包风控术语 ---
+        refusal_keywords = [
+            "抱歉", 
+            "无法回答", 
+            "违反我们的使用规范", 
+            "违反相关规范", 
+            "长按消息后选择", 
+            "不喜欢"
+        ]
+        
+        # 检查第一行或整个剪贴板内容是否包含任一拒绝词
+        # (使用 clipboard_content 检查更保险，防止拒绝语被换行)
+        is_refused = False
+        for keyword in refusal_keywords:
+            if keyword in clipboard_content:
+                is_refused = True
+                break
+        
+        if is_refused:
+            print(f"FATAL_REFUSAL: 检测到敏感/拒绝内容 -> {single_line_text}")
             sys.exit(1) # 抛出致命错误，通知 AppleScript
+
 
         # 1. 先处理多空行/格式整理 (保留你原有的逻辑)
         clipboard_content = process_content_with_empty_lines(clipboard_content)

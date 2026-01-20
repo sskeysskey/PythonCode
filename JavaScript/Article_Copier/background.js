@@ -1185,13 +1185,17 @@ function extractAndCopy() {
             return '';
           })
           .filter(t => {
-            // 基础过滤
+            // 基础过滤：去除空文本或单字符
             if (!t || t.length <= 1) return false;
 
             // ★★★ 新增：精准过滤“广告”二字 ★★★
             if (t === '广告') return false;
 
-            // 过滤无效符号
+            // --- 需求 2：过滤以 "AdChoices" 开头的行 ---
+            // 使用 startsWith 判断，同时也建议转为小写判断以防大小写差异
+            if (t.startsWith('AdChoices')) return false;
+
+            // 过滤无效符号 (清理了原代码中的转义斜杠)
             if (['@', '•', '∞', 'flex', '::before', '::after'].includes(t)) return false;
 
             // 过滤空白行
@@ -1295,7 +1299,6 @@ function extractAndCopy() {
       }
     }
   }
-
 
   // 处理 economist.com
   else if (window.location.hostname.includes("economist.com")) {

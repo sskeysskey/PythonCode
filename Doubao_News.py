@@ -286,6 +286,14 @@ def main() -> None:
                     changed = True
                     continue
 
+        # =========================================================
+        #   >>> 新增部分：逻辑块 C (广告过滤) <<<
+        # =========================================================
+        lines = [
+            line for line in lines 
+            if line.strip() != "广告"  # 过滤只有“广告”两个字的行
+            and not line.strip().startswith("AdChoices") # 过滤以 AdChoices 开头的行
+        ]
         clipboard_content = "\n".join(lines)
 
     # 拼接最终内容

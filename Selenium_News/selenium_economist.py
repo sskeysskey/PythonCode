@@ -223,7 +223,15 @@ def main():
 
             # [核心修改] 第二步：处理逻辑 (过滤和排重)
             for href, title_text in raw_data_list:
-                # 排除逻辑
+                lower_title = title_text.lower()
+                
+                # 逻辑解释：
+                # 1. "xi jinping" in lower_title -> 忽略大小写 (匹配 Xi Jinping, xi jinping, XI JINPING)
+                # 2. "Xi's" in title_text      -> 严格匹配 (只匹配 Xi's，不匹配 xi's 或 XI'S)
+                if "xi jinping" in lower_title or "Xi's" in title_text:
+                    continue
+
+                # 原有的排除逻辑 (保持不变)
                 if ('podcasts' not in href and "film" not in href and "cartoon" not in href and 
                     not ('letters' in href and 'editor' in href and 'Sources and acknowledgments' in href)):
                     

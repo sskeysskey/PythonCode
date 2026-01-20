@@ -222,6 +222,13 @@ def main():
 
             # === [核心修改 3]：对静态数据进行逻辑过滤 ===
             for href, title_text in raw_data_list:
+                lower_title = title_text.lower()
+                
+                # 逻辑解释：
+                # 1. "xi jinping" in lower_title -> 忽略大小写 (匹配 Xi Jinping, xi jinping, XI JINPING)
+                # 2. "Xi's" in title_text      -> 严格匹配 (只匹配 Xi's，不匹配 xi's 或 XI'S)
+                if "xi jinping" in lower_title or "Xi's" in title_text:
+                    continue
                 
                 # 1. 检查是否在黑名单中
                 if title_text in EXCLUDED_TITLES:
