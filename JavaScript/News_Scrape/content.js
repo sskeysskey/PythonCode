@@ -3,7 +3,7 @@ function isValidTitle_Bloomberg(titleText) {
     const invalidPhrases = [
         'Illustration:', '/Bloomberg', 'Getty Images', '/AP Photo', '/AP',
         'Photos:', 'Photo illustration', 'Source:', '/AFP', 'NurPhoto',
-        'SOurce:', 'WireImage', 'Podcast:'
+        'SOurce:', 'WireImage', 'Podcast:', 'Tiananmen', 'Xi Jinping'
     ];
 
     // 过滤掉仅包含 "LIVE" 的标题
@@ -119,8 +119,7 @@ function scrapeReuters() {
         String(now.getHours()).padStart(2, '0'),
     ].join('_');
 
-    // 【修改点】：使用 currentYear 变量替换写死的 -2026-
-    // 路透社的链接通常是 ...-title-YYYY-MM-DD/，所以包含 -2026- 是合理的特征
+    // 使用 currentYear 变量替换写死的 -2026-
     const allLinks = Array.from(
         document.querySelectorAll(`a[href*='-${currentYear}-']`)
     );
@@ -148,6 +147,7 @@ function scrapeReuters() {
 
         // 5) 提取标题
         let titleText = '';
+
         // 优先 span[data-testid="TitleHeading"]
         const heading = link.querySelector("[data-testid='TitleHeading']");
         if (heading) {
@@ -160,6 +160,9 @@ function scrapeReuters() {
         // 兜底：任何文本
         else {
             titleText = link.textContent.trim();
+        }
+        if (titleText.includes("Tiananmen")) {
+            return;
         }
 
         if (titleText) {
@@ -225,6 +228,10 @@ function scrapeWSJ(shouldDownload = true) {
 
         // 移除阅读时间标记
         titleText = titleText.replace(/\d+ min read/g, '').trim();
+
+        if (titleText.includes("Tiananmen")) {
+            return;
+        }
 
         if (titleText && href) {
             newRows.push([currentDatetime, titleText, href]);

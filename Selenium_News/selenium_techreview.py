@@ -187,7 +187,7 @@ def main():
                 # 逻辑解释：
                 # 1. "xi jinping" in lower_title -> 忽略大小写 (匹配 Xi Jinping, xi jinping, XI JINPING)
                 # 2. "Xi's" in title_text      -> 严格匹配 (只匹配 Xi's，不匹配 xi's 或 XI'S)
-                if "xi jinping" in lower_title or "Xi's" in title_text:
+                if "xi jinping" in lower_title or "Xi's" in title_text or "Tiananmen" in title_text:
                     continue
                 
                 # 1. Podcast 过滤

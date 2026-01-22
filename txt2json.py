@@ -758,11 +758,17 @@ def backup_news_assets(local_dir):
 def update_version_json(local_dir, timestamp):
     version_path = os.path.join(local_dir, "version.json")
     if not os.path.exists(version_path):
-        data = {"version": "1.0", "files": []}
+        # 如果文件不存在，初始化一个基础结构，包含 update_time
+        data = {
+            "version": "1.0", 
+            "files": [],
+            "update_time": "" 
+        }
     else:
         with open(version_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             
+    # 1. 更新现有文件的 MD5
     for item in data.get("files", []):
         if item.get("type") == "json":
             file_path = os.path.join(local_dir, item["name"])
@@ -771,6 +777,7 @@ def update_version_json(local_dir, timestamp):
                 if item.get("md5") != new_md5:
                     item["md5"] = new_md5
                     
+    # 2. 准备添加新文件
     to_add = []
     json_name = f"onews_{timestamp}.json"
     json_path = os.path.join(local_dir, json_name)
@@ -786,12 +793,23 @@ def update_version_json(local_dir, timestamp):
         "type": "images"
     })
     
-    existing_names = { item["name"] for item in data["files"] }
+    # 3. 确保 files 列表存在（兼容性处理）
+    if "files" not in data:
+        data["files"] = []
+
+    # 4. 检查重复并添加
+    existing_names = { item["name"] for item in data.get("files", []) }
     for e in to_add:
         if e["name"] not in existing_names:
             data["files"].append(e)
             print(f"已添加到 version.json: {e['name']}")
+
+    # 5. 更新 update_time 为当前系统时间
+    current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    data["update_time"] = current_time_str
+    print(f"已更新 version.json 的 update_time 为: {current_time_str}")
             
+    # 6. 保存文件
     with open(version_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
         print(f"version.json 已更新")
