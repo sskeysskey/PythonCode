@@ -2,7 +2,6 @@ import os
 import sys
 import pyperclip
 import subprocess
-import platform  # <--- 新增
 from urllib.parse import quote, unquote
 
 # 1. 导入路径修改

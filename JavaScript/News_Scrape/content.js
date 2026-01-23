@@ -270,6 +270,7 @@ function scrapeWSJ(shouldDownload = true) {
 function scrapeFT() {
     const now = new Date();
     const currentDatetime = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}`;
+
     const newRows = [];
 
     // 排除的标题文本，来自 selenium_FT.py 的逻辑
@@ -296,6 +297,11 @@ function scrapeFT() {
         if (titleText.toLowerCase().includes('podcasts') ||
             titleText.toLowerCase().includes('film') ||
             titleText.includes('FT News Briefing.')) {
+            return;
+        }
+
+        // 替代方案：使用正则匹配单词边界，不管是开头还是中间都能过滤
+        if (/\bXi\b/.test(titleText)) {
             return;
         }
 
