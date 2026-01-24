@@ -60,7 +60,7 @@ def find_image_on_screen(template, threshold=0.9):
     else:
         return None, None
 
-def is_content_qualified(text, min_chinese=10):
+def is_content_qualified(text, min_chinese=50):
     """校验内容是否包含足够多的中文"""
     if not text:
         return False
@@ -68,6 +68,18 @@ def is_content_qualified(text, min_chinese=10):
     return len(chinese_chars) > min_chinese
 
 def main():
+    # ==== 新增：获取命令行参数 ====
+    # 默认阈值为 50
+    target_threshold = 50
+    
+    # 如果运行脚本时带了参数（例如 python3 Doubao_auto.py 50），则使用传入的数字
+    if len(sys.argv) > 1:
+        try:
+            target_threshold = int(sys.argv[1])
+            print(f"接收到自定义汉字阈值: {target_threshold}")
+        except ValueError:
+            print("参数格式错误，使用默认阈值 50")
+
     template_path = os.path.join(BASE_RESOURCE_DIR, "doubao_copy.png")
     if not os.path.exists(template_path):
         print(f"错误：找不到模板文件 {template_path}")
@@ -80,7 +92,7 @@ def main():
     timeout_duration = 120 
     start_time = time.time()
     
-    print("开始监控豆包内容（最多尝试3次）...")
+    print(f"开始监控豆包内容（最多尝试3次，汉字阈值：{target_threshold}）...")
     
     while current_attempt <= max_attempts:
         # 检查总时间是否超时
@@ -106,7 +118,8 @@ def main():
             sleep(0.5) # 给剪贴板一点反应时间
             content = pyperclip.paste()
             
-            if is_content_qualified(content):
+            # ==== 修改：传入动态阈值 ====
+            if is_content_qualified(content, min_chinese=target_threshold):
                 print(f"第 {current_attempt} 次尝试成功：内容校验通过。")
                 sys.exit(0) # 状态码 0：成功退出
             else:
@@ -124,7 +137,6 @@ def main():
             # 没找到按钮，继续滚动寻找
             pyautogui.scroll(SCROLL_AMOUNT)
             sleep(1)
-
     sys.exit(1)
 
 if __name__ == '__main__':
