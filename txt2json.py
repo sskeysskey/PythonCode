@@ -65,23 +65,31 @@ def alert_and_exit(message):
 
 def find_today_cnh_html(today, news_directory):
     """
-    优先在 backup/backup 目录查找 TodayCNH_<today>.html，
-    找不到再回退到 news_directory 根目录查找。
-    返回找到的文件路径列表（通常是长度为 1 的列表）。
-    若都没找到，返回空列表。
+    查找 backup/backup 目录 和 news_directory 根目录下的 TodayCNH_<today>.html。
+    返回所有找到的文件路径列表。
     """
-    # 优先目录：News/backup/backup
+    paths = []
+    
+    # 1. 检查备份目录：News/backup/backup
     backup_dir = os.path.join(news_directory, "backup", "backup")
     candidate1 = os.path.join(backup_dir, f"TodayCNH_{today}.html")
-    # 回退目录：News/
-    candidate2 = os.path.join(news_directory, f"TodayCNH_{today}.html")
-    
-    paths = []
+    # 如果备份目录里有（可能是之前运行产生的），加上它
     if os.path.exists(candidate1):
         paths.append(candidate1)
-    elif os.path.exists(candidate2):
+    
+    # 2. 检查根目录：News/ (这是当前最新的)
+    candidate2 = os.path.join(news_directory, f"TodayCNH_{today}.html")
+    # <--- 修改点：这里把 elif 改成了 if，确保即便备份存在，也会去读新的文件
+    if os.path.exists(candidate2):
         paths.append(candidate2)
-    return paths
+        
+    # 额外：如果备份目录下有重命名过的文件（如 TodayCNH_260131_1.html），也可以尝试读取
+    # 这样能保证一天内多次运行的所有元数据都被加载
+    extra_backups = glob.glob(os.path.join(backup_dir, f"TodayCNH_{today}_*.html"))
+    paths.extend(extra_backups)
+    
+    # 去重（防止路径重复）
+    return list(set(paths))
 
 def get_pdf_path(txt_path):
     directory = os.path.dirname(txt_path)
@@ -884,20 +892,37 @@ def find_all_news_files(directory):
     
 def move_cnh_file(source_dir):
     try:
+        # 只查找根目录下的文件
         cnh_pattern = os.path.join(source_dir, "TodayCNH_*.html")
-        cnh_files = glob.glob(cnh_pattern)
+        # 排除掉 backup 子目录（glob 有时会递归，虽然这里写法不会，但为了保险）
+        cnh_files = [f for f in glob.glob(cnh_pattern) if os.path.dirname(f) == source_dir]
         
         if not cnh_files:
-            print("没有找到TodayCNH_开头的文件")
+            print("没有找到需要移动的 TodayCNH_ 开头的文件")
             return False
             
-        source_file = cnh_files[0]
         backup_dir = os.path.join(source_dir, "backup", "backup")
         os.makedirs(backup_dir, exist_ok=True)
-        target_file = os.path.join(backup_dir, os.path.basename(source_file))
-        os.rename(source_file, target_file)
-        print(f"成功移动文件: {os.path.basename(source_file)} -> {backup_dir}")
-        return True
+        
+        moved_count = 0
+        for source_file in cnh_files:
+            filename = os.path.basename(source_file)
+            target_file = os.path.join(backup_dir, filename)
+            
+            # <--- 修改点：如果目标存在，进行重命名，防止覆盖旧的备份 --->
+            if os.path.exists(target_file):
+                print(f"警告: 备份目录已存在 {filename}，正在重命名...")
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(target_file):
+                    target_file = os.path.join(backup_dir, f"{base}_{counter}{ext}")
+                    counter += 1
+            
+            os.rename(source_file, target_file)
+            print(f"成功移动文件: {filename} -> {os.path.basename(target_file)}")
+            moved_count += 1
+            
+        return moved_count > 0
         
     except Exception as e:
         print(f"移动文件时出错: {str(e)}")
