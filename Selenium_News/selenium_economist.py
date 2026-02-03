@@ -192,54 +192,86 @@ def main():
         # [新增] 滚动机制
         print("开始滚动页面以加载更多内容...")
         for i in range(4):
-            driver.execute_script("window.scrollBy(0, 1000);") # Economist 页面较长，每次滚动 1000
+            driver.execute_script("window.scrollBy(0, 1000);") 
             print(f"滚动次数: {i+1}/4")
             time.sleep(0.5)
         print("滚动完成，开始抓取内容。")
 
         try:
-            wait.until(EC.presence_of_element_located((By.TAG_NAME, "a")))
+            # 等待任意一个 h3 标签出现，通常标题都在 h3 里
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "h3")))
             
-            # 获取元素列表
-            titles_elements = driver.find_elements(By.CSS_SELECTOR, f"a[href*='/{datetime.now().year}/']")
+            # [核心修改 1]：更宽泛的选择器
+            # 1. main h3 a: 抓取主内容区所有 h3 标题下的链接 (对应你提供的 HTML 结构)
+            # 2. a[href*='world-in-brief']: 强制抓取简报，因为它不带年份
+            # 3. a[data-analytics]: 抓取带有分析标记的链接（通常是正文）
+            selector = "main h3 a, a[href*='world-in-brief'], main div[class*='teaser'] a"
+            titles_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            
             formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H")
+            current_year = str(datetime.now().year)
             
-            # [核心修改] 第一步：只提取原始数据 (Snapshot)
-            # 这样可以避免 "Stale element reference" 错误
+            # [核心修改 2]：第一步 - 提取原始数据 (Snapshot)
             raw_data_list = []
+            seen_links = set() # 用于本次抓取内部去重
+
+            print(f"初步定位到 {len(titles_elements)} 个元素，开始提取...")
+
             for element in titles_elements:
                 try:
                     href = element.get_attribute('href')
-                    # 尝试多种方式获取文本
-                    title_text = element.text.strip() or element.get_attribute('innerText').strip()
-                    if href and title_text:
-                        raw_data_list.append((href, title_text))
+                    # 尝试获取文本，优先取 innerText (即 ::before 之后的内容)
+                    title_text = element.get_attribute('innerText').strip()
+                    if not title_text:
+                        title_text = element.text.strip()
+                    
+                    # 基本清洗
+                    if href and title_text and href not in seen_links:
+                        # 排除空标题和非文章链接
+                        # 如果发现抓到了空行，可以加强判断
+                        if len(title_text) > 5 and "Read more" not in title_text:
+                        # if len(title_text) > 5: 
+                            raw_data_list.append((href, title_text))
+                            seen_links.add(href)
                 except StaleElementReferenceException:
-                    continue # 忽略失效的元素
+                    continue 
                 except Exception:
                     continue
             
-            print(f"提取到 {len(raw_data_list)} 个原始链接，开始处理逻辑...")
+            print(f"提取到 {len(raw_data_list)} 个有效原始链接，开始业务逻辑过滤...")
 
-            # [核心修改] 第二步：处理逻辑 (过滤和排重)
+            # [核心修改 3]：第二步 - 业务逻辑过滤
             for href, title_text in raw_data_list:
                 lower_title = title_text.lower()
                 
-                # 逻辑解释：
-                # 1. "xi jinping" in lower_title -> 忽略大小写 (匹配 Xi Jinping, xi jinping, XI JINPING)
-                # 2. "Xi's" in title_text      -> 严格匹配 (只匹配 Xi's，不匹配 xi's 或 XI'S)
+                # --- 过滤器 1: 敏感词过滤 ---
                 if "xi jinping" in lower_title or "Xi's" in title_text or "Tiananmen" in title_text:
                     continue
 
-                # 原有的排除逻辑 (保持不变)
-                if ('podcasts' not in href and "film" not in href and "cartoon" not in href and 
-                    not ('letters' in href and 'editor' in href and 'Sources and acknowledgments' in href)):
-                    
-                    # 检查重复
+                # --- 过滤器 2: 类型过滤 (排除播客、电影等) ---
+                if ('podcasts' in href or "film" in href or "cartoon" in href or 
+                    ('letters' in href and 'editor' in href)):
+                    continue
+
+                # --- 过滤器 3: 年份与重要性校验 ---
+                # 逻辑：如果是 "world-in-brief" 或者 URL 包含当前年份，则保留
+                # 如果 URL 既没有年份也不是简报，可能是导航栏杂项，丢弃
+                is_valid_article = False
+                if "world-in-brief" in href:
+                    is_valid_article = True
+                elif f"/{current_year}/" in href:
+                    is_valid_article = True
+                
+                # 如果你想抓取所有文章（哪怕是去年的），可以注释掉上面的 elif，直接设为 True
+                # 但为了保持和你原逻辑一致，我们尽量只抓今年的或简报
+                
+                if is_valid_article:
+                    # 检查是否已存在于旧文件或本次新抓取列表中
                     is_old_duplicate = any(is_similar(href, old_link) for _, _, old_link in old_content)
                     is_new_duplicate = any(is_similar(href, new_link) for _, _, new_link in new_rows)
                     
                     if not is_old_duplicate and not is_new_duplicate:
+                        print(f"  [新增] {title_text}") # 打印出来方便调试
                         new_rows.append([formatted_datetime, title_text, href])
                         new_rows1.append(["Economist", title_text, href])
 
@@ -248,10 +280,17 @@ def main():
                 print(f"✅ 统计报告: 本次共抓取到 {len(new_rows)} 条新新闻！")
             else:
                 print("⚠️ 统计报告: 本次未发现新内容 (0 条)。")
+                # 调试信息：如果没有抓到，打印一下 raw_data_list 的前几个看看抓到了什么
+                if raw_data_list:
+                    print("调试 - 抓取到的原始数据样例 (前3条):")
+                    for item in raw_data_list[:3]:
+                        print(item)
             print("-" * 40)
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
+            import traceback
+            traceback.print_exc()
     finally:
         # 关闭驱动
         driver.quit()

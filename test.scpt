@@ -25,7 +25,7 @@ on run argv
 		-- ==================================================
 		-- 新增修改 1: 添加一个新的提示语变量 methodType2
 		-- ==================================================
-		set methodType2 to "----请将以上内容翻译成地道的中文，只是翻译，任何话都不要说，也不要给我补充什么翻译说明之类的内容"
+		set methodType2 to "----请将以上内容翻译成地道的中文，只是翻译，其它话都不要说，更不要给我补充什么翻译说明之类的内容"
 		
 		-- 新增：读取并校验第二个参数
 		set poeMode to item 2 of argv as text
@@ -209,8 +209,15 @@ on NewsOperation(methodType, poeMode, methodType2)
 			-- 【核心修改：带重试监控的 Doubao_auto 调用】
 			-- ==================================================
 			try
+				-- 【新增逻辑】判断 URL 是否包含 reuters.com/pictures
+				set autoWaitParam to "50" -- 默认参数
+				if currentTabURL contains "reuters.com/pictures" then
+					set autoWaitParam to "10"
+				end if
+				
 				-- 运行 Python，它内部会尝试 3 次
-				my runPythonScript("Doubao_auto.py", {})
+				-- 传入动态确定的参数 autoWaitParam
+				my runPythonScript("Doubao_auto.py", {autoWaitParam})
 				
 				-- 如果运行到这里，说明 Python sys.exit(0)，即成功拿到了合格内容
 				set CHNContent to the clipboard
