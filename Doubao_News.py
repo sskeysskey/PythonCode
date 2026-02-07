@@ -273,7 +273,7 @@ def main() -> None:
             last_line = lines[-1]
 
             # 1. 文本特征判断
-            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以")):
+            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以", "要不要我")):
                 lines.pop(-1)
                 changed = True
                 continue
