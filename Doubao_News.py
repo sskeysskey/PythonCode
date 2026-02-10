@@ -218,17 +218,17 @@ def main() -> None:
             # 1. 文本修饰：移除“分模块总结”或“核心内容总结”
             chinese_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
             # 注意顺序：长词在前，短词在后
-            target_keywords = ["分模块总结", "核心内容总结", "核心内容"]
+            target_keywords = ["分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）", "（分模块）"]
             if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
                 # 正则表达式：匹配关键词及其前后的标点
                 # 使用 (?:A|B|C) 非捕获分组
-                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容)[，。：；！？、,.?:;]*'
+                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容|核心事件|（中文）|（分模块）)[，。：；！？、,.?:;]*'
                 lines[0] = re.sub(pattern, '', first_line).strip()
                 first_line = lines[0]
                 changed = True
 
             # 2. 关键词密度删除 (Step 1)
-            check_keywords = ["中文", "英文", "分模块", "总结", "文章", "新闻", "核心内容"]
+            check_keywords = ["中文", "英文", "分模块", "总结", "文章", "新闻", "核心内容", "核心", "事件", "信息精简版", "现象"]
             hit_count = sum(1 for key in check_keywords if key in first_line)
             if hit_count >= 2 and len(first_line) <= 12:
                 lines.pop(0)
