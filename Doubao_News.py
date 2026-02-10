@@ -218,11 +218,11 @@ def main() -> None:
             # 1. 文本修饰：移除“分模块总结”或“核心内容总结”
             chinese_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
             # 注意顺序：长词在前，短词在后
-            target_keywords = ["分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）", "（分模块）"]
+            target_keywords = ["分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）", "（分模块）", "中文要点总结", "（核心总结）"]
             if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
                 # 正则表达式：匹配关键词及其前后的标点
                 # 使用 (?:A|B|C) 非捕获分组
-                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容|核心事件|（中文）|（分模块）)[，。：；！？、,.?:;]*'
+                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容|核心事件|（中文）|（分模块）)|中文要点总结|（核心总结）[，。：；！？、,.?:;]*'
                 lines[0] = re.sub(pattern, '', first_line).strip()
                 first_line = lines[0]
                 changed = True
