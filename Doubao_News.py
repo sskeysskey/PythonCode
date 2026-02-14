@@ -215,15 +215,28 @@ def main() -> None:
             changed = False
             first_line = lines[0]
             
-            # 1. 文本修饰：移除“分模块总结”或“核心内容总结”
+            # 1. 文本修饰：移除“分模块总结”或“核心内容总结”等
             chinese_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
-            # 注意顺序：长词在前，短词在后
-            target_keywords = ["分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）", "（分模块）", "中文要点总结", "（核心总结）"]
+            
+            # === 配置区：在此处统一管理关键词 ===
+            target_keywords = [
+                "分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）",
+                "（分模块）", "中文要点总结", "（核心总结）", "核心信息总结", "事件中文总结",
+                "中文"
+            ]
+
             if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
-                # 正则表达式：匹配关键词及其前后的标点
-                # 使用 (?:A|B|C) 非捕获分组
-                pattern = r'[，。：；！？、,.?:;]*(?:分模块总结|核心内容总结|核心内容|核心事件|（中文）|（分模块）)|中文要点总结|（核心总结）[，。：；！？、,.?:;]*'
-                lines[0] = re.sub(pattern, '', first_line).strip()
+                # 1. 按长度降序排列：确保正则优先匹配最长的词（如优先匹配"核心内容总结"而不是"核心内容"）
+                # 2. re.escape：自动转义关键词中的特殊符号（如括号）
+                sorted_kws = sorted(target_keywords, key=len, reverse=True)
+                pattern_body = '|'.join(re.escape(kw) for kw in sorted_kws)
+                
+                # 3. 动态构建完整正则：[标点]*(关键词A|关键词B|...)[标点]*
+                punc = r'[，。：；！？、,.?:;]*'
+                full_pattern = f'{punc}(?:{pattern_body}){punc}'
+                
+                # 执行替换
+                lines[0] = re.sub(full_pattern, '', first_line).strip()
                 first_line = lines[0]
                 changed = True
 

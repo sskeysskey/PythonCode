@@ -150,9 +150,7 @@ def main():
         # 获取剪贴板内容并计算非空行数
         clipboard_content = pyperclip.paste()
         
-        # --- 新增防御逻辑 START ---
-        
-        # 1. 检查是否为 Prompt 原文 (保留之前的逻辑)
+        # 1. 检查是否为 Prompt 原文
         if "<document>" in clipboard_content or "只输出翻译内容" in clipboard_content:
             print(f"FATAL_REFUSAL: 没有被正确翻译 -> {single_line_text}")
             sys.exit(1) 
@@ -160,33 +158,40 @@ def main():
         # 2. >>> [核心修改] 单行拒绝检测 <<<
         # 先获取所有非空行
         raw_lines = [line.strip() for line in clipboard_content.splitlines() if line.strip()]
-        
-        single_line_text = raw_lines[0]
-        
-        # --- [修复] 扩大拒绝词库，包含“违反规范”、“不喜欢”等豆包风控术语 ---
-        refusal_keywords = [
-            "抱歉", 
-            "无法回答", 
-            "违反我们的使用规范", 
-            "违反相关规范", 
-            "长按消息后选择", 
-            "不喜欢"
-        ]
-        
-        # 检查第一行或整个剪贴板内容是否包含任一拒绝词
-        # (使用 clipboard_content 检查更保险，防止拒绝语被换行)
-        is_refused = False
-        for keyword in refusal_keywords:
-            if keyword in clipboard_content:
-                is_refused = True
-                break
-        
-        if is_refused:
-            print(f"FATAL_REFUSAL: 检测到敏感/拒绝内容 -> {single_line_text}")
-            sys.exit(1) # 抛出致命错误，通知 AppleScript
+        single_line_text = raw_lines[0] if raw_lines else "Empty Content"
 
+        # --- [核心修改点] 字数检测 + 拒绝词检测 ---
+        
+        # 获取剪贴板总字符数
+        content_length = len(clipboard_content)
+        
+        # 只有在字数少于 50 字时，才进行拒绝词检测
+        if content_length < 50:
+            refusal_keywords = [
+                "抱歉", 
+                "无法回答", 
+                "违反我们的使用规范", 
+                "违反相关规范", 
+                "长按消息后选择", 
+                "不喜欢"
+            ]
+            
+            is_refused = False
+            for keyword in refusal_keywords:
+                if keyword in clipboard_content:
+                    is_refused = True
+                    break
+            
+            if is_refused:
+                print(f"FATAL_REFUSAL: 检测到敏感/拒绝内容 (字数:{content_length}) -> {single_line_text}")
+                sys.exit(1)
+        else:
+            # 如果字数超过 50，跳过拒绝词检测，直接进入后续逻辑
+            print(f"字数充足 ({content_length} 字)，跳过拒绝词检测。")
 
-        # 1. 先处理多空行/格式整理 (保留你原有的逻辑)
+        # --- 后续处理逻辑 ---
+
+        # 1. 处理多空行/格式整理
         clipboard_content = process_content_with_empty_lines(clipboard_content)
 
         # 2. >>> [关键修改点] 执行过滤：只保留以数字开头的行 <<<
