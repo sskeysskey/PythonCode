@@ -243,7 +243,7 @@ def main() -> None:
             # 2. 关键词密度删除 (Step 1)
             check_keywords = ["中文", "英文", "分模块", "总结", "文章", "新闻", "核心内容", "核心", "事件", "信息精简版", "现象"]
             hit_count = sum(1 for key in check_keywords if key in first_line)
-            if hit_count >= 2 and len(first_line) <= 12:
+            if hit_count >= 2 and len(first_line) <= 14:
                 lines.pop(0)
                 changed = True
                 continue
