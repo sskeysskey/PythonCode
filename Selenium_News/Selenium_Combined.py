@@ -47,7 +47,7 @@ def run_task(module_name, module_obj):
         print(f"\n❌ {module_name} 执行出错: {e}\n")
     
     # 任务之间稍作停顿，让系统资源缓冲一下
-    time.sleep(2)
+    time.sleep(3)
 
 def activate_terminal():
     """

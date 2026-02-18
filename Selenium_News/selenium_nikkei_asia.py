@@ -173,11 +173,21 @@ def main():
         # --- 3. 抓取新内容 ---
         all_links = [old_link for _, _, old_link in old_content if old_link]
         print("开始滚动页面以加载更多内容...")
-        # 即使在 Headless 模式下，execute_script 依然有效
-        for i in range(4):
-            driver.execute_script("window.scrollBy(0, 800);") 
-            print(f"滚动次数: {i+1}/4")
-            time.sleep(0.5) 
+        last_height = driver.execute_script("return document.body.scrollHeight")
+
+        for i in range(6):  # 增加滚动次数
+            driver.execute_script("window.scrollBy(0, 1000);")  # 增加滚动距离
+            print(f"滚动次数: {i+1}/6")
+            time.sleep(1.5)  # 关键：增加等待时间，让动态内容有时间加载
+            
+            # 检查页面高度是否变化（可选的智能等待）
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                print("  ↳ 页面高度未变化，可能已到底部")
+            last_height = new_height
+
+        # 最后等待一段时间让所有内容渲染完成
+        time.sleep(2)
         print("滚动完成，开始抓取内容。")
 
         # 定义需要抓取的版块
@@ -187,10 +197,13 @@ def main():
             f"a[href*='/{section}/' i]:not(.label-link)" for section in SECTIONS
         )
 
+        # 替换为更严格的等待：
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
+            # 等待至少有一定数量的元素出现
+            WebDriverWait(driver, 15).until(
+                lambda d: len(d.find_elements(By.CSS_SELECTOR, css_selector)) > 50
             )
+            print(f"检测到足够多的链接元素，开始提取...")
             
             # === [核心修改 1]：先获取元素对象 ===
             titles_elements = driver.find_elements(By.CSS_SELECTOR, css_selector)
