@@ -222,7 +222,7 @@ def main() -> None:
             target_keywords = [
                 "分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）",
                 "（分模块）", "中文要点总结", "（核心总结）", "核心信息总结", "事件中文总结",
-                "中文", "中文结构化总结", "--全文"
+                "中文", "中文结构化总结", "--全文", "核心信息"
             ]
 
             if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
