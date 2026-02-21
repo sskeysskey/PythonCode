@@ -248,6 +248,14 @@ def main() -> None:
                 changed = True
                 continue
 
+            # =====================================================
+            # [新增] 针对文首的 AI 语气词/引导语过滤
+            # =====================================================
+            if first_line.startswith(("下面是对你", "")):
+                lines.pop(0)
+                changed = True
+                continue
+
             # 3. 文本特征判断 (Step 3)
             should_remove = False
             if first_line.startswith(("中文译文", "译文")) and len(re.findall(r'[\u4e00-\u9fff]', first_line)) < 10:
@@ -300,12 +308,13 @@ def main() -> None:
                     continue
 
         # =========================================================
-        #   >>> 新增部分：逻辑块 C (广告过滤) <<<
+        #   >>> 新增部分：逻辑块 C (广告过滤及全局横线过滤) <<<
         # =========================================================
         lines = [
             line for line in lines 
             if line.strip() != "广告"  # 过滤只有“广告”两个字的行
             and not line.strip().startswith("AdChoices") # 过滤以 AdChoices 开头的行
+            and not (len(line) > 0 and line.replace('-', '').strip() == '') # 全局过滤只包含“-”的行
         ]
         clipboard_content = "\n".join(lines)
 
