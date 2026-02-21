@@ -222,7 +222,7 @@ def main() -> None:
             target_keywords = [
                 "分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）",
                 "（分模块）", "中文要点总结", "（核心总结）", "核心信息总结", "事件中文总结",
-                "中文", "中文结构化总结", "--全文", "核心信息"
+                "中文", "中文结构化总结", "--全文", "核心信息", "事件总结"
             ]
 
             if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
@@ -286,7 +286,7 @@ def main() -> None:
             last_line = lines[-1]
 
             # 1. 文本特征判断
-            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以", "要不要我")):
+            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要")):
                 lines.pop(-1)
                 changed = True
                 continue
