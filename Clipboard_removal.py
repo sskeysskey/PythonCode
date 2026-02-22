@@ -5,8 +5,10 @@ def clean_ft_clipboard():
     # 获取剪贴板内容
     clipboard_content = pyperclip.paste()
     
-    # 定义需要移除的版权声明模式
-    copyright_pattern = r'Please use the sharing tools.*?More information can be found at https://www\.ft\.com/tour\.\s*https://www\.ft\.com/content/[\w-]+\s*'
+    # 优化后的正则表达式：
+    # 匹配从 "Please use the sharing tools" 开始
+    # 一直到 "More information can be found at" 以及该行后面的所有非换行字符和紧接着的空白/换行符
+    copyright_pattern = r'Please use the sharing tools.*?More information can be found at[^\n]*\s*'
     
     # 使用re.sub移除版权声明
     cleaned_content = re.sub(copyright_pattern, '', clipboard_content, flags=re.DOTALL)

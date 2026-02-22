@@ -218,15 +218,23 @@ def main() -> None:
             # 1. 文本修饰：移除“分模块总结”或“核心内容总结”等
             chinese_count = len(re.findall(r'[\u4e00-\u9fff]', first_line))
             
-            # === 配置区：在此处统一管理关键词 ===
-            target_keywords = [
-                "分模块总结", "核心内容总结", "核心内容", "核心事件", "（中文）",
-                "（分模块）", "中文要点总结", "（核心总结）", "核心信息总结", "事件中文总结",
-                "中文", "中文结构化总结", "--全文", "核心信息", "事件总结", "核心总结", "核心定位"
+            # === 配置区：在此处统一管理基础关键词 ===
+            base_keywords = [
+                "中文精简分模块总结", "中文分模块总结", "分模块总结", "核心内容总结",
+                "中文模块总结", "中文要点总结", "核心信息总结", "事件中文总结", "中文结构化总结",
+                "--全文", "核心总结", "核心内容", "核心事件", "核心信息", "事件总结",
+                "核心定位", "要点总结", "--英文报道",
+                "分模块", "中文", "—— ", "（）", "总结"
             ]
 
-            if chinese_count > 12 and any(kw in first_line for kw in target_keywords):
-                # 1. 按长度降序排列：确保正则优先匹配最长的词（如优先匹配"核心内容总结"而不是"核心内容"）
+            # 动态生成：带中文括号、带英文括号、无括号的版本
+            target_keywords = []
+            for kw in base_keywords:
+                target_keywords.extend([f"（{kw}）", f"({kw})", kw])
+
+            # 判断时只需用 base_keywords 即可，因为只要有带括号的，必然包含基础词
+            if chinese_count > 14 and any(kw in first_line for kw in base_keywords):
+                # 1. 按长度降序排列：带括号的词更长，自然排在前面被优先匹配
                 # 2. re.escape：自动转义关键词中的特殊符号（如括号）
                 sorted_kws = sorted(target_keywords, key=len, reverse=True)
                 pattern_body = '|'.join(re.escape(kw) for kw in sorted_kws)
