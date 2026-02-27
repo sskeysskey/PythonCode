@@ -10,9 +10,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
-import sys
-import platform # <--- 新增
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+import platform
 
 # ================= 配置区域 (跨平台修改) =================
 
@@ -120,7 +119,9 @@ def main():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--no-sandbox")
     options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
-    options.page_load_strategy = 'eager'  # DOM准备好就开始
+    
+    # [修复点 1]：将 eager 改为 none。不等待页面完全加载，防止渲染器卡死超时
+    options.page_load_strategy = 'none'  
 
     # 设置 ChromeDriver
     if not os.path.exists(CHROME_DRIVER_PATH):
@@ -136,9 +137,9 @@ def main():
         print(f"Selenium 启动失败: {e}")
         return
         
-    # 设置页面加载超时
-    driver.set_page_load_timeout(30)
-    wait = WebDriverWait(driver, 10)
+    # [修复点 2]：增加页面加载超时时间
+    driver.set_page_load_timeout(45)
+    wait = WebDriverWait(driver, 15)
 
     # 初始化变量，防止 finally 中报错
     new_rows = []
@@ -148,7 +149,14 @@ def main():
 
     try:
         print("正在访问 The Economist...")
-        driver.get("https://www.economist.com/")
+        
+        # [修复点 3]：捕获 TimeoutException。即使超时，DOM 可能已经加载完毕，继续执行即可
+        try:
+            driver.get("https://www.economist.com/")
+            # 因为 strategy 是 'none'，我们需要手动稍微等一下基础 DOM 加载
+            time.sleep(5) 
+        except TimeoutException:
+            print("警告: 页面加载超时，但可能核心内容已加载，尝试继续执行...")
         
         # --- 2. 处理 Cookie 同意弹窗 ---
         try:
@@ -194,7 +202,7 @@ def main():
         for i in range(4):
             driver.execute_script("window.scrollBy(0, 1000);") 
             print(f"滚动次数: {i+1}/4")
-            time.sleep(0.5)
+            time.sleep(1) # 稍微增加等待时间，配合 strategy='none'
         print("滚动完成，开始抓取内容。")
 
         try:
