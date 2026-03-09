@@ -118,6 +118,7 @@ def main():
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--no-sandbox")
+    options.add_argument("--disable-images")
     options.add_argument("--blink-settings=imagesEnabled=false")  # 禁用图片加载
     
     # [修复点 1]：将 eager 改为 none。不等待页面完全加载，防止渲染器卡死超时

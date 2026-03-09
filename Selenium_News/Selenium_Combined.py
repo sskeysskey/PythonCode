@@ -18,6 +18,7 @@ try:
     import selenium_wsj_cn
     import selenium_dw_cn
     import selenium_rfi_cn
+    import selenium_bbc_cn
     import selenium_economist
     import selenium_techreview
     import selenium_nikkei_asia
@@ -116,6 +117,9 @@ def main():
 
     # 1.3 DE CN
     run_task("德国之声", selenium_dw_cn)
+
+    # 1.4 BBC CN
+    run_task("BBC", selenium_bbc_cn)
 
     # 2. The Economist
     run_task("The Economist", selenium_economist)

@@ -94,7 +94,7 @@ screen_width = root.winfo_screenwidth()
 screen_height = root.winfo_screenheight()
 # 计算右下角的坐标
 x_coordinate = screen_width - window_width - 20  # 20是与屏幕右边的间距
-y_coordinate = screen_height - window_height - 40  # 40是与屏幕底部的间距
+y_coordinate = screen_height - window_height - 70  # 40是与屏幕底部的间距
 root.geometry(f"{window_width}x{window_height}+{x_coordinate}+{y_coordinate}")
 
 # 8. 窗口置顶设置 (保持不变)

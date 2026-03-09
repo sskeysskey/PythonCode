@@ -37,7 +37,7 @@ LOCAL_SERVER_DIR = os.path.join(BASE_CODING_DIR, "LocalServer", "Resources", "ON
 
 MAJOR_SITES = {s.upper() for s in (
     'FT','WSJ','BLOOMBERG','REUTERS','NYTIMES',
-    'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'RFI', 'DW', 'OTHER'
+    'WASHINGTONPOST','ECONOMIST','TECHNOLOGYREVIEW', 'WSJCN', 'RFI', 'DW', 'BBC', 'OTHER'
 )}
 
 def alert_and_exit(message):
@@ -602,6 +602,8 @@ def extract_site_name(url):
             return 'ECONOMIST'
         elif 'technologyreview.com' in url:
             return 'TECHNOLOGYREVIEW'
+        elif 'bbc.com' in url:
+            return 'BBC'
         
         # 对于其他网站，提取域名主体
         domain = url.split('/')[0]
@@ -679,6 +681,7 @@ SITE_DISPLAY_MAP = {
     'reuters':        '路透社',
     'bloomberg':      '布隆伯格金融',
     'nikkeiasia':     '日经新闻亚洲版',
+    'bbc':            '英国广播公司',
 }
 
 # ---- 新增：反向映射，用于生成 source_id ----
@@ -694,7 +697,8 @@ REVERSE_SITE_MAPPING = {
     "日经新闻亚洲版": "nikkei",
     "华盛顿邮报": "washpost",
     "纽约时报": "nytimes",
-    "麻省理工技术评论": "mittr"
+    "麻省理工技术评论": "mittr",
+    "英国广播公司": "bbc"
 }
 
 def compute_md5(path):

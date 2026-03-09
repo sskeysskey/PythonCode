@@ -37,6 +37,7 @@ TODAY_ENG_HTML = os.path.join(NEWS_DIR, "today_eng.html")
 TODAY_WSJ_HTML = os.path.join(NEWS_DIR, "today_wsjcn.html")
 TODAY_DW_HTML = os.path.join(NEWS_DIR, "today_dwcn.html")
 TODAY_RFI_HTML = os.path.join(NEWS_DIR, "today_rficn.html")
+TODAY_BBC_HTML = os.path.join(NEWS_DIR, "today_bbccn.html")
 
 # 临时中间文件
 PROCESS_ENG_TXT = os.path.join(NEWS_DIR, "today_eng.txt")
@@ -308,7 +309,7 @@ except IndexError as e:
 if 'txt_file_path' in locals() and os.path.exists(txt_file_path):
     # --- 步骤 1: 处理中文文件合并 (WSJ, DW, RFI) ---
     # 定义需要合并的中文文件列表，按你希望的显示顺序排列
-    chinese_news_files = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML]
+    chinese_news_files = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML, TODAY_BBC_HTML]
     
     # 读取主文件（刚才生成的包含英文翻译的文件）
     try:

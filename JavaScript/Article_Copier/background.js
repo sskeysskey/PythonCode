@@ -14,7 +14,8 @@ chrome.action.onClicked.addListener(async (tab) => {
     tab.url.includes("washingtonpost.com") ||
     tab.url.includes("asia.nikkei.com") ||
     tab.url.includes("dw.com") ||
-    tab.url.includes("rfi.fr")
+    tab.url.includes("rfi.fr") ||
+    tab.url.includes("bbc.com")
   ) {
     try {
       // 执行文本提取与复制操作
@@ -3020,6 +3021,150 @@ function extractAndCopy() {
         }
       } else {
         chrome.runtime.sendMessage({ action: 'noImages' });
+      }
+    }
+  }
+
+  // ==========================================
+  // 3. 【新增】BBC 处理逻辑
+  // ==========================================
+  else if (window.location.hostname.includes("bbc.com")) {
+    // BBC 的主要内容通常在 main 标签内
+    const contentRoot = document.querySelector('main[role="main"]') || document;
+
+    if (contentRoot) {
+      // 1. 提取文本
+      // BBC 正文段落和小标题
+      const textSelectors = [
+        'h2',
+        'h3',
+        'p'
+      ];
+
+      const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
+      let uniqueElements = [...new Set(allElements)];
+
+      textContent = uniqueElements
+        .map(el => {
+          // 过滤掉图片描述(figcaption)内的文本，避免正文重复
+          if (el.closest('figcaption')) return '';
+          // 过滤掉页面导航、推荐阅读等非正文区域
+          if (el.closest('[data-e2e="recommendations-heading"]') || el.closest('header')) return '';
+
+          const tagName = el.tagName.toLowerCase();
+          let text = el.textContent.trim()
+            .replace(/\s+/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .trim();
+
+          // 过滤无效文本
+          if (!text || text.length <= 1 || text === '圖像加註文字，') {
+            return '';
+          }
+
+          // ★★★ 新增：过滤图片来源标注行 ★★★
+          if (text.startsWith('圖像來源，')) {
+            return '';
+          }
+
+          // ★★★ 新增：过滤文章结尾标记 ★★★
+          if (text === 'End of content') {
+            return '';
+          }
+
+          // 标题格式化
+          if (tagName === 'h2' || tagName === 'h3') {
+            return `\n【${text}】\n`;
+          }
+          return text;
+        })
+        .filter(text => text.length > 0)
+        .join('\n\n');
+
+      // 2. 提取并下载图片
+      if (textContent) {
+        // 查找 main 下的所有 figure 中的图片
+        let allImages = [...contentRoot.querySelectorAll('figure img')];
+        allImages = [...new Set(allImages)];
+
+        if (allImages.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const processedUrls = new Set();
+
+          allImages.forEach(img => {
+            if (img) {
+              // 解析 srcset 获取最高清图片
+              let highestResUrl = img.src;
+              if (img.srcset) {
+                const cleanSrcset = img.srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+                const srcsetEntries = cleanSrcset.split(',').map(entry => {
+                  const parts = entry.trim().split(/\s+/);
+                  const widthStr = parts[parts.length - 1];
+                  const url = parts[0];
+                  const widthNum = parseInt(widthStr?.replace(/[^0-9]/g, '') || '0');
+                  return { url: url, width: widthNum };
+                });
+
+                const highestResSrc = srcsetEntries.reduce((prev, current) => {
+                  return (current.width > prev.width) ? current : prev;
+                }, srcsetEntries[0]);
+
+                if (highestResSrc && highestResSrc.url) {
+                  highestResUrl = highestResSrc.url;
+                }
+              }
+
+              // 清理 URL 并在后面加上 .webp 扩展名（BBC图片通常是webp）
+              const finalUrl = highestResUrl.split('?')[0];
+
+              if (!processedUrls.has(finalUrl)) {
+                processedUrls.add(finalUrl);
+
+                // 提取图片描述
+                let altText = '';
+                const figure = img.closest('figure');
+                if (figure) {
+                  // 优先查找 data-testid="caption-paragraph"
+                  const captionSpan = figure.querySelector('[data-testid="caption-paragraph"]');
+                  if (captionSpan) {
+                    altText = captionSpan.textContent.trim();
+                  } else {
+                    const figcaption = figure.querySelector('figcaption');
+                    if (figcaption) {
+                      // 移除 "圖像加註文字，" 等前缀
+                      let rawText = figcaption.textContent.trim();
+                      altText = rawText.replace(/^圖像加註文字，\s*/, '');
+                    }
+                  }
+                }
+
+                // 兜底描述
+                if (!altText) altText = img.alt || 'bbc_image';
+
+                // 文件名清理逻辑
+                const processFileName = (text) => {
+                  text = text
+                    .replace(/[“”。，,]/g, '')
+                    .replace(/[\\/?%*:|"<>+]/g, '-')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  if (text.length > 100) {
+                    text = text.substr(0, 96) + '...';
+                  }
+                  // BBC 的高清图通常以 .webp 结尾，为了兼容性可以存为 .jpg，系统会自动处理
+                  return `${text}.jpg`;
+                };
+
+                chrome.runtime.sendMessage({
+                  action: 'downloadImage',
+                  url: finalUrl,
+                  filename: processFileName(altText)
+                });
+              }
+            }
+          });
+        }
       }
     }
   }

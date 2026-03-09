@@ -52,7 +52,8 @@ SEGMENT_TO_HTML_FILE = {
     "ft": "ft.html",
     "wsj": "wsj.html",
     "rfi": "rfi.html",
-    "dw": "dw.html"
+    "dw": "dw.html",
+    "bbc": "bbc.html"
 }
 
 # ================= 函数定义 =================

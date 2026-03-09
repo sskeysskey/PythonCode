@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Image Downloader & Article Copier",
-  "version": "1.2",
-  "description": "Copy FT Bloomberg WSJ Economist technologyreview REUTERS content to clipboard",
+  "version": "1.3",
+  "description": "Copy FT Bloomberg WSJ Economist technologyreview REUTERS BBC content to clipboard",
   "permissions": [
     "activeTab",
     "clipboardWrite",
@@ -21,7 +21,8 @@
     "*://*.washingtonpost.com/*",
     "*://*.asia.nikkei.com/*",
     "*://*.dw.com/*",
-    "*://*.rfi.fr/*"
+    "*://*.rfi.fr/*",
+    "*://*.bbc.com/*"
   ],
   "action": {
     "default_title": "Copy Article"
