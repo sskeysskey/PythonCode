@@ -119,14 +119,25 @@ def main():
             print("寻找超时：未能在规定时间内找到复制按钮")
             sys.exit(2) # 状态码 2：超时退出
             
-        # 1. 初次寻找 Copy 按钮 (仅作为触发条件)
+        # 1. 初次寻找 Copy 按钮 (触发条件)
         location, shape = find_image_on_screen(template)
         
         if location:
-            print("定位到 Copy 按钮，直接进行点击...")
+            print("初步定位到 Copy 按钮，等待 1 秒以确保 UI 稳定...")
+            sleep(1) # 等待 1 秒
             
-            # 执行点击
-            lx, ly = perform_click(location, shape)
+            # 2. 再次寻找，获取最新的坐标
+            new_location, new_shape = find_image_on_screen(template)
+            
+            # 如果第二次没找到（可能页面刷新了），则跳过本次循环继续找
+            if not new_location:
+                print("等待后未找到按钮，继续寻找...")
+                continue
+                
+            print(f"确认定位到 Copy 按钮，准备点击 (原位置: {location}, 新位置: {new_location})...")
+            
+            # 执行点击（使用最新的坐标和形状）
+            lx, ly = perform_click(new_location, new_shape)
             print(f"第 {current_attempt} 次尝试 - 点击按钮: {lx}, {ly}")
             
             # 校验内容
