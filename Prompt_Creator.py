@@ -432,9 +432,10 @@ class MainWindow(QWidget):
         bot_layout.setContentsMargins(5, 5, 5, 5)
         bot_layout.addWidget(QLabel("最终Prompt指令:"))
         
-        self.prompt_input = QTextEdit()
-        self.prompt_input.setObjectName("prompt_input_field") # 设置 ObjectName 以便 QSS 识别
-        self.prompt_input.setPlaceholderText("在这里输入你的指令...")
+        # --- 修改点：将 prompt_input 替换为 FileContentTextEdit ---
+        self.prompt_input = FileContentTextEdit()
+        self.prompt_input.setObjectName("prompt_input_field")
+        self.prompt_input.setPlaceholderText("在这里输入你的指令 (按 Ctrl+F 查找/替换)...")
         bot_layout.addWidget(self.prompt_input)
         
         btns = QHBoxLayout()
