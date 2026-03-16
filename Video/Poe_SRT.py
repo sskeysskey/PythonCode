@@ -14,6 +14,32 @@ else:
     output_path = DEFAULT_OUTPUT_PATH
 
 
+def filter_last_sentence(content):
+    """
+    过滤逻辑：如果最后一个有内容的句子以“需要我”开头，则将其删除。
+    """
+    # 按行分割，去除空行
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    
+    if not lines:
+        return content
+
+    # 获取最后一行
+    last_line = lines[-1]
+    
+    # 检查是否以“需要我”开头
+    if last_line.startswith("需要我"):
+        print(f"检测到最后一句以“需要我”开头，正在删除: {last_line}")
+        # 重新构建内容：去掉最后一行
+        # 注意：这里假设内容是以行为单位的，如果你的SRT格式比较复杂，
+        # 可能需要更精细的逻辑，但对于大多数情况，去掉最后一行是有效的。
+        # 我们使用 rstrip() 配合正则去掉最后一行，保留前面的内容
+        pattern = re.compile(re.escape(last_line) + r'\s*$', re.MULTILINE)
+        return pattern.sub('', content).strip()
+    
+    return content
+
+
 def fix_timestamp(line):
     """修复时间戳中的负数问题"""
     pattern = r'(\d{2}:\d{2}:\d{2}),(-\d+)\s-->'
@@ -30,6 +56,9 @@ def fix_timestamp(line):
 
 def SRT_File(clipboard_content):
     print("执行 SRT_File()")
+    
+    # 【新增】先进行内容过滤
+    clipboard_content = filter_last_sentence(clipboard_content)
     
     # 使用正则表达式找到第一个以数字开头并且紧跟一个换行符的行
     match = re.search(r'^(\d+).*\n', clipboard_content, re.MULTILINE)

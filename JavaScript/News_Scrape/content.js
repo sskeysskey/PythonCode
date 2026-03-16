@@ -388,10 +388,57 @@ if (hostname.includes('bloomberg.com')) {
         }, 2 * 60 * 1000);
     }, 3000);
 } else if (hostname.includes('reuters.com')) {
-    window.addEventListener('load', () => {
-        console.log('Reuters Scraper loaded');
-        scrapeReuters();
+    console.log('Reuters Scraper 已注入，等待内容渲染...');
+
+    let hasScraped = false;
+
+    function tryReutersScrape(source) {
+        if (hasScraped) return;
+        const currentYear = new Date().getFullYear();
+        const links = document.querySelectorAll(`a[href*='-${currentYear}-']`);
+        console.log(`[Reuters] ${source}: 发现 ${links.length} 个候选链接`);
+
+        if (links.length >= 5) {
+            hasScraped = true;
+            console.log(`[Reuters] 链接数量足够，开始抓取 (via ${source})`);
+            observer.disconnect();
+            scrapeReuters();
+        }
+    }
+
+    // 策略1：定时轮询（覆盖 Python 端滚动完成后的时间窗口）
+    setTimeout(() => tryReutersScrape('timeout-3s'), 3000);
+    setTimeout(() => tryReutersScrape('timeout-6s'), 6000);
+    setTimeout(() => tryReutersScrape('timeout-10s'), 10000);
+    setTimeout(() => tryReutersScrape('timeout-15s'), 15000);
+
+    // 策略2：MutationObserver 监听 DOM 变化（React 渲染完成时触发）
+    const observer = new MutationObserver(() => {
+        tryReutersScrape('mutation');
     });
+
+    // 等 body 可用后再 observe
+    function startObserver() {
+        if (document.body) {
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        } else {
+            setTimeout(startObserver, 200);
+        }
+    }
+    startObserver();
+
+    // 策略3：20秒后无论如何强制抓取一次（兜底）
+    setTimeout(() => {
+        if (!hasScraped) {
+            hasScraped = true;
+            observer.disconnect();
+            console.log('[Reuters] 超时兜底，强制执行抓取');
+            scrapeReuters();
+        }
+    }, 20000);
 } else if (hostname.includes('ft.com')) { // 新增 FT 的处理逻辑
     window.addEventListener('load', () => {
         console.log('FT Scraper loaded');

@@ -394,7 +394,7 @@ class MainWindow(QWidget):
         top_widget = QWidget()
         top_layout = QHBoxLayout(top_widget)
         top_layout.setContentsMargins(10, 5, 10, 5)
-        fixed_label = QLabel("我有一个新开发的应用程序.")
+        fixed_label = QLabel("以下是这次要处理的内容.")
         fixed_label.setStyleSheet("font-size: 14px; color: #88C0D0; font-weight: bold;")
         top_layout.addWidget(fixed_label)
         
