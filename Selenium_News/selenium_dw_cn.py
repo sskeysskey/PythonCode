@@ -127,7 +127,7 @@ def main():
                             if len(cols) >= 2:
                                 date_str = cols[0].text.strip()
                                 try:
-                                    if datetime.strptime(date_str, '%Y_%m_%d_%H') >= (current_datetime - timedelta(days=10)):
+                                    if datetime.strptime(date_str, '%Y_%m_%d_%H') >= (current_datetime - timedelta(days=30)):
                                         t = cols[1].text.strip()
                                         l = cols[1].find('a')['href'] if cols[1].find('a') else None
                                         old_content.append([date_str, t, l])

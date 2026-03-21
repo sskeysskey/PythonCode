@@ -127,7 +127,7 @@ def main():
         if old_file_list:
             old_file_path = old_file_list[0]
             # 保持原逻辑：保留10天内的数据
-            seven_days_ago = current_datetime - timedelta(days=10)
+            seven_days_ago = current_datetime - timedelta(days=30)
             try:
                 with open(old_file_path, 'r', encoding='utf-8') as file:
                     soup = BeautifulSoup(file, 'html.parser')
