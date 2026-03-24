@@ -106,7 +106,7 @@ function scrapeBloomberg() {
     }
 }
 
-// reuters 抓取函数
+// Reuters 抓取函数
 function scrapeReuters() {
     const now = new Date();
     // 动态获取当前年份
@@ -336,15 +336,61 @@ function scrapeFT() {
 }
 
 
-// 根据网站使用不同的事件监听方式
+// ========== 根据网站使用不同的事件监听方式 ==========
 const hostname = window.location.hostname;
 
 if (hostname.includes('bloomberg.com')) {
-    // Bloomberg 使用原来的 load 事件
-    window.addEventListener('load', () => {
-        console.log('Bloomberg Scraper loaded');
-        scrapeBloomberg();
+    console.log('Bloomberg Scraper 已注入，等待内容渲染...');
+
+    let hasScraped = false;
+
+    function tryBloombergScrape(source) {
+        if (hasScraped) return;
+        const currentYear = new Date().getFullYear();
+        const links = document.querySelectorAll(`a[href*='/${currentYear}']`);
+        console.log(`[Bloomberg] ${source}: 发现 ${links.length} 个候选链接`);
+
+        if (links.length >= 5) {
+            hasScraped = true;
+            console.log(`[Bloomberg] 链接数量足够，开始抓取 (via ${source})`);
+            bloombergObserver.disconnect();
+            scrapeBloomberg();
+        }
+    }
+
+    // 策略1：定时轮询（快速尝试 + 递增间隔）
+    setTimeout(() => tryBloombergScrape('timeout-1.5s'), 1500);
+    setTimeout(() => tryBloombergScrape('timeout-3s'), 3000);
+    setTimeout(() => tryBloombergScrape('timeout-6s'), 6000);
+    setTimeout(() => tryBloombergScrape('timeout-10s'), 10000);
+
+    // 策略2：MutationObserver 监听 DOM 变化
+    const bloombergObserver = new MutationObserver(() => {
+        tryBloombergScrape('mutation');
     });
+
+    function startBloombergObserver() {
+        if (document.body) {
+            bloombergObserver.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        } else {
+            setTimeout(startBloombergObserver, 200);
+        }
+    }
+    startBloombergObserver();
+
+    // 策略3：15秒兜底强制抓取
+    setTimeout(() => {
+        if (!hasScraped) {
+            hasScraped = true;
+            bloombergObserver.disconnect();
+            console.log('[Bloomberg] 超时兜底，强制执行抓取');
+            scrapeBloomberg();
+        }
+    }, 15000);
+
 } else if (hostname.includes('wsj.com')) {
     // WSJ 使用 DOMContentLoaded 事件
     document.addEventListener('DOMContentLoaded', () => {

@@ -176,9 +176,9 @@ def main():
         print("开始滚动页面以加载更多内容...")
         last_height = driver.execute_script("return document.body.scrollHeight")
 
-        for i in range(4):  # 增加滚动次数
+        for i in range(2):  # 增加滚动次数
             driver.execute_script("window.scrollBy(0, 1000);")  # 增加滚动距离
-            print(f"滚动次数: {i+1}/4")
+            print(f"滚动次数: {i+1}/2")
             time.sleep(1.5)  # 关键：增加等待时间，让动态内容有时间加载
             
             # 检查页面高度是否变化（可选的智能等待）
