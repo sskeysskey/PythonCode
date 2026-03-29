@@ -14,13 +14,13 @@ import re
 import sys
 import hashlib
 
-# --- 修改后的路径配置 ---
-# 资源文件所在目录的绝对路径
+# --- 路径配置 ---
 RESOURCE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/Prediction"
 
 # 字典文件和待翻译文件的完整路径
 DICT_PATH = os.path.join(RESOURCE_DIR, "translation_dict.json")
 PENDING_PATH = os.path.join(RESOURCE_DIR, "pending_translations.json")
+
 
 def load_json(path):
     if os.path.exists(path):
@@ -35,27 +35,19 @@ def save_json(path, data):
     print(f"✅ 已保存: {path}")
 
 
-def clean_option_label(raw_label):
-    """
-    复刻 Swift 端 PredictionOption.displayLabel 的逻辑:
-    去掉排名前缀如 "1Gary Woodland" → "Gary Woodland"
-    """
-    match = re.match(r"^T?\d+", raw_label)
-    if match:
-        cleaned = raw_label[match.end():].strip()
-        return cleaned if cleaned else raw_label
-    return raw_label
-
-
 def is_rank_only(label):
     """复刻 Swift 端的 isRankOnly 过滤逻辑"""
     return bool(re.match(r"^T?\d+$", label))
 
 
 def extract_texts_from_files():
-    """从所有预测 JSON 文件中提取需要翻译的文本"""
+    """
+    从所有预测 JSON 文件中提取需要翻译的文本。
+    - names / types / subtypes：完整文本
+    - options：返回原始 option 文本集合（后续根据是否包含数字决定提取方式）
+    """
     names = set()
-    options = set()
+    option_texts = set()
     types = set()
     subtypes = set()
 
@@ -82,29 +74,58 @@ def extract_texts_from_files():
             while f"option{i}" in item:
                 raw = item[f"option{i}"]
                 if raw and not is_rank_only(raw):
-                    cleaned = clean_option_label(raw)
-                    if cleaned:
-                        options.add(cleaned)
+                    option_texts.add(raw)
                 i += 1
 
-    return names, options, types, subtypes
+    return names, option_texts, types, subtypes
 
 
 def cmd_extract():
-    """提取待翻译新词"""
+    """
+    提取待翻译新词。
+    - names / types / subtypes：完整文本匹配
+    - options：如果包含数字，则只提取纯英文单词；如果不包含数字，则完整提取。
+    """
     dictionary = load_json(DICT_PATH) or {"names": {}, "options": {}, "types": {}, "subtypes": {}}
-    names, options, types, subtypes = extract_texts_from_files()
+    names, option_texts, types, subtypes = extract_texts_from_files()
 
+    known_options = dictionary.get("options", {})
     pending = {"names": {}, "options": {}, "types": {}, "subtypes": {}}
+
+    # ---- names：完整文本 ----
     for n in sorted(names):
         if n not in dictionary.get("names", {}):
             pending["names"][n] = ""
-    for o in sorted(options):
-        if o not in dictionary.get("options", {}):
-            pending["options"][o] = ""
+
+    # ---- options：混合提取逻辑 ----
+    # 构建已知词的小写集合，用于大小写不敏感去重
+    known_lower = {k.lower() for k in known_options}
+    unknown_words = {}  # lowercase/exact_string → 首次出现的原始形式
+
+    for text in option_texts:
+        if re.search(r'\d', text):
+            # 包含数字：只提取纯英文字母序列
+            words = re.findall(r'[a-zA-Z]+', text)
+            for word in words:
+                lower = word.lower()
+                if lower not in known_lower and lower not in unknown_words:
+                    unknown_words[lower] = word
+        else:
+            # 不包含数字：完整提取
+            # 为了防止大小写重复，依然使用小写进行校验，但保留原始文本
+            lower_text = text.lower()
+            if text not in known_options and lower_text not in known_lower and lower_text not in unknown_words:
+                unknown_words[lower_text] = text
+
+    for lower_key in sorted(unknown_words.keys()):
+        pending["options"][unknown_words[lower_key]] = ""
+
+    # ---- types：完整文本 ----
     for t in sorted(types):
         if t not in dictionary.get("types", {}):
             pending["types"][t] = ""
+
+    # ---- subtypes：完整文本 ----
     for s in sorted(subtypes):
         if s not in dictionary.get("subtypes", {}):
             pending["subtypes"][s] = ""
@@ -157,7 +178,7 @@ def cmd_merge():
     # 清理 pending 文件
     if merged_count > 0:
         os.remove(PENDING_PATH)
-        print(f"🗑️ 已删除 pending_translations.json")
+        print(f"🗑️  已删除 pending_translations.json")
 
 
 def calc_md5(filepath):
