@@ -318,6 +318,12 @@ def main() -> None:
         for line in lines:
             stripped_line = line.strip()
             
+            # --- 新增规则：删除以“拓展阅读”开头的段落 ---
+            if stripped_line.startswith("拓展阅读"):
+                deleted_lines.append(line)
+                continue
+            # -------------------------------------------
+
             # 1. 过滤只有“广告”两个字的行
             if stripped_line == "广告":
                 deleted_lines.append(line)

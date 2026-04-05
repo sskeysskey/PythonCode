@@ -13,11 +13,14 @@ def clean_ft_clipboard():
     # 使用re.sub移除版权声明 (使用 re.DOTALL 让 . 匹配换行符)
     cleaned_content = re.sub(copyright_pattern, '', clipboard_content, flags=re.DOTALL)
     
-    # 2. 移除以“更多阅读”开头的段落
-    # ^ 匹配行首，.* 匹配该行后面的所有字符，(?:\r?\n|$) 匹配换行符或文本末尾，连同换行符一起删掉
-    more_reading_pattern = r'^更多阅读.*(?:\r?\n|$)'
+    # 2. 移除以“更多阅读”、“延伸阅读”或“拓展阅读”开头的段落
+    # ^ 匹配行首
+    # (?:更多阅读|延伸阅读|拓展阅读) 匹配这三个词中的任意一个
+    # .* 匹配该行后面的所有字符
+    # (?:\r?\n|$) 匹配换行符或文本末尾，连同换行符一起删掉
+    more_reading_pattern = r'^(?:更多阅读|延伸阅读|拓展阅读).*(?:\r?\n|$)'
     
-    # 使用re.sub移除“更多阅读”段落 (使用 re.MULTILINE 让 ^ 匹配每一行的开头)
+    # 使用re.sub移除这些段落 (使用 re.MULTILINE 让 ^ 匹配每一行的开头)
     cleaned_content = re.sub(more_reading_pattern, '', cleaned_content, flags=re.MULTILINE)
     
     # 将处理后的内容写回剪贴板
