@@ -4,7 +4,6 @@ import re
 import pyperclip
 import shutil
 import glob
-import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -256,9 +255,7 @@ def main() -> None:
                 changed = True
                 continue
 
-            # =====================================================
-            # [新增] 针对文首的 AI 语气词/引导语过滤
-            # =====================================================
+            # 针对文首的 AI 语气词/引导语过滤
             if first_line.startswith(("下面是对你", "请使用文章顶部")):
                 lines.pop(0)
                 changed = True
@@ -301,13 +298,22 @@ def main() -> None:
             changed = False
             last_line = lines[-1]
 
-            # 1. 文本特征判断
-            if last_line.startswith(("需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要")):
+            # 1. 文本特征判断 (增强版：处理段内包含提问的情况)
+            ai_ask_keywords = ["需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要", "你觉得", "或者需要", "希望我"]
+            
+            # 规则1：直接以这些词开头
+            if last_line.startswith(tuple(ai_ask_keywords)):
+                lines.pop(-1)
+                changed = True
+                continue
+            
+            # 规则2：段落中包含这些词，并且带有问号（典型 AI 结尾提问特征）
+            if any(kw in last_line for kw in ai_ask_keywords) and ("？" in last_line or "?" in last_line):
                 lines.pop(-1)
                 changed = True
                 continue
 
-            # 2. 横线判断 - 只有在文本特征判断之后（或独立）检查
+            # 2. 横线判断
             if lines:
                 current_last = lines[-1]
                 if len(current_last) > 0 and current_last.replace('-', '').strip() == '':
@@ -316,15 +322,43 @@ def main() -> None:
                     continue
 
         # =========================================================
-        #   >>> 新增部分：逻辑块 C (广告过滤及全局横线过滤) <<<
+        #   >>> 新增部分：逻辑块 C (广告过滤、全局横线及中间AI引导句过滤) <<<
         # =========================================================
-        lines = [
-            line for line in lines 
-            if line.strip() != "广告"  # 过滤只有“广告”两个字的行
-            and not line.strip().startswith("AdChoices") # 过滤以 AdChoices 开头的行
-            and not (len(line) > 0 and line.replace('-', '').strip() == '') # 全局过滤只包含“-”的行
-        ]
-        clipboard_content = "\n".join(lines)
+        filtered_lines = []
+        # 定义中间过渡句的高频关键词
+        transition_keywords = ["以下", "新闻", "事件", "模块", "总结", "详细", "核心", "内容", "要点"]
+        
+        for line in lines:
+            stripped_line = line.strip()
+            
+            # 1. 过滤只有“广告”两个字的行
+            if stripped_line == "广告":
+                continue
+            # 2. 过滤以 AdChoices 开头的行
+            if stripped_line.startswith("AdChoices"):
+                continue
+            # 3. 全局过滤只包含“-”的行
+            if len(stripped_line) > 0 and stripped_line.replace('-', '') == '':
+                continue
+            
+            # 4. 智能过滤中间的 AI 引导句/过渡句
+            # 规则：句子长度较短（小于等于40字），防止误删真正的新闻长段落
+            if len(stripped_line) <= 40:
+                # 计算命中了几个关键词
+                hit_count = sum(1 for kw in transition_keywords if kw in stripped_line)
+                
+                # 特征 A：包含“以下”，命中至少2个关键词，且以冒号结尾（典型特征）
+                if "以下" in stripped_line and hit_count >= 2 and stripped_line.endswith(("：", ":")):
+                    continue
+                
+                # 特征 B：关键词密度极高（命中3个及以上），比如“新闻事件模块总结”
+                if hit_count >= 3:
+                    continue
+            
+            # 如果没有被上面的规则拦截，则保留该行
+            filtered_lines.append(line)
+
+        clipboard_content = "\n".join(filtered_lines)
 
     # 拼接最终内容
     segment_content = read_file(SEGMENT_FILE_PATH)

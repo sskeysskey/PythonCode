@@ -505,7 +505,8 @@ function extractAndCopy() {
           && !['flex', 'Advertisement'].includes(text)
           && !/^[.\s]*$/.test(text)
           && !/^Up Next:/.test(text)
-          && !/^You are using an/.test(text);
+          && !/^You are using an/.test(text)
+          && !/^Read More:/i.test(text);     // ★★★ 新增：过滤掉以 "Read More:" 开头的段落 (加了 'i' 忽略大小写) ★★★
       })
       .join('\n\n');
 

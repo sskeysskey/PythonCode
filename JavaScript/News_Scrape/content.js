@@ -58,28 +58,45 @@ function scrapeBloomberg() {
 
     const currentDatetime = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}`;
 
-    // 【修改点 1】：使用 currentYear 变量替换写死的 /2026
+    // 使用 currentYear 变量替换写死的 /2026
     const links = document.querySelectorAll(`a[href*='/${currentYear}']`);
 
     const newRows = [];
+    const seen = new Set(); // 新增：用于去重
 
     links.forEach(link => {
         const href = link.href;
 
-        // 修改为如下，解决主副标题粘连问题：
-        // 进阶版：只有当前面没有标点符号时，才添加句号
-        let titleText = link.innerText.replace(/([^\.\?\!])[\n\r]+/g, '$1. ').replace(/[\n\r]+/g, ' ').trim();
+        // 【修改点 1】：排除包含图片说明 (figcaption)、图片 (picture/img) 的链接，避免抓取到 "US Air Force/DVIDS" 等非标题文本
+        if (link.querySelector('figcaption') || link.querySelector('picture') || link.querySelector('img')) {
+            return;
+        }
+
+        // 过滤视频链接时也使用动态年份
+        if (href.includes(`/videos/${currentYear}`) || href.includes('/podcast')) {
+            return;
+        }
+
+        // 新增：去重逻辑
+        if (seen.has(href)) return;
+
+        // 【修改点 2】：优先尝试获取标准的标题元素
+        const headlineEl = link.querySelector('[data-testid="headline"], [data-component="headline"]');
+        let titleText = '';
+
+        if (headlineEl) {
+            titleText = headlineEl.textContent.trim();
+        } else {
+            // 兜底方案：只有当前面没有标点符号时，才添加句号
+            titleText = link.innerText.replace(/([^\.\?\!])[\n\r]+/g, '$1. ').replace(/[\n\r]+/g, ' ').trim();
+        }
 
         if (titleText.startsWith("Newsletter: ")) {
             titleText = titleText.substring(11);
         }
 
-        // 【修改点 2】：过滤视频链接时也使用动态年份
-        if (href.includes(`/videos/${currentYear}`) || href.includes('/podcast')) {
-            return;
-        }
-
         if (isValidTitle_Bloomberg(titleText) && href) {
+            seen.add(href); // 记录已抓取的链接
             newRows.push([currentDatetime, titleText, href]);
         }
     });
