@@ -194,19 +194,19 @@ class ScreenDetector:
         return "TIMEOUT"
 
     def run2(self) -> None:
-        """优化的运行方法2 - 持续查找并滚动，直到找不到"""
-        while True:
-            template_name, location, shape = self.find_images_on_screen(threshold=0.95)
+        """优化的运行方法2 - 持续查找，直到找不到图片（等待图片消失）"""
+        timeout = time.time() + self.timeout_seconds
+        
+        while time.time() < timeout:
+            # 将阈值降低到 0.9，防止因为微小的渲染差异导致误判图片已消失
+            template_name, location, shape = self.find_images_on_screen(threshold=0.9)
             
             if not location:
-                print("未找到图片，停止滚动并退出run2。")
+                print("未找到图片，认为图片已消失，退出run2。")
                 break
             
-            # <--- 注意：run2 原逻辑不含点击，如果需要点击请取消注释下面这行
-            # if self.clickValue: self._perform_click(location, shape)
-
-            pyautogui.scroll(-120)
-            print(f"找到图片 {template_name} 位置: {location}，已滚动。")
+            print(f"图片 {template_name} 仍在屏幕上位置: {location}，等待其消失...")
+            # 移除了 pyautogui.scroll(-120)，防止滚动导致图片位置变化或模糊从而误判
             sleep(1)
 
 def parse_args() -> Tuple[Union[str, List[str]], Optional[str], bool, bool, Optional[int], Optional[int], int, int]:

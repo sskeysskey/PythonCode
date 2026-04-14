@@ -151,6 +151,11 @@ def main():
                 print(f"第 {current_attempt} 次尝试失败：内容不合格。")
                 current_attempt += 1
                 if current_attempt <= max_attempts:
+                    # ==================================================
+                    # 【修改点】：将光标移动到 709, 749，然后执行向下滚屏
+                    # ==================================================
+                    print("内容不合格，移动光标到 (709, 749) 并向下滚屏...")
+                    pyautogui.moveTo(709, 749)
                     pyautogui.scroll(SCROLL_AMOUNT)
                     sleep(1)
                 else:

@@ -55,10 +55,11 @@ EXCLUDED_TITLES = {
     "Vietnam", "Myanmar", "Cambodia", "Laos", "Brunei", "East Timor",
     "Pakistan", "Afghanistan", "Bangladesh", "Sri Lanka", "Nepal", "Bhutan",
     "Maldives", "Kazakhstan", "Uzbekistan", "Turkmenistan", "Tajikistan",
-    "Kyrgyzstan", "Australia", "New Zealand", "Papua New Guinea",
+    "Kyrgyzstan", "Australia", "New Zealand", "Papua New Guinea", "ARTIFICIAL INTELLIGENCE",
     "Pacific Islands", "Middle East", "Russia & Caucasus", "North America",
     "Latin America", "Europe", "Africa", "Trading Asia", "Opinion", "Life & Arts",
-    "Politics", "Economy", "Business", "Tech", "Spotlight", "Tech Asia", "Artificial intelligence"
+    "Politics", "Economy", "Business", "Tech", "Spotlight", "Tech Asia", "Artificial intelligence",
+    "Electric vehicles"
 }
 
 # ================= 工具函数 =================

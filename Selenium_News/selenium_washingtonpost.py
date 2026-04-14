@@ -9,8 +9,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
-import platform # <--- 新增
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+import platform
 
 # ================= 配置区域 (跨平台修改) =================
 
@@ -55,6 +55,14 @@ def is_similar(url1, url2):
     base_url1 = f"{parsed_url1.scheme}://{parsed_url1.netloc}{parsed_url1.path}"
     base_url2 = f"{parsed_url2.scheme}://{parsed_url2.netloc}{parsed_url2.path}"
     return base_url1 == base_url2
+
+def is_short_title(title):
+    """
+    判断标题是否过短 (少于 5 个单词 或 少于 40 个字符)
+    """
+    if not title:
+        return True
+    return len(title.split()) < 5 or len(title) < 40
 
 def main():
     # 获取当前日期
@@ -185,9 +193,51 @@ def main():
                 except Exception:
                     continue
             
-            print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
+            print(f"成功提取了 {len(raw_data_list)} 条原始数据。")
+
+            # --- 步骤 B.5: 针对过短的标题，进入详情页抓取完整标题 ---
+            print("正在检查并修复过短的标题...")
+            updated_raw_data_list = []
+            
+            for href, title_text in raw_data_list:
+                if is_short_title(title_text):
+                    print(f"发现短标题: '{title_text}' -> 正在进入详情页获取完整标题...")
+                    try:
+                        # 使用 JS 打开新标签页，避免丢失主页的 DOM 状态
+                        driver.execute_script(f"window.open('{href}', '_blank');")
+                        # 切换到新标签页
+                        driver.switch_to.window(driver.window_handles[-1])
+                        
+                        # 等待文章详情页的 h1 标签加载 (支持 data-testid 或 data-qa)
+                        h1_locator = (By.CSS_SELECTOR, "h1[data-testid='headline'], h1[data-qa='headline']")
+                        WebDriverWait(driver, 8).until(
+                            EC.presence_of_element_located(h1_locator)
+                        )
+                        
+                        full_title_element = driver.find_element(*h1_locator)
+                        full_title = full_title_element.text.strip()
+                        
+                        if full_title:
+                            print(f"  ✅ 成功获取完整标题: '{full_title}'")
+                            title_text = full_title
+                            
+                    except TimeoutException:
+                        print(f"  ⚠️ 获取详情页标题超时，保留原标题。")
+                    except Exception as e:
+                        print(f"  ⚠️ 获取详情页标题失败 ({e})，保留原标题。")
+                    finally:
+                        # 确保无论成功失败，都关闭当前详情页标签，并切回主页标签
+                        if len(driver.window_handles) > 1:
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[0])
+                
+                updated_raw_data_list.append((href, title_text))
+                
+            # 将更新后的数据赋值回 raw_data_list
+            raw_data_list = updated_raw_data_list
 
             # --- 步骤 C: 逻辑过滤 (纯 Python 处理) ---
+            print("开始过滤数据...")
             # 定义排除关键字
             exclude_keywords = ['podcasts', 'sports', '/music/', 'weather', '/books/',
                                 'food', '/advice/', '/tv/', '/entertainment/',

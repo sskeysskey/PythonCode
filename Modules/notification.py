@@ -31,10 +31,15 @@ def show_toast(message, duration=2000, bg='green', fg='white', font=('Helvetica'
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
     
-    # 水平居中，垂直居中下方偏移
-    x = (sw - w) // 2
-    # 换成你想要的偏移量
-    y = (sh - h) // 2 -300
+    # --- 修改这里 ---
+    # 想要向右移动：在居中的基础上增加偏移量 (例如 + 100)
+    x_offset = 130 
+    x = (sw - w) // 2 + x_offset
+    
+    # 想要向下移动：减小负偏移量，或者直接加上正偏移量
+    # 原本是 -300 (向上)，改为 -100 (向上少一点) 或 +100 (向下)
+    y_offset = -200 
+    y = (sh - h) // 2 + y_offset
     
     root.geometry(f'{w}x{h}+{x}+{y}')
 

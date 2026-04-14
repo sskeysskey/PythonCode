@@ -55,7 +55,6 @@ function scrapeBloomberg() {
     const now = new Date();
     // 动态获取当前年份 (例如 2026)
     const currentYear = now.getFullYear();
-
     const currentDatetime = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}`;
 
     // 使用 currentYear 变量替换写死的 /2026
@@ -67,7 +66,12 @@ function scrapeBloomberg() {
     links.forEach(link => {
         const href = link.href;
 
-        // 【修改点 1】：排除包含图片说明 (figcaption)、图片 (picture/img) 的链接，避免抓取到 "US Air Force/DVIDS" 等非标题文本
+        // 【新增修改】：如果 URL 中包含 "/audio/"，直接跳过
+        if (href.includes('/audio/')) {
+            return;
+        }
+
+        // 【修改点 1】：排除包含图片说明 (figcaption)、图片 (picture/img) 的链接
         if (link.querySelector('figcaption') || link.querySelector('picture') || link.querySelector('img')) {
             return;
         }
@@ -123,8 +127,63 @@ function scrapeBloomberg() {
     }
 }
 
+// ================= 新增：进度条 UI 控制函数 =================
+function createProgressUI(total) {
+    if (document.getElementById('scraper-progress-container')) return;
+    const container = document.createElement('div');
+    container.id = 'scraper-progress-container';
+    container.style.cssText = `
+        position: fixed; bottom: 20px; right: 20px; width: 320px;
+        background: #ffffff; border: 1px solid #e5e7eb;
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+        border-radius: 8px; padding: 16px; z-index: 999999;
+        font-family: system-ui, -apple-system, sans-serif; color: #1f2937;
+    `;
+    container.innerHTML = `
+        <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px; display: flex; justify-content: space-between;">
+            <span>🚀 路透社抓取中...</span>
+            <span id="scraper-percent">0%</span>
+        </div>
+        <div style="width: 100%; background: #f3f4f6; border-radius: 999px; height: 8px; margin-bottom: 12px; overflow: hidden;">
+            <div id="scraper-progress-bar" style="width: 0%; background: #3b82f6; height: 100%; transition: width 0.3s ease;"></div>
+        </div>
+        <div id="scraper-status" style="font-size: 12px; color: #4b5563; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">准备中...</div>
+        <div id="scraper-eta" style="font-size: 12px; color: #6b7280;">预计剩余时间: 计算中...</div>
+    `;
+    document.body.appendChild(container);
+}
+
+function updateProgressUI(current, total, startTime, statusText) {
+    const container = document.getElementById('scraper-progress-container');
+    if (!container) return;
+
+    const percent = total === 0 ? 100 : Math.round((current / total) * 100);
+    document.getElementById('scraper-progress-bar').style.width = `${percent}%`;
+    document.getElementById('scraper-percent').innerText = `${percent}%`;
+    document.getElementById('scraper-status').innerText = `进度: ${current} / ${total} | ${statusText}`;
+
+    if (current > 0 && current < total) {
+        const elapsed = Date.now() - startTime;
+        const timePerItem = elapsed / current;
+        const remaining = (total - current) * timePerItem;
+        const remainingSeconds = Math.round(remaining / 1000);
+        document.getElementById('scraper-eta').innerText = `预计剩余时间: ${remainingSeconds} 秒`;
+    } else if (current === total) {
+        document.getElementById('scraper-eta').innerText = `处理完成！`;
+    }
+}
+
+function removeProgressUI() {
+    const container = document.getElementById('scraper-progress-container');
+    if (container) {
+        container.innerHTML = `<div style="font-weight: bold; color: #10b981; text-align: center;">✅ 抓取完成！即将下载...</div>`;
+        setTimeout(() => container.remove(), 3000);
+    }
+}
+// =========================================================
+
 // Reuters 抓取函数
-function scrapeReuters() {
+async function scrapeReuters() {
     const now = new Date();
     // 动态获取当前年份
     const currentYear = now.getFullYear();
@@ -136,9 +195,9 @@ function scrapeReuters() {
         String(now.getHours()).padStart(2, '0'),
     ].join('_');
 
-    // 使用 currentYear 变量替换写死的 -2026-
+    // 【修改点1】：放宽年份匹配规则，去掉前后的横杠，只要包含当前年份即可
     const allLinks = Array.from(
-        document.querySelectorAll(`a[href*='-${currentYear}-']`)
+        document.querySelectorAll(`a[href*='${currentYear}']`)
     );
 
     // 要排除的路径片段
@@ -146,50 +205,93 @@ function scrapeReuters() {
     const seen = new Set();
     const newRows = [];
 
-    allLinks.forEach(link => {
+    // 预过滤出真正需要处理的链接，以便准确计算进度
+    const validLinks = allLinks.filter(link => {
         const href = link.href;
+        if (link.dataset.testid === 'MediaImageLink') return false;
+        if (link.querySelector('img') && link.dataset.testid !== 'TitleLink' && link.dataset.testid !== 'Title') return false;
+        if (excludePaths.some(p => href.includes(p))) return false;
+        if (seen.has(href)) return false;
+        seen.add(href);
+        return true;
+    });
 
-        // 1) 排除“媒体图片”链接
-        if (link.dataset.testid === 'MediaImageLink') return;
+    const totalLinks = validLinks.length;
+    let processedCount = 0;
+    const startTime = Date.now();
 
-        // 2) 排除带 <img> 的链接
-        if (link.querySelector('img')) return;
+    // 启动进度条
+    createProgressUI(totalLinks);
 
-        // 3) 排除特定板块的链接
-        if (excludePaths.some(p => href.includes(p))) return;
+    // 重置 seen 以便在循环中复用去重逻辑（或者直接在下面去掉 seen 检查，因为已经过滤过了）
+    seen.clear();
 
-        // 4) 去重
-        if (seen.has(href)) return;
+    for (const link of validLinks) {
+        const href = link.href;
         seen.add(href);
 
-        // 5) 提取标题
         let titleText = '';
+        let statusMsg = '解析标题中...';
 
-        // 优先 span[data-testid="TitleHeading"]
-        const heading = link.querySelector("[data-testid='TitleHeading']");
-        if (heading) {
-            titleText = heading.textContent.trim();
+        // 【核心修改】：针对 SubtopicLink 这种短标题，发起请求获取详情页的真实长标题
+        if (link.dataset.testid === 'SubtopicLink') {
+            statusMsg = '正在请求子页面获取长标题...';
+            updateProgressUI(processedCount, totalLinks, startTime, statusMsg);
+
+            try {
+                const response = await fetch(href);
+                const htmlText = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlText, 'text/html');
+
+                // 尝试获取详情页的 h1 标签或 og:title
+                const h1 = doc.querySelector('h1');
+                const ogTitle = doc.querySelector('meta[property="og:title"]');
+
+                if (h1 && h1.textContent.trim()) {
+                    titleText = h1.textContent.trim();
+                } else if (ogTitle && ogTitle.content.trim()) {
+                    titleText = ogTitle.content.trim();
+                } else {
+                    titleText = link.textContent.trim(); // 兜底使用短标题
+                }
+            } catch (error) {
+                console.error(`获取真实长标题失败: ${href}`, error);
+                titleText = link.textContent.trim(); // 请求失败时兜底
+            }
+        } else {
+            // 优先 span[data-testid="TitleHeading"]
+            const heading = link.querySelector("[data-testid='TitleHeading']");
+            if (heading) {
+                titleText = heading.textContent.trim();
+            }
+            // 万一有 <a data-testid="Title">…</a> 或 <a data-testid="TitleLink">...</a>
+            else if (link.dataset.testid === 'Title' || link.dataset.testid === 'TitleLink') {
+                titleText = link.textContent.trim();
+            }
+            // 兜底：任何文本
+            else {
+                titleText = link.textContent.trim();
+            }
         }
-        // 万一有 <a data-testid="Title">…</a>
-        else if (link.dataset.testid === 'Title') {
-            titleText = link.textContent.trim();
-        }
-        // 兜底：任何文本
-        else {
-            titleText = link.textContent.trim();
-        }
+
+        processedCount++;
+        updateProgressUI(processedCount, totalLinks, startTime, '处理完成');
+
         if (titleText.includes("Tiananmen")) {
-            return;
+            continue;
         }
 
         if (titleText) {
             newRows.push([currentDatetime, titleText, href]);
         }
-    });
+    }
 
-    if (newRows.length === 0) return;
+    if (newRows.length === 0) {
+        removeProgressUI();
+        return;
+    }
 
-    // --------- 和你现有的 downloadHTML 部分一模一样 ---------
     const html = generateHTML(newRows, 'Reuters');
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -210,6 +312,9 @@ function scrapeReuters() {
         url,
         filename: `reuters_${timestamp}.html`
     });
+
+    // 抓取并下载完成后移除进度条
+    removeProgressUI();
 }
 
 // WSJ 抓取函数
@@ -283,7 +388,7 @@ function scrapeWSJ(shouldDownload = true) {
     return newRows.length;
 }
 
-// FT 抓取函数 (新增)
+// FT 抓取函数
 function scrapeFT() {
     const now = new Date();
     const currentDatetime = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}`;
@@ -458,14 +563,16 @@ if (hostname.includes('bloomberg.com')) {
     function tryReutersScrape(source) {
         if (hasScraped) return;
         const currentYear = new Date().getFullYear();
-        const links = document.querySelectorAll(`a[href*='-${currentYear}-']`);
+
+        // 【修改点2】：这里的探测逻辑也要同步放宽年份限制
+        const links = document.querySelectorAll(`a[href*='${currentYear}']`);
         console.log(`[Reuters] ${source}: 发现 ${links.length} 个候选链接`);
 
         if (links.length >= 5) {
             hasScraped = true;
             console.log(`[Reuters] 链接数量足够，开始抓取 (via ${source})`);
             observer.disconnect();
-            scrapeReuters();
+            scrapeReuters(); // 因为现在是 async，这里调用依然没问题，它会在后台执行
         }
     }
 
