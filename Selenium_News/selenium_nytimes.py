@@ -2,6 +2,7 @@ import os
 import re
 import time
 import glob
+import requests
 import webbrowser
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -12,7 +13,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 import sys
 import platform # <--- 新增
 
@@ -77,6 +78,58 @@ def is_similar(url1, url2):
     base_url1 = f"{parsed_url1.scheme}://{parsed_url1.netloc}{parsed_url1.path}"
     base_url2 = f"{parsed_url2.scheme}://{parsed_url2.netloc}{parsed_url2.path}"
     return base_url1 == base_url2
+
+def is_short_title(title):
+    """判断标题是否过短 (少于 5 个单词 或 少于 40 个字符)"""
+    if not title:
+        return True
+    return len(title.split()) < 5 or len(title) < 40
+
+def fetch_full_title_via_http(url, user_agent):
+    """用 requests 直接抓取 og:title 或 h1，速度远快于开新标签页"""
+    try:
+        headers = {"User-Agent": user_agent}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # NYTimes 的 og:title 是完整标题
+        og = soup.find("meta", property="og:title")
+        if og and og.get("content"):
+            return og["content"].strip()
+        h1 = soup.find("h1", attrs={"data-testid": "headline"})
+        if h1:
+            return h1.get_text(strip=True)
+        h1 = soup.find("h1")
+        return h1.get_text(strip=True) if h1 else None
+    except Exception:
+        return None
+
+def get_full_title_with_retry(driver, max_retries=3):
+    """Selenium 兜底：在详情页用 JS 读取 h1 的 textContent"""
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    h1_css = "h1[data-testid='headline'], h1"
+    for attempt in range(max_retries):
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, h1_css))
+            )
+            time.sleep(0.8)
+            full_title = driver.execute_script(
+                "const el = document.querySelector(\"h1[data-testid='headline'], h1\");"
+                "return el ? el.textContent.trim() : '';"
+            )
+            if full_title and len(full_title) >= 10:
+                return full_title
+        except StaleElementReferenceException:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(0.5)
+            continue
+        except TimeoutException:
+            return None
+    return None
 
 def main():
     current_datetime = datetime.now()
@@ -227,6 +280,43 @@ def main():
                 except Exception:
                     continue
 
+            # --- 步骤 B.5: 针对过短的标题，获取完整标题 ---
+            print("正在检查并修复过短的标题...")
+            updated_raw_data_list = []
+
+            for href, title_text in raw_data_list:
+                if is_short_title(title_text):
+                    print(f"发现短标题: '{title_text}' -> 正在抓取完整标题...")
+                    
+                    # 优先 HTTP 方式（快）
+                    full_title = fetch_full_title_via_http(href, user_agent)
+                    
+                    # HTTP 失败就用 Selenium 开新标签兜底
+                    if not full_title or is_short_title(full_title):
+                        main_handle = driver.current_window_handle
+                        try:
+                            driver.execute_script(f"window.open('{href}', '_blank');")
+                            new_handle = [h for h in driver.window_handles if h != main_handle][-1]
+                            driver.switch_to.window(new_handle)
+                            full_title = get_full_title_with_retry(driver)
+                        except Exception as e:
+                            print(f"  ⚠️ Selenium 兜底失败 ({type(e).__name__})")
+                            full_title = None
+                        finally:
+                            if driver.current_window_handle != main_handle:
+                                driver.close()
+                            driver.switch_to.window(main_handle)
+                    
+                    if full_title and not is_short_title(full_title):
+                        print(f"  ✅ 成功: '{full_title}'")
+                        title_text = full_title
+                    else:
+                        print(f"  ⚠️ 未能获取完整标题，保留原始值。")
+                
+                updated_raw_data_list.append((href, title_text))
+
+            raw_data_list = updated_raw_data_list
+            
             print(f"提取到 {len(raw_data_list)} 条原始数据，开始排重过滤...")
             
             # 过滤逻辑

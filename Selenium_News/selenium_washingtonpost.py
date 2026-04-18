@@ -1,6 +1,7 @@
 import os
 import glob
 import time
+import requests
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from urllib.parse import urlparse
@@ -63,6 +64,58 @@ def is_short_title(title):
     if not title:
         return True
     return len(title.split()) < 5 or len(title) < 40
+
+def get_full_title_with_retry(driver, max_retries=3):
+    """
+    在当前窗口（详情页）上，带重试地获取完整标题。
+    使用 JS 直接读取 textContent，避免 stale 引用。
+    """
+    h1_css = "h1[data-testid='headline'], h1[data-qa='headline'], h1"
+    
+    for attempt in range(max_retries):
+        try:
+            # 1. 等待 h1 出现
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, h1_css))
+            )
+            # 2. 再稍等一下，让 React hydration 完成
+            time.sleep(0.8)
+            
+            # 3. 用 JS 原子地读取当前最新的 h1 文本（而不是先拿 element 再 .text）
+            full_title = driver.execute_script(
+                f"const el = document.querySelector(\"{h1_css}\");"
+                "return el ? el.textContent.trim() : '';"
+            )
+            
+            if full_title and len(full_title) >= 10:
+                return full_title
+            # 如果读到空或过短，重试
+        except StaleElementReferenceException:
+            # 文档推荐做法：捕获异常 -> 重新定位 -> 重试
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(0.5)
+            continue
+        except TimeoutException:
+            return None
+    
+    return None
+
+def fetch_full_title_via_http(url, user_agent):
+    try:
+        headers = {"User-Agent": user_agent}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # 优先拿 meta og:title（WaPo 的 og:title 一般是完整标题）
+        og = soup.find("meta", property="og:title")
+        if og and og.get("content"):
+            return og["content"].strip()
+        h1 = soup.find("h1")
+        return h1.get_text(strip=True) if h1 else None
+    except Exception:
+        return None
 
 def main():
     # 获取当前日期
@@ -200,36 +253,33 @@ def main():
             updated_raw_data_list = []
             
             for href, title_text in raw_data_list:
+                # if is_short_title(title_text):
+                #     full_title = fetch_full_title_via_http(href, user_agent)
+                #     if full_title and not is_short_title(full_title):
+                #         print(f"  ✅ HTTP 获取完整标题: '{full_title}'")
+                #         title_text = full_title
                 if is_short_title(title_text):
                     print(f"发现短标题: '{title_text}' -> 正在进入详情页获取完整标题...")
+                    main_handle = driver.current_window_handle
                     try:
-                        # 使用 JS 打开新标签页，避免丢失主页的 DOM 状态
                         driver.execute_script(f"window.open('{href}', '_blank');")
-                        # 切换到新标签页
-                        driver.switch_to.window(driver.window_handles[-1])
+                        # 切到新标签
+                        new_handle = [h for h in driver.window_handles if h != main_handle][-1]
+                        driver.switch_to.window(new_handle)
                         
-                        # 等待文章详情页的 h1 标签加载 (支持 data-testid 或 data-qa)
-                        h1_locator = (By.CSS_SELECTOR, "h1[data-testid='headline'], h1[data-qa='headline']")
-                        WebDriverWait(driver, 8).until(
-                            EC.presence_of_element_located(h1_locator)
-                        )
-                        
-                        full_title_element = driver.find_element(*h1_locator)
-                        full_title = full_title_element.text.strip()
-                        
+                        full_title = get_full_title_with_retry(driver)
                         if full_title:
                             print(f"  ✅ 成功获取完整标题: '{full_title}'")
                             title_text = full_title
-                            
-                    except TimeoutException:
-                        print(f"  ⚠️ 获取详情页标题超时，保留原标题。")
+                        else:
+                            print("  ⚠️ 未能获取完整标题，保留原标题。")
                     except Exception as e:
-                        print(f"  ⚠️ 获取详情页标题失败 ({e})，保留原标题。")
+                        print(f"  ⚠️ 获取详情页标题失败 ({type(e).__name__})，保留原标题。")
                     finally:
-                        # 确保无论成功失败，都关闭当前详情页标签，并切回主页标签
-                        if len(driver.window_handles) > 1:
+                        # 关闭详情页，切回主页
+                        if driver.current_window_handle != main_handle:
                             driver.close()
-                            driver.switch_to.window(driver.window_handles[0])
+                        driver.switch_to.window(main_handle)
                 
                 updated_raw_data_list.append((href, title_text))
                 
