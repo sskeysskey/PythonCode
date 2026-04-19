@@ -32,6 +32,20 @@ function isTimeFormat(text) {
     return false;
 }
 
+// ====== 新增辅助：安全获取纯文本（去除 noscript + 残留 HTML 标签）======
+function getCleanText(el) {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    // 关键：移除 noscript，避免其内部的 <img> 被当作文本读出来
+    clone.querySelectorAll('noscript').forEach(n => n.remove());
+    // 同时移除可能裸露的 img / picture / svg 元素内的说明文字干扰
+    clone.querySelectorAll('img, picture, svg').forEach(n => n.remove());
+    let txt = clone.textContent || '';
+    // 再用正则兜底：剥掉任何残留的 HTML 标签文字
+    txt = txt.replace(/<[^>]+>/g, '');
+    return txt.trim().replace(/\s+/g, ' ');
+}
+
 // 生成HTML内容
 function generateHTML(data, source) {
     let html = `
@@ -202,38 +216,67 @@ async function scrapeReuters() {
 
     // 要排除的路径片段
     const excludePaths = ['/podcasts/', '/sports/', '/africa/', '/audio/'];
-    const seen = new Set();
-    const newRows = [];
 
-    // 预过滤出真正需要处理的链接，以便准确计算进度
-    const validLinks = allLinks.filter(link => {
+    // 优先级越大，越优先作为该 href 的代表锚点
+    const priorityMap = {
+        'TitleHeading': 5,
+        'TitleLink': 4,
+        'Title': 4,
+        'Heading': 3,     // MediaStoryCard 的文字锚点
+        'SubtopicLink': 2,
+        '': 1,
+        'undefined': 1,
+    };
+    const getPriority = (link) => priorityMap[link.dataset.testid || ''] ?? 1;
+
+    // 以 href 为 key 做"择优去重"
+    const linksByHref = new Map();
+
+    allLinks.forEach(link => {
         const href = link.href;
-        if (link.dataset.testid === 'MediaImageLink') return false;
-        if (link.querySelector('img') && link.dataset.testid !== 'TitleLink' && link.dataset.testid !== 'Title') return false;
-        if (excludePaths.some(p => href.includes(p))) return false;
-        if (seen.has(href)) return false;
-        seen.add(href);
-        return true;
+        if (!href) return;
+
+        // 1) 排除路径
+        if (excludePaths.some(p => href.includes(p))) return;
+
+        // 2) 排除明确的图片链接
+        if (link.dataset.testid === 'MediaImageLink') return;
+
+        // 3) 取一次"干净文本"来判断是不是图片锚点
+        const cleanText = getCleanText(link);
+
+        // 无有效文本 => 多半是纯图片/图标锚点，丢弃
+        if (!cleanText || cleanText.length < 2) return;
+
+        // 4) 择优保留：同一个 href 保留优先级高的那个
+        const existing = linksByHref.get(href);
+        if (!existing) {
+            linksByHref.set(href, { link, cleanText });
+            return;
+        }
+        const curP = getPriority(link);
+        const oldP = getPriority(existing.link);
+        if (curP > oldP || (curP === oldP && cleanText.length > existing.cleanText.length)) {
+            linksByHref.set(href, { link, cleanText });
+        }
     });
 
+    const validLinks = Array.from(linksByHref.values());
     const totalLinks = validLinks.length;
     let processedCount = 0;
     const startTime = Date.now();
+    const newRows = [];
 
     // 启动进度条
     createProgressUI(totalLinks);
 
-    // 重置 seen 以便在循环中复用去重逻辑（或者直接在下面去掉 seen 检查，因为已经过滤过了）
-    seen.clear();
-
-    for (const link of validLinks) {
+    for (const item of validLinks) {
+        const { link, cleanText } = item;
         const href = link.href;
-        seen.add(href);
-
         let titleText = '';
         let statusMsg = '解析标题中...';
 
-        // 【核心修改】：针对 SubtopicLink 这种短标题，发起请求获取详情页的真实长标题
+        // 针对 SubtopicLink 这种短标题，请求详情页拿长标题
         if (link.dataset.testid === 'SubtopicLink') {
             statusMsg = '正在请求子页面获取长标题...';
             updateProgressUI(processedCount, totalLinks, startTime, statusMsg);
@@ -253,38 +296,32 @@ async function scrapeReuters() {
                 } else if (ogTitle && ogTitle.content.trim()) {
                     titleText = ogTitle.content.trim();
                 } else {
-                    titleText = link.textContent.trim(); // 兜底使用短标题
+                    titleText = cleanText;
                 }
             } catch (error) {
                 console.error(`获取真实长标题失败: ${href}`, error);
-                titleText = link.textContent.trim(); // 请求失败时兜底
+                titleText = cleanText;
             }
         } else {
-            // 优先 span[data-testid="TitleHeading"]
-            const heading = link.querySelector("[data-testid='TitleHeading']");
-            if (heading) {
-                titleText = heading.textContent.trim();
-            }
-            // 万一有 <a data-testid="Title">…</a> 或 <a data-testid="TitleLink">...</a>
-            else if (link.dataset.testid === 'Title' || link.dataset.testid === 'TitleLink') {
-                titleText = link.textContent.trim();
-            }
-            // 兜底：任何文本
-            else {
-                titleText = link.textContent.trim();
+            // 优先用 TitleHeading，其次直接用已经清洗过的 cleanText
+            const titleHeading = link.querySelector("[data-testid='TitleHeading']");
+            if (titleHeading) {
+                titleText = getCleanText(titleHeading);
+            } else {
+                titleText = cleanText;
             }
         }
+
+        // 再次兜底：彻底剥掉任何 HTML 标签
+        titleText = titleText.replace(/<[^>]+>/g, '').trim();
 
         processedCount++;
         updateProgressUI(processedCount, totalLinks, startTime, '处理完成');
 
-        if (titleText.includes("Tiananmen")) {
-            continue;
-        }
+        if (!titleText) continue;
+        if (titleText.includes("Tiananmen")) continue;
 
-        if (titleText) {
-            newRows.push([currentDatetime, titleText, href]);
-        }
+        newRows.push([currentDatetime, titleText, href]);
     }
 
     if (newRows.length === 0) {
