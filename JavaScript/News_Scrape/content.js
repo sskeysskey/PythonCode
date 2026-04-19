@@ -201,7 +201,6 @@ async function scrapeReuters() {
     const now = new Date();
     // 动态获取当前年份
     const currentYear = now.getFullYear();
-
     const currentDatetime = [
         now.getFullYear(),
         String(now.getMonth() + 1).padStart(2, '0'),
@@ -209,7 +208,15 @@ async function scrapeReuters() {
         String(now.getHours()).padStart(2, '0'),
     ].join('_');
 
-    // 【修改点1】：放宽年份匹配规则，去掉前后的横杠，只要包含当前年份即可
+    // ===== 新增：会话级去重，防止 Cloudflare 后二次抓取重复下载 =====
+    const sessionKey = `reuters_downloaded_${currentDatetime}`;
+    try {
+        if (sessionStorage.getItem(sessionKey) === 'done') {
+            console.log('[Reuters] 本小时窗口已经成功下载过，跳过本次抓取');
+            return;
+        }
+    } catch (e) { /* ignore */ }
+
     const allLinks = Array.from(
         document.querySelectorAll(`a[href*='${currentYear}']`)
     );
@@ -267,23 +274,47 @@ async function scrapeReuters() {
     const startTime = Date.now();
     const newRows = [];
 
-    // 启动进度条
+    // ===== 新增：统计短标题抓取的失败情况 =====
+    let subtopicTotal = 0;       // 需要请求子页的总数
+    let subtopicFailed = 0;      // 请求失败（含 Cloudflare 拦截）
+    const failedHrefs = [];      // 可用于后续重试
+
+    // 检测 Cloudflare 挑战页的辅助函数
+    const isCloudflareHtml = (html) => {
+        if (!html) return false;
+        const s = html.toLowerCase();
+        return s.includes('just a moment') ||
+            s.includes('attention required') ||
+            s.includes('cf-challenge') ||
+            s.includes('cf-browser-verification') ||
+            s.includes('正在验证') ||
+            s.includes('verifying you are human');
+    };
+
     createProgressUI(totalLinks);
 
     for (const item of validLinks) {
         const { link, cleanText } = item;
         const href = link.href;
         let titleText = '';
-        let statusMsg = '解析标题中...';
+        let thisFetchOk = true;
 
         // 针对 SubtopicLink 这种短标题，请求详情页拿长标题
         if (link.dataset.testid === 'SubtopicLink') {
-            statusMsg = '正在请求子页面获取长标题...';
-            updateProgressUI(processedCount, totalLinks, startTime, statusMsg);
+            subtopicTotal++;
+            updateProgressUI(processedCount, totalLinks, startTime, '请求子页面获取长标题...');
 
             try {
-                const response = await fetch(href);
+                const response = await fetch(href, { credentials: 'include' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
                 const htmlText = await response.text();
+
+                // ★ 关键：Cloudflare 返回 200 但内容是验证页，要识别出来
+                if (isCloudflareHtml(htmlText)) {
+                    throw new Error('Cloudflare challenge page returned');
+                }
+
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(htmlText, 'text/html');
 
@@ -296,27 +327,31 @@ async function scrapeReuters() {
                 } else if (ogTitle && ogTitle.content.trim()) {
                     titleText = ogTitle.content.trim();
                 } else {
+                    // 没抓到也算失败（内容异常）
+                    thisFetchOk = false;
                     titleText = cleanText;
                 }
             } catch (error) {
-                console.error(`获取真实长标题失败: ${href}`, error);
-                titleText = cleanText;
+                console.warn(`[Reuters] 短标题抓取失败: ${href}`, error.message);
+                thisFetchOk = false;
+                titleText = cleanText; // 仍给个兜底值，但标记失败
+                subtopicFailed++;
+                failedHrefs.push(href);
             }
         } else {
             // 优先用 TitleHeading，其次直接用已经清洗过的 cleanText
             const titleHeading = link.querySelector("[data-testid='TitleHeading']");
-            if (titleHeading) {
-                titleText = getCleanText(titleHeading);
-            } else {
-                titleText = cleanText;
-            }
+            titleText = titleHeading ? getCleanText(titleHeading) : cleanText;
         }
 
         // 再次兜底：彻底剥掉任何 HTML 标签
         titleText = titleText.replace(/<[^>]+>/g, '').trim();
 
         processedCount++;
-        updateProgressUI(processedCount, totalLinks, startTime, '处理完成');
+        updateProgressUI(
+            processedCount, totalLinks, startTime,
+            thisFetchOk ? '处理完成' : '⚠️ 本条失败，已计入'
+        );
 
         if (!titleText) continue;
         if (titleText.includes("Tiananmen")) continue;
@@ -324,11 +359,38 @@ async function scrapeReuters() {
         newRows.push([currentDatetime, titleText, href]);
     }
 
+    // ===== 核心判定：短标题抓取流程是否"完成" =====
+    // 规则：
+    //   a) 没有 SubtopicLink（subtopicTotal == 0)  → 认为"没有短标题"，允许下载
+    //   b) 有 SubtopicLink 且全部成功(subtopicFailed == 0) → 完成，允许下载
+    //   c) 任一失败 → 不下载，等用户/脚本再次触发（下次重新加载页面会重抓）
+    const shortTitleFlowComplete = (subtopicTotal === 0) || (subtopicFailed === 0);
+
+    if (!shortTitleFlowComplete) {
+        console.warn(
+            `[Reuters] 短标题抓取未完成: 失败 ${subtopicFailed}/${subtopicTotal}，不启动下载`
+        );
+        const container = document.getElementById('scraper-progress-container');
+        if (container) {
+            container.innerHTML = `
+                <div style="font-weight:600;color:#ef4444;margin-bottom:6px;">
+                    ⛔ 短标题抓取未完成
+                </div>
+                <div style="font-size:12px;color:#4b5563;">
+                    失败 ${subtopicFailed} / ${subtopicTotal} 条（可能被 Cloudflare 拦截），
+                    <br/>本次<strong>不下载</strong>，等待页面重新加载重试。
+                </div>`;
+            setTimeout(() => container.remove(), 8000);
+        }
+        return; // ★ 不发送下载消息
+    }
+
     if (newRows.length === 0) {
         removeProgressUI();
         return;
     }
 
+    // ===== 真正下载 =====
     const html = generateHTML(newRows, 'Reuters');
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -350,7 +412,9 @@ async function scrapeReuters() {
         filename: `reuters_${timestamp}.html`
     });
 
-    // 抓取并下载完成后移除进度条
+    // ★ 打上会话成功标记，避免 Cloudflare 之后页面重载再次重复下载
+    try { sessionStorage.setItem(sessionKey, 'done'); } catch (e) { }
+
     removeProgressUI();
 }
 

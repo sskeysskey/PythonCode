@@ -319,15 +319,14 @@ def open_webpage_and_monitor_reuters():
     print("Opening reuters main page...")
     pyautogui.moveTo(591, 574)
     webbrowser.open("https://www.reuters.com/")
-    
+
     for i in range(5):
         pyautogui.scroll(-80)
         time.sleep(0.5)
-    
-    print("Waiting for reuters file download...")
-    while count_files("reuters") < 1:
-        time.sleep(2)
-    print("\nreuters file detected!")
+
+    # ★ 用稳定检测替代原来的 "count >= 1 立刻继续"
+    wait_for_stable_download("reuters", min_count=1, stable_seconds=8, max_wait=180)
+    print("\nreuters file detected and stable!")
     close_browser_tabs(1)
 
 def open_webpage_and_monitor_ft():
@@ -375,6 +374,39 @@ def process_news_source(source_name, old_file_path, today_html_path):
     else:
         print(f"⚠️ No new {source_name} content to add.")
     return new_rows
+
+def wait_for_stable_download(prefix, min_count=1, stable_seconds=12, max_wait=180):
+    """
+    等待 prefix_*.html 文件出现后，再保持 stable_seconds 秒没有新变化，才返回。
+    这样即便页面因 Cloudflare 二次抓取产生新的下载，我们也会等到"最终那份"。
+    """
+    print(f"⏳ 等待 {prefix} 文件下载并保持稳定 ({stable_seconds}s no-change)...")
+    start = time.time()
+    prev_snapshot = None
+    stable_since = None
+
+    while time.time() - start < max_wait:
+        files = glob.glob(os.path.join(DOWNLOADS_DIR, f"{prefix}_*.html"))
+        if len(files) >= min_count:
+            snapshot = tuple(sorted(
+                (os.path.basename(f), os.path.getsize(f), int(os.path.getmtime(f)))
+                for f in files
+            ))
+            if snapshot == prev_snapshot:
+                if stable_since is None:
+                    stable_since = time.time()
+                elif time.time() - stable_since >= stable_seconds:
+                    print(f"  ✅ {prefix} 已稳定 {stable_seconds}s，可以继续")
+                    return True
+            else:
+                if prev_snapshot is not None:
+                    print(f"  🔄 检测到文件变化（可能是 Cloudflare 后重抓），重置稳定计时")
+                prev_snapshot = snapshot
+                stable_since = None
+        time.sleep(1)
+
+    print(f"  ⚠️ {prefix} 等待稳定超时，强制继续")
+    return False
 
 # ================= 主执行入口 =================
 
