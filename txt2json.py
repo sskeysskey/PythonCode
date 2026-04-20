@@ -1,5 +1,6 @@
 import re
 import os
+import sys
 import hashlib
 import glob
 import shutil
@@ -765,8 +766,6 @@ def backup_news_assets(local_dir):
     
     update_version_json(local_dir, timestamp)
 
-# ... (update_version_json, prune_old_assets, merge_json_groupwise, update_version_json_fake 等函数内部逻辑通用，只需确保调用时传入的路径是 os.path.join 生成的即可) ...
-
 def update_version_json(local_dir, timestamp):
     version_path = os.path.join(local_dir, "version.json")
     if not os.path.exists(version_path):
@@ -1262,8 +1261,73 @@ def generate_news_json(news_directory, today, cnh_html_paths=None):
         json.dump(data, fp, ensure_ascii=False, indent=4)
     print(f"\n已生成 JSON 文件: {out_path}")
 
+# ================= 新增：预运行检查函数 =================
+def pre_run_checks(news_directory):
+    """
+    1. 检查运行时间是否在 00:00 - 11:59 之间。
+    2. 检查特定文件的日期后缀：
+       - 如果日期超前（未来），重命名为当前日期。
+       - 如果日期滞后（过去），也重命名为当前日期（强制更新为今天）。
+    """
+    now = datetime.now()
+    
+    # 1. 判断运行时间是否是午夜12点到中午12点之间 (0 <= hour < 12)
+    if not (0 <= now.hour < 12):
+        print(f"\n[提示] 当前时间是 {now.strftime('%H:%M')}，不在允许运行的时间段（00:00 - 12:00）内。程序将退出。\n")
+        sys.exit(0)
+        
+    print(f"\n[提示] 时间检查通过，当前时间 {now.strftime('%H:%M')} 处于 00:00 到 12:00 之间。")
+    
+    # 2. 检查并重命名日期超前的文件
+    current_date_yymmdd = now.strftime("%y%m%d")      # 格式: 260419
+    current_date_yy_mm_dd = now.strftime("%y_%m_%d")  # 格式: 26_04_19
+    
+    print(f"[提示] 正在检查 {news_directory} 目录下的文件日期...")
+    
+    for filename in os.listdir(news_directory):
+        filepath = os.path.join(news_directory, filename)
+        if not os.path.isfile(filepath):
+            continue
+            
+        # 检查 article_copier_YYMMDD.txt
+        match_copier = re.match(r'^article_copier_(\d{6})\.txt$', filename)
+        if match_copier:
+            file_date_str = match_copier.group(1)
+            file_date = datetime.strptime(file_date_str, "%y%m%d")
+            if file_date.date() < now.date():
+                new_filename = f"article_copier_{current_date_yymmdd}.txt"
+                new_filepath = os.path.join(news_directory, new_filename)
+                os.rename(filepath, new_filepath)
+                print(f"[重命名] 发现超前日期文件: {filename} -> {new_filename}")
+                
+        # 检查 TodayCNH_YYMMDD.html
+        match_cnh = re.match(r'^TodayCNH_(\d{6})\.html$', filename)
+        if match_cnh:
+            file_date_str = match_cnh.group(1)
+            file_date = datetime.strptime(file_date_str, "%y%m%d")
+            if file_date.date() < now.date():
+                new_filename = f"TodayCNH_{current_date_yymmdd}.html"
+                new_filepath = os.path.join(news_directory, new_filename)
+                os.rename(filepath, new_filepath)
+                print(f"[重命名] 发现超前日期文件: {filename} -> {new_filename}")
+                
+        # 检查 News_YY_MM_DD.txt
+        match_news = re.match(r'^News_(\d{2}_\d{2}_\d{2})\.txt$', filename)
+        if match_news:
+            file_date_str = match_news.group(1)
+            file_date = datetime.strptime(file_date_str, "%y_%m_%d")
+            if file_date.date() < now.date():
+                new_filename = f"News_{current_date_yy_mm_dd}.txt"
+                new_filepath = os.path.join(news_directory, new_filename)
+                os.rename(filepath, new_filepath)
+                print(f"[重命名] 发现超前日期文件: {filename} -> {new_filename}")
+    print("[提示] 文件日期检查完毕。\n")
+# ========================================================
 
 if __name__ == "__main__":
+    # <--- 调用新增的预运行检查逻辑 --->
+    pre_run_checks(NEWS_DIRECTORY)
+    
     today = datetime.now().strftime("%y%m%d")
     
     # <--- 使用前面定义的动态路径常量
