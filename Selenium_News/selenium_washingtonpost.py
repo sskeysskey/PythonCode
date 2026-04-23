@@ -269,8 +269,14 @@ def main():
                         
                         full_title = get_full_title_with_retry(driver)
                         if full_title:
-                            print(f"  ✅ 成功获取完整标题: '{full_title}'")
-                            title_text = full_title
+                            # ================= 新增逻辑 =================
+                            # 判断抓取到的新标题是否比原标题长
+                            if len(full_title) >= len(title_text):
+                                print(f"  ✅ 成功获取完整标题: '{full_title}'")
+                                title_text = full_title
+                            else:
+                                print(f"  ⚠️ 获取的标题({len(full_title)}字符)不如原标题({len(title_text)}字符)长，保留原标题。")
+                            # ============================================
                         else:
                             print("  ⚠️ 未能获取完整标题，保留原标题。")
                     except Exception as e:

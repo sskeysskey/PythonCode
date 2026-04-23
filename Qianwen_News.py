@@ -285,7 +285,8 @@ def main() -> None:
                 current_line = lines[i]
                 
                 # 规则1：包含提问特征词，且带有问号或冒号（准备列举选项）
-                if any(kw in current_line for kw in ai_ask_keywords) and ("？" in current_line or "?" in current_line):
+                # 规则1：包含提问特征词，带有问号，且段落长度不算太长（比如小于80字）
+                if len(current_line) <= 80 and any(kw in current_line for kw in ai_ask_keywords) and ("？" in current_line or "?" in current_line):
                     truncate_index = i
                 # 规则2：直接以强烈的 AI 引导词开头
                 elif current_line.startswith(tuple(ai_ask_keywords)):

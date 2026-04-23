@@ -15,7 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 import sys
-import platform # <--- 新增
+import platform
 
 # ================= 配置区域 (跨平台修改) =================
 
@@ -58,6 +58,32 @@ GENERIC_LABELS = {
     "THE EDITORIAL BOARD", "THE INTERVIEW", "COOKING", "CROSSWORDS",
     "THE ATHLETIC", "WIRECUTTER"
 }
+
+# ================= [新增] 短标题黑名单 =================
+# 针对那些总是抓不到完整标题、或者纯粹是网页 UI 元素的短标题，直接跳过
+SHORT_TITLE_BLACKLIST = {
+    "test"
+}
+
+# SHORT_TITLE_BLACKLIST = {
+#     "Associated Press/Associated Press",
+#     "Anthropic-White House Talks",
+#     "Job Cuts on Wall Street",
+#     "A.I. Arms Race",
+#     "‘Jagged Intelligence’",
+#     "Code Overload",
+#     "Pablo Delcan",
+#     "Gas Prices",
+#     "Labor Secretary Steps Down",
+#     "Tariff Refunds",
+#     "Dispute With the Pope",
+#     "Eric Lee for The New York Times",
+#     "Hunt for Details",
+#     "Who Was Celeste Rivas Hernandez?",
+#     "Open modal at item 1 of 2",
+#     "Primary Calendar",
+#     "Virginia Passes New House Map"
+# }
 
 # ================= 工具函数 =================
 
@@ -109,19 +135,26 @@ def get_full_title_with_retry(driver, max_retries=3):
     """Selenium 兜底：在详情页用 JS 读取 h1 的 textContent"""
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    h1_css = "h1[data-testid='headline'], h1"
+    
+    # 增加更多可能的 h1 选择器，适配 NYTimes 不同的页面结构
+    h1_css = "h1[data-testid='headline'], article h1, h1.css-88wicj"
+    
     for attempt in range(max_retries):
         try:
-            WebDriverWait(driver, 8).until(
+            # 稍微增加超时时间到 10 秒，应对详情页加载慢的问题
+            WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, h1_css))
             )
-            time.sleep(0.8)
+            time.sleep(1) # 强制等待 JS 渲染完成
+            
+            # 即使有 Paywall 遮挡，textContent 依然能读取到 DOM 里的文本
             full_title = driver.execute_script(
-                "const el = document.querySelector(\"h1[data-testid='headline'], h1\");"
+                "const el = document.querySelector(\"h1[data-testid='headline'], article h1, h1\");"
                 "return el ? el.textContent.trim() : '';"
             )
             if full_title and len(full_title) >= 10:
                 return full_title
+                
         except StaleElementReferenceException:
             if attempt == max_retries - 1:
                 raise
@@ -286,33 +319,47 @@ def main():
 
             for href, title_text in raw_data_list:
                 if is_short_title(title_text):
-                    print(f"发现短标题: '{title_text}' -> 正在抓取完整标题...")
-                    
-                    # 优先 HTTP 方式（快）
-                    full_title = fetch_full_title_via_http(href, user_agent)
-                    
-                    # HTTP 失败就用 Selenium 开新标签兜底
-                    if not full_title or is_short_title(full_title):
-                        main_handle = driver.current_window_handle
-                        try:
-                            driver.execute_script(f"window.open('{href}', '_blank');")
-                            new_handle = [h for h in driver.window_handles if h != main_handle][-1]
-                            driver.switch_to.window(new_handle)
-                            full_title = get_full_title_with_retry(driver)
-                        except Exception as e:
-                            print(f"  ⚠️ Selenium 兜底失败 ({type(e).__name__})")
-                            full_title = None
-                        finally:
-                            if driver.current_window_handle != main_handle:
-                                driver.close()
-                            driver.switch_to.window(main_handle)
-                    
-                    if full_title and not is_short_title(full_title):
-                        print(f"  ✅ 成功: '{full_title}'")
-                        title_text = full_title
+                    # ==========================================
+                    # [核心修改]：在这里判断是否在黑名单中
+                    # ==========================================
+                    if title_text in SHORT_TITLE_BLACKLIST:
+                        print(f"命中黑名单，跳过抓取完整标题: '{title_text}'")
+                        # 什么都不做，直接保留原始的 title_text 进入后续逻辑
                     else:
-                        print(f"  ⚠️ 未能获取完整标题，保留原始值。")
+                        print(f"发现短标题: '{title_text}' -> 正在抓取完整标题...")
+                        
+                        # 优先 HTTP 方式（快）
+                        full_title = fetch_full_title_via_http(href, user_agent)
+                        
+                        # HTTP 失败就用 Selenium 开新标签兜底
+                        if not full_title or is_short_title(full_title):
+                            main_handle = driver.current_window_handle
+                            try:
+                                driver.execute_script(f"window.open('{href}', '_blank');")
+                                new_handle = [h for h in driver.window_handles if h != main_handle][-1]
+                                driver.switch_to.window(new_handle)
+
+                                # # [核心修改] 使用 Selenium 4 原生方法打开新标签页，比 JS window.open 更稳定
+                                # driver.switch_to.new_window('tab')
+                                # driver.get(href) # 显式导航到目标链接
+                                full_title = get_full_title_with_retry(driver)
+                            except Exception as e:
+                                print(f"  ⚠️ Selenium 兜底失败 ({type(e).__name__})")
+                                full_title = None
+                            finally:
+                                # # 确保关闭新标签页并切回主页面
+                                # if len(driver.window_handles) > 1:
+                                if driver.current_window_handle != main_handle:
+                                    driver.close()
+                                driver.switch_to.window(main_handle)
+                        
+                        if full_title and not is_short_title(full_title):
+                            print(f"  ✅ 成功: '{full_title}'")
+                            title_text = full_title
+                        else:
+                            print(f"  ⚠️ 未能获取完整标题，保留原始值。")
                 
+                # 无论是否命中黑名单，无论是否抓取成功，都会把数据加入新列表
                 updated_raw_data_list.append((href, title_text))
 
             raw_data_list = updated_raw_data_list

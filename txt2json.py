@@ -1266,6 +1266,7 @@ def pre_run_checks(news_directory):
     """
     1. 检查运行时间是否在 00:00 - 11:59 之间。
     2. 检查特定文件的日期后缀：
+       - 如果同时存在昨天和今天的文件（针对 article_copier 和 News_），则合并内容。
        - 如果日期超前（未来），重命名为当前日期。
        - 如果日期滞后（过去），也重命名为当前日期（强制更新为今天）。
     """
@@ -1278,12 +1279,58 @@ def pre_run_checks(news_directory):
         
     print(f"\n[提示] 时间检查通过，当前时间 {now.strftime('%H:%M')} 处于 00:00 到 12:00 之间。")
     
-    # 2. 检查并重命名日期超前的文件
-    current_date_yymmdd = now.strftime("%y%m%d")      # 格式: 260419
-    current_date_yy_mm_dd = now.strftime("%y_%m_%d")  # 格式: 26_04_19
+    # 获取今天和昨天的日期字符串
+    yesterday = now - timedelta(days=1)
     
-    print(f"[提示] 正在检查 {news_directory} 目录下的文件日期...")
+    current_date_yymmdd = now.strftime("%y%m%d")      # 格式: 260420
+    current_date_yy_mm_dd = now.strftime("%y_%m_%d")  # 格式: 26_04_20
     
+    yesterday_yymmdd = yesterday.strftime("%y%m%d")
+    yesterday_yy_mm_dd = yesterday.strftime("%y_%m_%d")
+
+    print(f"[提示] 正在检查 {news_directory} 目录下的文件...")
+
+    # ==========================================
+    # 新增逻辑：合并昨天和今天同时存在的文件
+    # ==========================================
+    def merge_files_if_both_exist(prefix, date_format_today, date_format_yesterday):
+        file_today = os.path.join(news_directory, f"{prefix}{date_format_today}.txt")
+        file_yest = os.path.join(news_directory, f"{prefix}{date_format_yesterday}.txt")
+        
+        if os.path.isfile(file_today) and os.path.isfile(file_yest):
+            print(f"[合并] 发现 {prefix} 同时存在昨天和今天的文件，正在合并...")
+            
+            # 读取昨天的内容并去除首尾多余的换行符
+            with open(file_yest, 'r', encoding='utf-8') as f_yest:
+                content_yest = f_yest.read().strip('\n')
+                
+            # 读取今天的内容并去除首尾多余的换行符
+            with open(file_today, 'r', encoding='utf-8') as f_today:
+                content_today = f_today.read().strip('\n')
+                
+            # 合并规则：昨天内容 + 1个空行(即两个换行符) + 今天内容
+            # 如果某一天文件完全为空，则避免多出空行
+            if content_yest and content_today:
+                merged_content = content_yest + "\n\n" + content_today
+            else:
+                merged_content = content_yest + content_today
+                
+            # 写入今天的文件
+            with open(file_today, 'w', encoding='utf-8') as f_out:
+                f_out.write(merged_content)
+                
+            # 删除昨天的文件，避免后续被重命名逻辑再次处理
+            os.remove(file_yest)
+            print(f"[合并] 合并完成，已删除昨天的文件: {os.path.basename(file_yest)}")
+
+    # 检查并合并 article_copier
+    merge_files_if_both_exist("article_copier_", current_date_yymmdd, yesterday_yymmdd)
+    # 检查并合并 News_
+    merge_files_if_both_exist("News_", current_date_yy_mm_dd, yesterday_yy_mm_dd)
+
+    # ==========================================
+    # 原有逻辑：检查并重命名日期不等于今天的文件
+    # ==========================================
     for filename in os.listdir(news_directory):
         filepath = os.path.join(news_directory, filename)
         if not os.path.isfile(filepath):
@@ -1322,7 +1369,6 @@ def pre_run_checks(news_directory):
                 os.rename(filepath, new_filepath)
                 print(f"[重命名] 发现超前日期文件: {filename} -> {new_filename}")
     print("[提示] 文件日期检查完毕。\n")
-# ========================================================
 
 if __name__ == "__main__":
     # <--- 调用新增的预运行检查逻辑 --->
