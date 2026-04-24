@@ -15,7 +15,6 @@ try:
     import Javascript_News
     
     # 2. 导入 Selenium 爬虫 (作为第二阶段)
-    import selenium_wsj_cn
     import selenium_dw_cn
     import selenium_rfi_cn
     import selenium_bbc_cn
@@ -108,9 +107,6 @@ def main():
 
     # ================= 第二阶段：Selenium Headless 抓取 =================
     # 包括: WSJ(CN), Economist, TechReview, Nikkei, WaPo, NYTimes
-    
-    # 1.1 WSJ CN
-    run_task("Wall Street Journal (CN)", selenium_wsj_cn)
 
     # 1.2 RFI CN
     run_task("法广头条", selenium_rfi_cn)

@@ -103,11 +103,11 @@ def main():
         print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
-    options.add_argument('--headless=new') 
+    # options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
     
     # --- 伪装设置 (User-Agent & 去除自动化特征) ---
-    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     options.add_argument(f'user-agent={user_agent}')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -154,23 +154,48 @@ def main():
         # [修复点 3]：捕获 TimeoutException。即使超时，DOM 可能已经加载完毕，继续执行即可
         try:
             driver.get("https://www.economist.com/")
-            # 因为 strategy 是 'none'，我们需要手动稍微等一下基础 DOM 加载
-            time.sleep(5) 
+            # page_load_strategy='none' 下，需要主动等 DOM
+            try:
+                WebDriverWait(driver, 30).until(
+                    lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
+                )
+            except TimeoutException:
+                print("DOM 未就绪，继续尝试...")
+            time.sleep(3)  # 给 Next.js 水合一点时间
         except TimeoutException:
             print("警告: 页面加载超时，但可能核心内容已加载，尝试继续执行...")
         
         # --- 2. 处理 Cookie 同意弹窗 ---
         try:
-            # 尝试查找包含 "Accept" 或 "Agree" 字样的按钮
+            print("正在检测 Cookie 弹窗...")
+            
+            # 1. 尝试查找 Cookie 弹窗的 iframe (The Economist 通常使用 id 包含 sp_message_iframe 的 iframe)
+            try:
+                # 等待 iframe 出现（设置较短的超时时间，以免没有弹窗时干等）
+                cookie_iframe = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, "//iframe[contains(@id, 'sp_message_iframe') or contains(@title, 'SP Consent Message')]"))
+                )
+                driver.switch_to.frame(cookie_iframe)
+                print("已成功切换到 Cookie 弹窗的 iframe...")
+            except Exception:
+                # 如果没找到 iframe，说明可能在主页面上，直接继续往下找
+                pass
+
+            # 2. 查找 "Accept all" 按钮
+            # 使用更宽泛的 XPath：不限制必须是 button 标签，只要文本是 "Accept all" 即可
             accept_button = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept') or contains(., 'Agree')]")
+                (By.XPATH, "//*[normalize-space(text())='Accept all' or contains(text(), 'Accept all')]")
             ))
-            print("检测到 Cookie 弹窗，正在点击...")
+            
+            print("检测到 'Accept all' 按钮，正在点击...")
             accept_button.click()
-            time.sleep(1) # 等待弹窗消失
-        except Exception:
-            # 如果没找到按钮，可能是因为无头模式+伪装直接绕过了弹窗，或者是选择器不匹配
+            time.sleep(2) # 等待弹窗完全消失
+            
+        except Exception as e:
             print("未检测到明显的 Cookie 弹窗或已自动跳过，继续执行。")
+        finally:
+            # 3. 无论是否找到弹窗，最后都必须将焦点切回主页面，否则后续抓取正文会失败
+            driver.switch_to.default_content()
 
         # --- 3. 查找旧的 HTML 文件 ---
         if old_file_list:
@@ -298,6 +323,19 @@ def main():
 
         except Exception as e:
             print("抓取过程中出现错误:", e)
+            # === 关键调试：保存现场 ===
+            debug_dir = os.path.join(DOWNLOADS_DIR, "selenium_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            try:
+                driver.save_screenshot(os.path.join(debug_dir, f"econ_{ts}.png"))
+                with open(os.path.join(debug_dir, f"econ_{ts}.html"), 'w', encoding='utf-8') as f:
+                    f.write(driver.page_source)
+                print(f"调试快照已保存到 {debug_dir}")
+                print(f"当前 URL: {driver.current_url}")
+                print(f"页面 title: {driver.title}")
+            except Exception as de:
+                print(f"保存调试信息失败: {de}")
             import traceback
             traceback.print_exc()
     finally:

@@ -25,6 +25,7 @@ RESOURCE_DIR = os.path.join(BASE_CODING_DIR, "python_code", "Resource")
 # 3. 业务文件路径
 NEWS_BACKUP_SITE_DIR = os.path.join(BASE_CODING_DIR, "News", "backup", "site")
 TODAY_ENG_HTML = os.path.join(BASE_CODING_DIR, "News", "today_eng.html")
+TODAY_WSJCN_HTML = os.path.join(BASE_CODING_DIR, "News", "today_wsjcn.html")   # ← 新增
 
 # ================= 工具函数 =================
 
@@ -297,6 +298,24 @@ def open_webpage_and_monitor_bloomberg():
     print("\nAll Bloomberg files downloaded.")
     close_browser_tabs(1)
 
+def open_webpage_and_monitor_cnwsj():
+    clean_files("cnwsj")                       # 只清 cnwsj_*.html
+    print("Opening cn.WSJ main page...")
+    pyautogui.moveTo(591, 574)
+    webbrowser.open("https://cn.wsj.com/")
+
+    # 触发懒加载
+    for _ in range(5):
+        pyautogui.scroll(-80)
+        time.sleep(0.5)
+
+    print("Waiting for cnwsj file download...")
+    # 如果以后发现 Cloudflare 会二次下载，可以换成 wait_for_stable_download("cnwsj", 1, 8, 120)
+    while count_files("cnwsj") < 1:
+        time.sleep(2)
+    print("\ncnwsj file detected!")
+    close_browser_tabs(1)
+    
 def open_webpage_and_monitor_wsj():
     clean_files("wsj")
     print("Opening WSJ main page...")
@@ -345,15 +364,21 @@ def open_webpage_and_monitor_ft():
     print("\nFT file detected!")
     close_browser_tabs(1)
 
-def process_news_source(source_name, old_file_path, today_html_path):
-    # 确保 old_file_path 是动态路径
-    # 如果传入的 old_file_path 依然是硬编码的，这里需要做一个转换，或者在 main 调用时传入正确的路径
-    # 假设 main 已经传对了，这里做个保险检查 (可选)
-    
+def process_news_source(source_name, old_file_path, today_html_path,
+                        file_prefix=None, display_name=None):
+    """
+    source_name  : 用于打印日志的名字
+    file_prefix  : Downloads/ 下 html 文件的前缀，默认 = source_name.lower()
+                   (用于区分 wsj_ 与 cnwsj_)
+    display_name : 写入 today_*.html 第一列 (site) 的名字，默认 = source_name
+    """
+    file_prefix = file_prefix if file_prefix else source_name.lower()
+    display_name = display_name if display_name else source_name
+
     old_content = get_old_content(old_file_path, 30)
     existing_links = {link for _, _, link in old_content}
-    new_content = get_new_content_from_files(source_name.lower())
-    
+    new_content = get_new_content_from_files(file_prefix)
+
     new_rows = []
     for date_str, title, link in new_content:
         is_duplicate = False
@@ -364,15 +389,15 @@ def process_news_source(source_name, old_file_path, today_html_path):
         if not is_duplicate:
             new_rows.append([date_str, title, link])
             existing_links.add(link)
-    
-    new_rows1 = [[source_name, title, link] for date_str, title, link in new_rows]
-    
+
+    new_rows1 = [[display_name, title, link] for date_str, title, link in new_rows]
+
     if new_rows:
         write_html(old_file_path, new_rows, old_content)
         append_to_today_html(today_html_path, new_rows1)
-        print(f"✅ Added {len(new_rows)} new {source_name} articles.")
+        print(f"✅ Added {len(new_rows)} new {display_name} articles.")
     else:
-        print(f"⚠️ No new {source_name} content to add.")
+        print(f"⚠️ No new {display_name} content to add.")
     return new_rows
 
 def wait_for_stable_download(prefix, min_count=1, stable_seconds=12, max_wait=180):
@@ -415,31 +440,43 @@ def main():
     print("🚀 正在启动第一阶段：JavaScript/GUI News Scraper")
     print("⚠️ 注意：此阶段会控制鼠标和打开浏览器，请勿操作电脑！")
     print("="*60)
-    
-    # 动态定义路径
-    today_html_path = TODAY_ENG_HTML
-    ft_backup_path = os.path.join(NEWS_BACKUP_SITE_DIR, "ft.html")
-    wsj_backup_path = os.path.join(NEWS_BACKUP_SITE_DIR, "wsj.html")
-    bb_backup_path = os.path.join(NEWS_BACKUP_SITE_DIR, "bloomberg.html")
-    rt_backup_path = os.path.join(NEWS_BACKUP_SITE_DIR, "reuters.html")
+
+    today_html_path   = TODAY_ENG_HTML
+    today_wsjcn_path  = TODAY_WSJCN_HTML
+    ft_backup_path    = os.path.join(NEWS_BACKUP_SITE_DIR, "ft.html")
+    wsj_backup_path   = os.path.join(NEWS_BACKUP_SITE_DIR, "wsj.html")
+    cnwsj_backup_path = os.path.join(NEWS_BACKUP_SITE_DIR, "wsj_cn.html")
+    bb_backup_path    = os.path.join(NEWS_BACKUP_SITE_DIR, "bloomberg.html")
+    rt_backup_path    = os.path.join(NEWS_BACKUP_SITE_DIR, "reuters.html")
 
     # 1. FT
-    print("\n[Task 1/4] Processing FT...")
+    print("\n[Task 1/5] Processing FT...")
     open_webpage_and_monitor_ft()
     process_news_source("FT", ft_backup_path, today_html_path)
 
     # 2. WSJ (English)
-    print("\n[Task 2/4] Processing WSJ (Eng)...")
+    print("\n[Task 2/5] Processing WSJ (Eng)...")
     open_webpage_and_monitor_wsj()
     process_news_source("WSJ", wsj_backup_path, today_html_path)
 
-    # 3. Bloomberg
-    print("\n[Task 3/4] Processing Bloomberg...")
+    # 3. cn.WSJ (Chinese) —— 新增
+    print("\n[Task 3/5] Processing cn.WSJ (CN)...")
+    open_webpage_and_monitor_cnwsj()
+    process_news_source(
+        "cnwsj",
+        cnwsj_backup_path,
+        today_wsjcn_path,          # ← 写入 today_wsjcn.html 而不是 today_eng.html
+        file_prefix="cnwsj",
+        display_name="WSJCN",      # ← 第一列显示 WSJCN，与老 selenium 行为一致
+    )
+
+    # 4. Bloomberg
+    print("\n[Task 4/5] Processing Bloomberg...")
     open_webpage_and_monitor_bloomberg()
     process_news_source("Bloomberg", bb_backup_path, today_html_path)
 
-    # 4. Reuters
-    print("\n[Task 4/4] Processing Reuters...")
+    # 5. Reuters
+    print("\n[Task 5/5] Processing Reuters...")
     open_webpage_and_monitor_reuters()
     process_news_source("Reuters", rt_backup_path, today_html_path)
 

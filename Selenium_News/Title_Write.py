@@ -151,6 +151,49 @@ def get_clipboard_data_list():
 
 # --- 主逻辑 ---
 
+# ============ 新增：纯中文模式检测 ============
+# CHINESE_ONLY_MODE = False
+# if (not os.path.exists(TODAY_CHN_TXT)
+#     and not os.path.exists(TODAY_ALL_HTML)
+#     and not os.path.exists(TODAY_ENG_HTML)):
+#     chinese_candidates = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML, TODAY_BBC_HTML]
+#     if any(os.path.exists(f) for f in chinese_candidates):
+#         CHINESE_ONLY_MODE = True
+#         print("⚠️ 未检测到英文/翻译文件，进入纯中文合并模式。")
+
+# if CHINESE_ONLY_MODE:
+#     # 构造一个最小 HTML 框架（有 thead/tbody，方便后面 CSS 样式生效）
+#     minimal_html = """<!DOCTYPE html>
+# <html>
+# <head><meta charset="utf-8"><title>Today News</title></head>
+# <body>
+# <div class="container">
+# <table>
+# <thead><tr><th>Site</th><th>Title</th></tr></thead>
+# <tbody></tbody>
+# </table>
+# </div>
+# </body>
+# </html>"""
+#     soup_init = BeautifulSoup(minimal_html, 'html.parser')
+
+#     now = datetime.now()
+#     time_str = now.strftime("%y%m%d")
+#     base_filename = f"TodayCNH_{time_str}"
+#     base_file_path = os.path.join(NEWS_DIR, f"{base_filename}.html")
+
+#     # 若今天已存在目标文件，就直接复用（让后续合并逻辑追加新内容）
+#     if not os.path.exists(base_file_path):
+#         with open(base_file_path, 'w', encoding='utf-8') as f:
+#             f.write(str(soup_init))
+#         print(f"已创建空白主文件：{base_file_path}")
+#     else:
+#         print(f"复用已存在的主文件：{base_file_path}")
+
+#     txt_file_path = base_file_path  # 交给下面的中文合并逻辑处理
+
+# else:
+
 # 1. 读取翻译后的中文内容
 if not os.path.exists(TODAY_CHN_TXT):
     print(f"错误：未找到文件 {TODAY_CHN_TXT}")
