@@ -614,11 +614,21 @@ if (hostname.includes('bloomberg.com')) {
         }
     }, 15000);
 
+} else if (hostname.includes('cn.wsj.com')) {
+    // 专门针对 cn.wsj.com 的逻辑：页面静态，直接定时抓取
+    console.log('cn.WSJ Scraper loaded');
+
+    // Python 端有 5 次 scroll，每次 0.5 秒，大约耗时 2.5 - 3 秒
+    // 我们在 4 秒后直接主动抓取并下载
+    setTimeout(() => {
+        console.log('cn.WSJ 页面滚动完成，执行主动抓取...');
+        scrapeWSJ(true);
+    }, 4000);
+
 } else if (hostname.includes('wsj.com')) {
-    // WSJ 使用 DOMContentLoaded 事件
+    // 原有逻辑：保持完全不变，针对 www.wsj.com
     document.addEventListener('DOMContentLoaded', () => {
         console.log('WSJ Scraper loaded');
-
     });
 
     // 对于动态加载的内容，添加 MutationObserver 来监测DOM变化
@@ -656,6 +666,7 @@ if (hostname.includes('bloomberg.com')) {
             observer.disconnect();
         }, 2 * 60 * 1000);
     }, 3000);
+
 } else if (hostname.includes('reuters.com')) {
     console.log('Reuters Scraper 已注入，等待内容渲染...');
 

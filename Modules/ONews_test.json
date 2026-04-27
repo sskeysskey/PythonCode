@@ -7,7 +7,8 @@
             "url": "https://www.economist.com/finance-and-economics/2026/01/04/donald-trumps-great-venezuelan-oil-gamble",
             "article": "这篇文章主要讲述了美国抓捕委内瑞拉独裁者马杜罗后：\n背景与动机",
             "article_eng": "Here's a detailed summary of the article:\nThe article discusses the U.S. capture of Venezuelan",
-            "images": []
+            "images": [],
+            "hot": 0
         },
         {
             "source_id": "economist",
@@ -16,7 +17,8 @@
             "url": "https://www.economist.com/the-americas/2026/01/04/the-many-risks-to-donald-trumps-plans-to-run-venezuela",
             "article": "这篇文章主要讲述了2024年1月3日美国特种部队在委内瑞拉首都加拉加斯突袭并逮捕前总统尼古拉斯·马杜罗的事件及其后续影响",
             "article_eng": "This article describes a significant event where former Venezuelan President Nicolás Maduro was captured by U.S. ",
-            "images": []
+            "images": [],
+            "hot": 0
         }
     ],
     "纽约时报": [
@@ -29,7 +31,8 @@
             "article_eng": "Here's a detailed summary of the article:\nThe article discusses recent U.S. ",
             "images": [
                 "Secretary of State Marco Rubio at a news conference with President Trump at Mar-a-Lago, the president’s private estate and club in Palm Beach, Fla., on Saturday morning..jpg"
-            ]
+            ],
+            "hot": 0
         }
     ]
 }

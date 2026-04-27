@@ -103,7 +103,7 @@ def main():
         print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
-    # options.add_argument('--headless=new') 
+    options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
     
     # --- 伪装设置 (User-Agent & 去除自动化特征) ---
@@ -232,14 +232,11 @@ def main():
         print("滚动完成，开始抓取内容。")
 
         try:
-            # 等待任意一个 h3 标签出现，通常标题都在 h3 里
-            wait.until(EC.presence_of_element_located((By.TAG_NAME, "h3")))
-            
-            # [核心修改 1]：更宽泛的选择器
-            # 1. main h3 a: 抓取主内容区所有 h3 标题下的链接 (对应你提供的 HTML 结构)
-            # 2. a[href*='world-in-brief']: 强制抓取简报，因为它不带年份
-            # 3. a[data-analytics]: 抓取带有分析标记的链接（通常是正文）
-            selector = "main h3 a, a[href*='world-in-brief'], main div[class*='teaser'] a"
+            # ★ 改用更可靠的选择器：Economist 所有文章链接都有 data-analytics 属性
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[data-analytics]")))
+
+            # 综合选择器：data-analytics 链接 + h3 下的链接 + 简报链接
+            selector = "a[data-analytics], main h3 a, a[href*='world-in-brief']"
             titles_elements = driver.find_elements(By.CSS_SELECTOR, selector)
             
             formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H")

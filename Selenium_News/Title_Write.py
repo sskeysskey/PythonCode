@@ -6,13 +6,76 @@ import pyperclip
 import webbrowser
 import subprocess
 import tkinter as tk
-from tkinter import messagebox # Windows 下需要用到
+from tkinter import messagebox
 from datetime import datetime
 from bs4 import BeautifulSoup
 import sys
 import tempfile 
 
 # ================= 配置区域 (跨平台修改) =================
+
+# ================= JS 定义 =================
+js_script = """
+document.addEventListener('DOMContentLoaded', function() {
+    const btn = document.createElement('button');
+    btn.className = 'floating-btn';
+    btn.innerText = '导出已选文章 (0)';
+    document.body.appendChild(btn);
+
+    const checkboxes = document.querySelectorAll('.news-checkbox');
+    
+    function updateCount() {
+        const count = document.querySelectorAll('.news-checkbox:checked').length;
+        btn.innerText = `导出已选文章 (${count})`;
+    }
+
+    checkboxes.forEach(cb => {
+        cb.addEventListener('change', updateCount);
+    });
+
+    btn.addEventListener('click', function() {
+        const checkedBoxes = document.querySelectorAll('.news-checkbox:checked');
+        if (checkedBoxes.length === 0) {
+            alert('请先勾选文章！');
+            return;
+        }
+
+        let selectedData = [];
+        checkedBoxes.forEach(cb => {
+            const tr = cb.closest('tr');
+            const linkTag = tr.querySelector('a');
+            if (linkTag) {
+                selectedData.push({
+                    title: linkTag.innerText.trim(),
+                    url: linkTag.href,
+                    eng_title: tr.querySelector('.title-eng') ? tr.querySelector('.title-eng').innerText.trim() : ''
+                });
+            }
+        });
+
+        const jsonString = JSON.stringify(selectedData, null, 2);
+
+        // 1. 复制到剪贴板
+        navigator.clipboard.writeText(jsonString).catch(err => {
+            console.error('剪贴板复制失败:', err);
+        });
+
+        // 2. 触发 JSON 文件下载
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "__FILENAME_PLACEHOLDER__.json"; // 文件名将由 Python 动态注入
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        alert(`已成功复制到剪贴板，并触发下载 [__FILENAME_PLACEHOLDER__.json]！\\n（注意：文件通常保存在浏览器的“下载”文件夹中）`);
+    });
+});
+"""
+# ============================================
 
 # 1. 动态获取主目录
 USER_HOME = os.path.expanduser("~")
@@ -124,6 +187,33 @@ a:hover, a:focus {
 td.title-eng {
     color: #666;
     font-size: 0.9em;
+}
+/* 追加到现有 CSS 变量的末尾 */
+.checkbox-cell {
+    text-align: center;
+    width: 40px;
+}
+.news-checkbox {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+.floating-btn {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    padding: 12px 24px;
+    background-color: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    cursor: pointer;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    transition: background 0.3s;
+}
+.floating-btn:hover {
+    background-color: #357abd;
 }
 """
 # ============================================
@@ -451,19 +541,64 @@ if 'txt_file_path' in locals() and os.path.exists(txt_file_path):
     except Exception as e_main_process:
         print(f"合并重组流程出错: {e_main_process}")
 
-    # --- 步骤 2: 添加 CSS ---
+    # --- 步骤 2: 添加 CSS、勾选框和 JS ---
     try:
         with open(txt_file_path, 'r', encoding='utf-8') as f_current_html:
             html_content_for_css = f_current_html.read()
         
-        soup_for_final_css = BeautifulSoup(html_content_for_css, 'html.parser')
-        add_css_to_soup(soup_for_final_css, css)
+        soup_for_final = BeautifulSoup(html_content_for_css, 'html.parser')
         
+        # 1. 注入 CSS
+        add_css_to_soup(soup_for_final, css)
+        
+        # 2. 插入勾选框列
+        table = soup_for_final.find('table')
+        if table:
+            # 处理表头 (thead)
+            thead = table.find('thead')
+            if thead:
+                header_row = thead.find('tr')
+                if header_row:
+                    th_select = soup_for_final.new_tag('th')
+                    th_select.string = "选择"
+                    th_select['class'] = 'checkbox-cell'
+                    header_row.insert(0, th_select) # 插入到第一列
+            
+            # 处理内容行 (tbody)
+            tbody = table.find('tbody')
+            rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:] # 兼容没有 tbody 的情况
+            
+            for row in rows:
+                # 跳过可能被误判的表头行
+                if row.find('th'):
+                    continue
+                
+                td_select = soup_for_final.new_tag('td')
+                td_select['class'] = 'checkbox-cell'
+                
+                checkbox = soup_for_final.new_tag('input')
+                checkbox['type'] = 'checkbox'
+                checkbox['class'] = 'news-checkbox'
+                
+                td_select.append(checkbox)
+                row.insert(0, td_select) # 插入到第一列
+        
+        # 3. 注入 JavaScript 并动态替换文件名
+        script_tag = soup_for_final.new_tag("script")
+        # 提取当前 HTML 的文件名（不含 .html 后缀），例如 TodayCNH_240426
+        current_base_name = os.path.splitext(os.path.basename(txt_file_path))[0]
+        # 将 JS 中的占位符替换为实际文件名
+        final_js = js_script.replace('__FILENAME_PLACEHOLDER__', current_base_name)
+        script_tag.string = final_js
+        soup_for_final.body.append(script_tag)
+        
+        # 4. 保存最终文件
         with open(txt_file_path, 'w', encoding='utf-8') as f_final_output:
-            f_final_output.write(str(soup_for_final_css))
-        print(f"CSS样式已成功添加到 {txt_file_path}。")
+            f_final_output.write(str(soup_for_final))
+            
+        print(f"CSS样式、勾选框和JS交互已成功添加到 {txt_file_path}。")
     except Exception as e:
-        print(f"CSS添加错误: {e}")
+        print(f"后期处理(CSS/JS/Checkbox)发生错误: {e}")
 
 else:
     print("错误：主要HTML文件路径未定义，流程失败。")

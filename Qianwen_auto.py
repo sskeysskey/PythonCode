@@ -64,6 +64,32 @@ def find_image_on_screen(template, threshold=0.9):
     else:
         return None, None
 
+def is_refusal_response(text: str) -> bool:
+    """
+    判断 qianwen 是否返回了拒答/无法处理内容。
+    命中后应直接跳过当前文章，而不是继续重试。
+    """
+    if not text:
+        return False
+
+    normalized = re.sub(r'\s+', '', text)
+
+    refusal_phrases = [
+        "抱歉，我无法回答这个问题，我们聊聊别的吧",
+        "抱歉，我无法回答这个问题",
+        "我们聊聊别的吧",
+        "无法回答这个问题",
+        "不能回答这个问题",
+        "无法协助处理该请求",
+        "我无法协助完成该请求",
+        "我不能协助完成该请求",
+        "该内容无法处理",
+        "很抱歉，我不能",
+        "很抱歉，我无法",
+    ]
+
+    return any(phrase in normalized for phrase in refusal_phrases)
+
 def is_content_qualified(text, min_chinese=50):
     """校验内容是否包含足够多的中文"""
     if not text:
@@ -143,6 +169,11 @@ def main():
             # 校验内容
             sleep(0.5) 
             content = pyperclip.paste()
+
+            # 先判断是否是 qianwen 拒答
+            if is_refusal_response(content):
+                print("检测到 qianwen 拒答内容，跳过当前文章。")
+                sys.exit(4)
             
             if is_content_qualified(content, min_chinese=target_threshold):
                 print(f"第 {current_attempt} 次尝试成功：内容校验通过。")
