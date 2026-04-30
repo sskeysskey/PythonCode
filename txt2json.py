@@ -217,6 +217,7 @@ def backup_news_assets(local_dir):
         
     # 1) 备份到 Coding/News/done
     backup_file_target = os.path.join(backup_file_dir, f"onews_{timestamp}.json")
+    os.makedirs(backup_file_dir, exist_ok=True) # 确保done目录存在
     shutil.copy2(local_json_target, backup_file_target)
     print(f"JSON文件已备份到: {backup_file_target}")
     
@@ -421,49 +422,45 @@ def parse_article_copier(file_path):
         
     return url_images
 
-def move_processed_txt_files(directory):
+# --- 修改：将移动到 done 目录改为移动到系统垃圾箱 ---
+def trash_processed_txt_files(directory):
     """
-    将所有 News_*.txt 文件移动到 'done' 子目录中。
-    如果目标文件已存在，则重命名以避免覆盖。
+    将所有 News_*.txt 文件移动到系统垃圾箱。
+    如果未安装 send2trash 库，则退化为永久删除。
     """
-    done_dir = os.path.join(directory, "done")
-    os.makedirs(done_dir, exist_ok=True)
-    
-    txt_files_to_move = find_all_news_files(directory)
-    if not txt_files_to_move:
-        print(f"在 {directory} 目录中没有找到需要移动的 News_*.txt 文件。")
+    try:
+        from send2trash import send2trash
+        trash_func = send2trash
+        is_permanent = False
+    except ImportError:
+        print("警告: 未安装 send2trash 库，无法移动到垃圾箱。将执行永久删除。")
+        print("如需移动到垃圾箱，请执行: pip install send2trash")
+        trash_func = os.remove
+        is_permanent = True
+
+    txt_files_to_trash = find_all_news_files(directory)
+    if not txt_files_to_trash:
+        print(f"在 {directory} 目录中没有找到需要删除的 News_*.txt 文件。")
         return
     
-    print(f"准备移动 {len(txt_files_to_move)} 个 TXT 文件到 '{done_dir}' 目录...")
+    action_name = "永久删除" if is_permanent else "移动到垃圾箱"
+    print(f"准备将 {len(txt_files_to_trash)} 个 TXT 文件{action_name}...")
     
-    moved_count = 0
-    for source_path in txt_files_to_move:
-        # 再次确认文件存在，以防万一
+    trashed_count = 0
+    for source_path in txt_files_to_trash:
         if not os.path.exists(source_path):
             continue
         
         original_basename = os.path.basename(source_path)
-        target_path = os.path.join(done_dir, original_basename)
         
-        # 检查目标文件是否存在，如果存在则重命名
-        if os.path.exists(target_path):
-            print(f"警告: 文件 '{original_basename}' 已存在于 'done' 目录中。将重命名后移动。")
-            base, ext = os.path.splitext(original_basename)
-            counter = 1
-            # 循环查找一个不重复的文件名
-            while os.path.exists(target_path):
-                target_path = os.path.join(done_dir, f"{base}_{counter}{ext}")
-                counter += 1
-        
-        # 移动文件到最终确定的路径
         try:
-            shutil.move(source_path, target_path)
-            print(f"已移动: {original_basename} -> {os.path.basename(target_path)}")
-            moved_count += 1
+            trash_func(source_path)
+            print(f"已{action_name}: {original_basename}")
+            trashed_count += 1
         except Exception as e:
-            print(f"移动文件 {original_basename} 时出错: {e}")
+            print(f"处理文件 {original_basename} 时出错: {e}")
             
-    print(f"移动完成，共成功移动 {moved_count} 个文件。")
+    print(f"清理完成，共成功处理 {trashed_count} 个文件。")
 
 # --- 新增功能 1: 移动 article_copier 文件 ---
 def move_article_copier_files(source_dir, backup_parent_dir):
@@ -884,10 +881,10 @@ if __name__ == "__main__":
     move_article_copier_files(news_directory, news_directory)
     print("=" * 10 + " 完成移动 article_copier 文件 " + "=" * 10)
 
-    # 6. 将所有处理过的 TXT 文件移动到 done 目录
-    print("\n" + "=" * 10 + " 5. 开始移动已处理的 TXT 文件 " + "=" * 10)
-    move_processed_txt_files(news_directory)
-    print("=" * 10 + " 完成移动已处理的 TXT 文件 " + "=" * 10)
+    # 修改调用：从移动到 done 改为移动到垃圾箱
+    print("\n" + "=" * 10 + " 5. 开始清理已处理的 TXT 文件 " + "=" * 10)
+    trash_processed_txt_files(news_directory)
+    print("=" * 10 + " 完成清理已处理的 TXT 文件 " + "=" * 10)
 
     # 7. 将news_images和onews.json备份到相应目录下并更新version.json
     print("\n" + "=" * 10 + " 6. 开始备份核心资产 " + "=" * 10)
