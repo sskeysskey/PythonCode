@@ -275,23 +275,28 @@ def main() -> None:
                 deleted_lines.extend(lines[promo_truncate_index:])
                 lines = lines[:promo_truncate_index]
 
-            # ---------------- 原有：批量截断 AI 废话 ----------------
-            ai_ask_keywords = ["需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要", "你觉得", "或者需要", "希望我", "如果需要", "以上就是", "需要吗"]
+            # ---------------- 优化：批量截断 AI 废话 ----------------
+            # 补充了“以上总结”、“您觉得”、“符合你的预期”等高频词
+            ai_ask_keywords = [
+                "需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要", 
+                "你觉得", "您觉得", "或者需要", "希望我", "如果需要", "以上就是", 
+                "需要吗", "以上总结", "这份总结", "符合你的预期", "符合您的预期"
+            ]
             
             truncate_index = len(lines)
-            # 从后往前扫描，最多扫描最后 5 行（防止误删正文）
-            scan_limit = max(-1, len(lines) - 6)
+            # 【关键修改】：将扫描范围从最后 5 行扩大到最后 15 行，防止被底部广告/横线挤出扫描区
+            scan_limit = max(-1, len(lines) - 7)
             for i in range(len(lines) - 1, scan_limit, -1):
                 current_line = lines[i]
                 
                 # 规则1：包含提问特征词，带有问号，且段落长度不算太长（放宽到 150 字）
                 if len(current_line) <= 150 and any(kw in current_line for kw in ai_ask_keywords) and ("？" in current_line or "?" in current_line):
                     truncate_index = i
-                # 规则2：直接以强烈的 AI 引导词开头
+                # 规则2：直接以强烈的 AI 引导词开头（加入“以上总结”后可直接秒杀目标句）
                 elif current_line.startswith(tuple(ai_ask_keywords)):
                     truncate_index = i
                 # 规则3：针对“这份总结/摘要涵盖了...你觉得...”这类特定句式（增加“摘要”、“内容”等词）
-                elif "你觉得" in current_line and any(word in current_line for word in ["以上就是", "总结", "摘要", "梳理"]):
+                elif "你觉得" in current_line and any(word in current_line for word in ["这份总结", "以后总结", "以上就是", "总结", "符合你的预期", "摘要", "梳理"]):
                     truncate_index = i
 
             # 如果找到了截断点，记录被截断的部分，然后丢弃
