@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import re
 from datetime import datetime
@@ -8,22 +9,22 @@ import requests
 from bs4 import BeautifulSoup
 
 # =============================================================
-# 配置区域 (原 config.py)
+# 配置区域
 # =============================================================
 # 列表页所在域名
 LIST_BASE_URL = "https://www.pdy0.com"
 # 详情页所在域名
 DETAIL_BASE_URL = "https://www.pys1.com"
 # 输出 JSON 文件路径
-OUTPUT_FILE = "/Users/yanzhang/Downloads/OVideos.json"
+OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 
 # 分类配置
 CATEGORIES = {
-    "Movie": {"id": 1, "enabled": True,  "pages": 2},
-    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-    "Show":  {"id": 3, "enabled": False, "pages": 2},
-    "Anime": {"id": 4, "enabled": False, "pages": 2},
-    "Short": {"id": 5, "enabled": False, "pages": 2},
+    "Movie": {"id": 1, "enabled": True,  "pages": 1},
+    "Drama": {"id": 2, "enabled": True,  "pages": 1},
+    "Show":  {"id": 3, "enabled": True, "pages": 1},
+    "Anime": {"id": 4, "enabled": True, "pages": 1},
+    "Short": {"id": 30, "enabled": True, "pages": 1},
 }
 
 # 网络请求配置
@@ -62,8 +63,45 @@ def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d-%H-%M")
 
 
+def clean_ws(s: str) -> str:
+    """把连续空白（含 \\r \\n \\t 等）压缩为单个空格，并 strip。"""
+    return re.sub(r"\s+", " ", s).strip()
+
+
 # =============================================================
-# 解析列表页：提取 (name, detail_url) 列表
+# 已有数据读取 / 去重索引
+# =============================================================
+def load_existing(path: str) -> dict:
+    """读取已有 JSON。若不存在或损坏，返回空 dict。"""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"  [警告] 读取已有 JSON 失败，将视为空：{e}")
+    return {}
+
+
+def build_index(existing: dict) -> dict:
+    """构造 {category: set((name, url))} 的去重索引。"""
+    idx = {}
+    for cat, items in existing.items():
+        s = set()
+        if isinstance(items, list):
+            for it in items:
+                name = it.get("name", "")
+                url = it.get("url", "")
+                if name and url:
+                    s.add((name, url))
+        idx[cat] = s
+    return idx
+
+
+# =============================================================
+# 解析列表页
 # =============================================================
 def parse_list_page(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
@@ -125,44 +163,44 @@ def parse_detail_page(html: str, name: str, url: str) -> dict:
         directors = _split_by_slash(span)
         data["导演"] = directors[0] if directors else ""
 
-    # ---- 编剧 ----
+    # 编剧
     span = _find_span_by_label(info_block, "编剧：")
     if span:
         data["编剧"] = _split_by_slash(span)
 
-    # ---- 主演 ----
+    # 主演
     span = info_block.select_one("span.zksq-actor") or _find_span_by_label(info_block, "主演：")
     if span:
         data["主演"] = _split_by_slash(span)
 
-    # ---- 类型 ----
+    # 类型
     span = _find_span_by_label(info_block, "类型：")
     if span:
         data["类型"] = _split_by_slash(span)
 
-    # ---- 地区 ----
+    # 地区
     span = _find_span_by_label(info_block, "地区：")
     if span:
         regions = _split_by_slash(span)
         data["地区"] = regions[0] if regions else ""
 
-    # ---- 上映 / 又名 ----
+    # 上映 / 又名
     for span in info_block.find_all("span"):
         text = span.get_text(" ", strip=True)
         if text.startswith("上映："):
-            data["date"] = text
+            data["date"] = clean_ws(text)
         elif text.startswith("又名："):
-            data["alias"] = text
+            data["alias"] = clean_ws(text)
 
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
     if span:
         for s in span.find_all("span"):
-            t = s.get_text(" ", strip=True)
+            t = clean_ws(s.get_text(" ", strip=True))
             if t and ("豆瓣" in t or "IMDB" in t):
                 data["评分"].append(t)
 
-    # ---- 剧情介绍 intro ----
+    # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
     if intro_box:
         # 去掉 "[展开...]" 之类的展开链接
@@ -172,18 +210,22 @@ def parse_detail_page(html: str, name: str, url: str) -> dict:
         # 压缩多余空白
         data["intro"] = re.sub(r"\s+", "", intro_text)
 
-    # ---- 播放列表 playlist ----
+    # 播放列表（仅在线观看）
     data["playlist"] = parse_playlist(soup)
 
     return data
 
 
 def parse_playlist(soup) -> list[dict]:
-    """解析播放列表：tab 名字 + 对应 ul 中的 episodes 链接"""
+    """只解析『在线观看』tab（#url-content1）下的播放列表。"""
     playlist = []
 
-    # tabs
-    tabs = soup.select(".playlist-tab ul.swiper-wrapper > li.swiper-slide")
+    # 关键改动：把搜索范围锁定到 #url-content1
+    online_section = soup.select_one("#url-content1")
+    if not online_section:
+        return playlist
+
+    tabs = online_section.select(".playlist-tab ul.swiper-wrapper > li.swiper-slide")
     for tab in tabs:
         target = tab.get("data-target", "")  # 如 #ewave-playlist-1
         # 频道名 = li 直接文本（不含 <span>/<em>）
@@ -197,7 +239,8 @@ def parse_playlist(soup) -> list[dict]:
 
         # 找到对应 ul
         ul_id = target.lstrip("#")
-        ul = soup.find("ul", id=ul_id)
+        # 同样限制在 online_section 内
+        ul = online_section.find("ul", id=ul_id)
         episodes = []
         if ul:
             for a in ul.select("li a"):
@@ -216,9 +259,13 @@ def build_list_url(cat_id: int, page: int) -> str:
     return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
 
 
-def crawl_category(cat_name: str, cat_cfg: dict) -> list[dict]:
+def crawl_category(cat_name: str, cat_cfg: dict, exist_set: set) -> list[dict]:
+    """
+    exist_set: 该分类下 (name, url) 集合，用于跳过已存在条目。
+    返回值仅包含本次新抓取到的条目。
+    """
     print(f"\n=== 开始抓取分类: {cat_name} (id={cat_cfg['id']}, pages={cat_cfg['pages']}) ===")
-    results = []
+    new_items = []
     for page in range(1, cat_cfg["pages"] + 1):
         list_url = build_list_url(cat_cfg["id"], page)
         print(f"\n[列表页] {list_url}")
@@ -231,6 +278,11 @@ def crawl_category(cat_name: str, cat_cfg: dict) -> list[dict]:
         print(f"  -> 共找到 {len(items)} 部")
 
         for idx, item in enumerate(items, 1):
+            key = (item["name"], item["url"])
+            if key in exist_set:
+                print(f"  ({idx}/{len(items)}) [跳过-已存在] {item['name']}")
+                continue
+
             print(f"  ({idx}/{len(items)}) {item['name']}  {item['url']}")
             detail_html = fetch(item["url"])
             time.sleep(SLEEP_BETWEEN_REQUESTS)
@@ -238,21 +290,37 @@ def crawl_category(cat_name: str, cat_cfg: dict) -> list[dict]:
                 continue
             try:
                 detail = parse_detail_page(detail_html, item["name"], item["url"])
-                results.append(detail)
+                new_items.append(detail)
+                exist_set.add(key)  # 防止同一次运行内重复抓
             except Exception as e:
                 print(f"     [解析失败] {e}")
-    return results
+    return new_items
 
 
 def main():
-    final = {}
+    # 1. 读取已有数据，构建去重索引
+    final = load_existing(OUTPUT_FILE)
+    index = build_index(final)
+    print(f"已有数据分类数: {len(final)}；"
+          f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")
+
+    # 2. 逐分类抓取（增量追加）
     for cat_name, cat_cfg in CATEGORIES.items():
+        # 确保分类键存在
+        if cat_name not in final or not isinstance(final[cat_name], list):
+            final[cat_name] = []
+        if cat_name not in index:
+            index[cat_name] = set()
+
         if not cat_cfg.get("enabled"):
             print(f"跳过分类: {cat_name}（未启用）")
-            final[cat_name] = []
             continue
-        final[cat_name] = crawl_category(cat_name, cat_cfg)
 
+        new_items = crawl_category(cat_name, cat_cfg, index[cat_name])
+        print(f"  → 分类 {cat_name} 新增 {len(new_items)} 条")
+        final[cat_name].extend(new_items)
+
+    # 3. 写回文件
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(final, f, ensure_ascii=False, indent=4)
     print(f"\n✅ 完成，已写入 {OUTPUT_FILE}")
