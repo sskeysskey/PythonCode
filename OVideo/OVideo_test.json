@@ -1,0 +1,217 @@
+{
+    "Movie": [
+        {
+            "time": "2026-05-05-00-09",
+            "name": "飞驰人生3",
+            "url": "https://www.pys1.com/mv/483269.html",
+            "info": "HD",
+            "image": "483269.jpg",
+            "导演": "韩寒",
+            "编剧": [
+                "韩寒",
+                "周运海",
+                "蒙问雨"
+            ],
+            "主演": [
+                "沈腾",
+                "尹正",
+                "陈永胜",
+                "冯绍峰",
+                "郝瀚"
+            ],
+            "类型": [
+                "剧情",
+                "喜剧",
+                "运动",
+                "励志"
+            ],
+            "地区": "大陆",
+            "date": "上映：2026-02-17(中国大陆)",
+            "alias": "又名：Pegasus 3",
+            "intro": "剧情介绍：巴音布鲁克最后一站收官后",
+            "评分": [
+                "豆瓣 7.3",
+                "IMDB 6.7"
+            ],
+            "playlist": [
+                {
+                    "name": "天堂",
+                    "episodes": [
+                        "https://www.pys1.com/py/483269-1-1.html"
+                    ]
+                },
+                {
+                    "name": "暴风",
+                    "episodes": [
+                        "https://www.pys1.com/py/483269-9-1.html"
+                    ]
+                },
+                {
+                    "name": "光速",
+                    "episodes": [
+                        "https://www.pys1.com/py/483269-4-1.html"
+                    ]
+                },
+                {
+                    "name": "红牛",
+                    "episodes": [
+                        "https://www.pys1.com/py/483269-5-1.html"
+                    ]
+                }
+            ]
+        },
+        {
+            "time": "2026-05-05-00-00",
+            "name": "爆弹",
+            "url": "https://www.pys1.com/mv/492749.html",
+            "info": "HD",
+            "image": "492749.webp",
+            "导演": "永井聪",
+            "编剧": [
+                "八津弘幸",
+                "吴胜浩"
+            ],
+            "主演": [
+                "山田裕贵",
+                "佐藤二朗",
+                "伊藤沙莉",
+                "夏川结衣"
+            ],
+            "类型": [
+                "悬疑",
+                "犯罪",
+                "惊悚"
+            ],
+            "地区": "日本",
+            "date": "上映：2025-10-31(日本)",
+            "alias": "又名：炸弹 / Bomb",
+            "intro": "剧情介绍：一个神秘中年男子醉酒后袭击了一台自动售货机和便利店店员",
+            "评分": [
+                "豆瓣 7.3",
+                "IMDB 7.1"
+            ],
+            "playlist": [
+                {
+                    "name": "天堂",
+                    "episodes": [
+                        "https://www.pys1.com/py/492749-1-1.html"
+                    ]
+                },
+                {
+                    "name": "暴风",
+                    "episodes": [
+                        "https://www.pys1.com/py/492749-2-1.html"
+                    ]
+                },
+                {
+                    "name": "红牛",
+                    "episodes": [
+                        "https://www.pys1.com/py/492749-6-1.html"
+                    ]
+                }
+            ]
+        }
+    ],
+    "Drama": [
+        {
+            "time": "2026-05-05-13-24",
+            "name": "黑夜告白",
+            "url": "https://www.pys2.com/mv/496549.html",
+            "info": "更新至第17集",
+            "image": "496549.jpg",
+            "导演": "王之",
+            "编剧": [
+                "言桄",
+                "周福宝",
+                "孙泽宇"
+            ],
+            "主演": [
+                "潘粤明",
+                "王鹤棣",
+                "刘闯",
+                "周大勇"
+            ],
+            "类型": [
+                "剧情",
+                "犯罪",
+                "悬疑"
+            ],
+            "地区": "大陆",
+            "date": "上映：2026-04-26(中国大陆)",
+            "alias": "又名：追影者",
+            "intro": "剧情介绍：1997年，一对神秘父女在元龙里小区离奇失踪",
+            "评分": [
+                "豆瓣 --",
+                "IMDB 8.3"
+            ],
+            "playlist": [
+                {
+                    "name": "天堂",
+                    "episodes": [
+                        "https://www.pys2.com/py/496549-1-1.html",
+                        "https://www.pys2.com/py/496549-1-2.html",
+                        "https://www.pys2.com/py/496549-1-3.html",
+                        "https://www.pys2.com/py/496549-1-4.html",
+                        "https://www.pys2.com/py/496549-1-5.html",
+                        "https://www.pys2.com/py/496549-1-6.html",
+                        "https://www.pys2.com/py/496549-1-7.html",
+                        "https://www.pys2.com/py/496549-1-8.html",
+                        "https://www.pys2.com/py/496549-1-9.html",
+                        "https://www.pys2.com/py/496549-1-10.html",
+                        "https://www.pys2.com/py/496549-1-11.html",
+                        "https://www.pys2.com/py/496549-1-12.html",
+                        "https://www.pys2.com/py/496549-1-13.html",
+                        "https://www.pys2.com/py/496549-1-14.html",
+                        "https://www.pys2.com/py/496549-1-15.html",
+                        "https://www.pys2.com/py/496549-1-16.html",
+                        "https://www.pys2.com/py/496549-1-17.html"
+                    ]
+                },
+                {
+                    "name": "暴风",
+                    "episodes": [
+                        "https://www.pys2.com/py/496549-2-1.html",
+                        "https://www.pys2.com/py/496549-2-2.html",
+                        "https://www.pys2.com/py/496549-2-3.html",
+                        "https://www.pys2.com/py/496549-2-4.html",
+                        "https://www.pys2.com/py/496549-2-5.html",
+                        "https://www.pys2.com/py/496549-2-6.html",
+                        "https://www.pys2.com/py/496549-2-7.html",
+                        "https://www.pys2.com/py/496549-2-8.html",
+                        "https://www.pys2.com/py/496549-2-9.html",
+                        "https://www.pys2.com/py/496549-2-10.html",
+                        "https://www.pys2.com/py/496549-2-11.html",
+                        "https://www.pys2.com/py/496549-2-12.html",
+                        "https://www.pys2.com/py/496549-2-13.html",
+                        "https://www.pys2.com/py/496549-2-14.html",
+                        "https://www.pys2.com/py/496549-2-15.html",
+                        "https://www.pys2.com/py/496549-2-16.html",
+                        "https://www.pys2.com/py/496549-2-17.html"
+                    ]
+                },
+                {
+                    "name": "红牛",
+                    "episodes": [
+                        "https://www.pys2.com/py/496549-6-1.html",
+                        "https://www.pys2.com/py/496549-6-2.html",
+                        "https://www.pys2.com/py/496549-6-3.html",
+                        "https://www.pys2.com/py/496549-6-4.html",
+                        "https://www.pys2.com/py/496549-6-5.html",
+                        "https://www.pys2.com/py/496549-6-6.html",
+                        "https://www.pys2.com/py/496549-6-7.html",
+                        "https://www.pys2.com/py/496549-6-8.html",
+                        "https://www.pys2.com/py/496549-6-9.html",
+                        "https://www.pys2.com/py/496549-6-10.html",
+                        "https://www.pys2.com/py/496549-6-11.html",
+                        "https://www.pys2.com/py/496549-6-12.html",
+                        "https://www.pys2.com/py/496549-6-13.html",
+                        "https://www.pys2.com/py/496549-6-14.html",
+                        "https://www.pys2.com/py/496549-6-15.html",
+                        "https://www.pys2.com/py/496549-6-16.html",
+                        "https://www.pys2.com/py/496549-6-17.html"
+                    ]
+                }
+            ]
+        }
+    ]
+}

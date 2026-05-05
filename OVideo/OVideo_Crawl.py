@@ -1,18 +1,23 @@
 import json
 import os
 import time
+import random
 import re
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
 
-import urllib3
-# 禁用关闭 SSL 校验后的警告信息
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 1. 创建一个全局的 Session 对象
+# 这样可以复用 TCP/TLS 连接，极大减少握手错误 (Error 35)
+# 强制使用 HTTP/1.1 (http_version=1) 可以避免很多 CDN 的 HTTP/2 握手 Bug
+http_session = c_requests.Session(
+    impersonate="chrome", 
+    http_version=1  # 强制降级到 HTTP/1.1，解决 WRONG_VERSION_NUMBER 报错
+)
 
 # =============================================================
 # 配置区域
@@ -20,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 列表页所在域名
 LIST_BASE_URL = "https://www.pdy0.com"
 # 详情页所在域名
-DETAIL_BASE_URL = "https://www.pys1.com"
+DETAIL_BASE_URL = "https://www.pys2.com"
 # 输出 JSON 文件路径
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 # 封面图片保存目录
@@ -28,10 +33,10 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 分类配置
 CATEGORIES = {
-    "Movie": {"id": 1, "enabled": True,  "pages": 1},
-    "Drama": {"id": 2, "enabled": False,  "pages": 1},
-    "Show":  {"id": 3, "enabled": False, "pages": 1},
-    "Anime": {"id": 4, "enabled": False, "pages": 1},
+    "Movie": {"id": 1, "enabled": True,  "pages": 4},
+    "Drama": {"id": 2, "enabled": True,  "pages": 4},
+    "Show":  {"id": 3, "enabled": True, "pages": 4},
+    "Anime": {"id": 4, "enabled": True, "pages": 4},
     # "Short": {"id": 30, "enabled": True, "pages": 1},
 }
 
@@ -55,9 +60,16 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 # 工具函数
 # =============================================================
 
+def get_url_path(url: str) -> str:
+    """提取 URL 的路径部分，用于忽略域名差异进行去重。例如提取 /mv/466215.html"""
+    try:
+        return urlparse(url).path
+    except Exception:
+        return url
+
 def download_cover(img_url: str, video_id: str) -> str:
     """
-    使用 curl_cffi 伪装成 Chrome 浏览器下载图片，绕过 TLS 指纹检测
+    使用 curl_cffi Session 下载图片，增加稳定性和重试退避机制
     """
     if not img_url:
         return ""
@@ -72,12 +84,10 @@ def download_cover(img_url: str, video_id: str) -> str:
 
     # —— 文件名策略：用视频 ID ——
     filename = f"{video_id}{ext}"
-    # —— 如果你想用图片本身的 hash 文件名，改用下面这行： ——
-    # filename = os.path.basename(base) or f"{video_id}{ext}"
 
     filepath = os.path.join(COVER_IMAGE_DIR, filename)
 
-    # 已存在且非空，复用
+    # 如果文件已存在且大小大于0，直接跳过
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
         return filename
 
@@ -86,30 +96,51 @@ def download_cover(img_url: str, video_id: str) -> str:
 
     for i in range(RETRY_TIMES):
         try:
-            # 关键点：使用 c_requests 并加上 impersonate="chrome"
-            # 这会让底层的网络请求指纹和真正的 Chrome 浏览器一模一样
-            resp = c_requests.get(
+            # 2. 使用全局的 session 发起请求，而不是 c_requests.get
+            resp = http_session.get(
                 img_url, 
                 headers=headers,
-                timeout=REQUEST_TIMEOUT, 
-                impersonate="chrome"  # 伪装成 Chrome
+                timeout=REQUEST_TIMEOUT
             )
             
             if resp.status_code == 200:
-                with open(filepath, "wb") as f:
-                    f.write(resp.content)
-                    
-                if os.path.getsize(filepath) > 0:
-                    print(f"     [封面已下载] {filename}")
-                    return filename
-                else:
+                # 确保完整接收数据后再写入，减少 Error 23 (写入失败) 的概率
+                content = resp.content
+                if content:
+                    with open(filepath, "wb") as f:
+                        f.write(content)
+                        
+                    if os.path.getsize(filepath) > 0:
+                        print(f"     [封面已下载] {filename}")
+                        return filename
+                
+                # 如果内容为空或文件大小为0，删除损坏的文件并重试
+                if os.path.exists(filepath):
                     os.remove(filepath)
             else:
                 print(f"     [图片HTTP {resp.status_code}] {img_url}")
                 
         except Exception as e:
             print(f"     [图片下载失败 {i+1}/{RETRY_TIMES}] {e}")
-            time.sleep(1)
+            
+        # 3. 失败后的随机退避策略 (Random Exponential Backoff)
+        # 避免立刻重试再次撞上服务器的限流防火墙
+        # if i < RETRY_TIMES - 1:
+        #     sleep_time = random.uniform(1.0, 3.0) * (i + 1)
+        #     time.sleep(sleep_time)
+
+        # --- 修改后的退避逻辑 ---
+        # if i < RETRY_TIMES - 1:
+        #     # 基础等待时间 2-5 秒，随重试次数指数增加
+        #     sleep_time = random.uniform(2.0, 5.0) * (2 ** i)
+        #     print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
+        #     time.sleep(sleep_time)
+        
+        # 每次失败后，强制等待 3 到 9 秒之间的随机时间
+        if i < RETRY_TIMES - 1:
+            sleep_time = random.uniform(4.0, 9.0)
+            print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
+            time.sleep(sleep_time)
             
     return ""
 
@@ -169,8 +200,9 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, url): info}}，
-    用于判断该条目是否已存在以及 info 是否变化。
+    返回 {category: {(name, path): {"info": info, "image": image}}}，
+    用于判断该条目是否已存在、info 是否变化，以及图片是否缺失。
+    注意：这里使用 URL 的 path（忽略域名）作为 key，实现多域名去重。
     """
     idx = {}
     for cat, items in existing.items():
@@ -180,8 +212,11 @@ def build_index(existing: dict) -> dict:
                 name = it.get("name", "")
                 url = it.get("url", "")
                 info = it.get("info", "")
+                image = it.get("image", "")
                 if name and url:
-                    m[(name, url)] = info
+                    # 提取路径，忽略域名差异
+                    path = get_url_path(url)
+                    m[(name, path)] = {"info": info, "image": image}
         idx[cat] = m
     return idx
 
@@ -246,7 +281,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "name": name,
         "url": url,
         "info": info,
-        "image": "",          # ← 新增字段，位置按你示例放在 info 之后
+        "image": "",          
         "导演": "",
         "编剧": [],
         "主演": [],
@@ -259,7 +294,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "playlist": [],
     }
 
-    # ====== 新增：封面图 ======
+    # ====== 封面图 ======
     img_url = ""
     pic_img = soup.select_one("div.vod-info .pic img")
     if pic_img:
@@ -386,7 +421,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                    existing_list: list, index_map: dict) -> tuple[int, int]:
     """
     existing_list: final[cat_name]，原地修改（追加 / 替换）
-    index_map:    index[cat_name]，{(name, url): info}，原地更新
+    index_map:    index[cat_name]，{(name, path): info}，原地更新
     返回：(新增数量, 更新数量)
     """
     print(f"\n=== 开始抓取分类: {cat_name} (id={cat_cfg['id']}, pages={cat_cfg['pages']}) ===")
@@ -405,18 +440,28 @@ def crawl_category(cat_name: str, cat_cfg: dict,
         print(f"  -> 共找到 {len(items)} 部")
 
         for idx_i, item in enumerate(items, 1):
-            key = (item["name"], item["url"])
-            old_info = index_map.get(key)
+            # 提取路径，忽略域名差异
+            item_path = get_url_path(item["url"])
+            key = (item["name"], item_path)
+            old_data = index_map.get(key)
 
-            # 三者完全一致 -> 跳过
-            if old_info is not None and old_info == item["info"]:
-                print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
-                continue
+            if old_data is not None:
+                old_info = old_data.get("info", "")
+                old_image = old_data.get("image", "")
 
-            is_update = old_info is not None
-            tag = "[更新]" if is_update else "[新增]"
+                # 如果 info 没变，且 image 不为空，则跳过
+                if old_info == item["info"] and old_image:
+                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
+                    continue
+
+            is_update = old_data is not None
+            # 根据情况打印不同的 Tag
+            if is_update and old_data.get("info") == item["info"] and not old_data.get("image"):
+                tag = "[补图]"
+            else:
+                tag = "[更新]" if is_update else "[新增]"
+                
             print(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}")
-
 
             # 2. 抓详情页
             detail_html = fetch(item["url"])
@@ -433,10 +478,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 )
 
                 if is_update:
-                    # 替换原有项（保留位置）
+                    # 替换原有项（保留位置），匹配时同样忽略域名差异
                     replaced = False
                     for i, old in enumerate(existing_list):
-                        if old.get("name") == item["name"] and old.get("url") == item["url"]:
+                        old_path = get_url_path(old.get("url", ""))
+                        if old.get("name") == item["name"] and old_path == item_path:
                             existing_list[i] = detail
                             replaced = True
                             break
@@ -447,7 +493,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
-                index_map[key] = item["info"]
+                # 更新索引中的 info 和 image
+                index_map[key] = {
+                    "info": item["info"], 
+                    "image": detail.get("image", "")
+                }
             except Exception as e:
                 print(f"     [解析失败] {e}")
 
