@@ -5,6 +5,7 @@ def main():
     # 定义文件路径
     ovideos_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
     mapping_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping.json'
+    blacklist_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blacklist_url.json'
 
     # 1. 读取 url_mapping.json 文件
     try:
@@ -28,7 +29,18 @@ def main():
         print(f"错误: {ovideos_path} 不是有效的JSON格式")
         return
 
-    # 3. 遍历 OVideos.json 提取 episodes 里的 url
+    # 3. 读取 blacklist_url.json 文件
+    try:
+        with open(blacklist_path, 'r', encoding='utf-8') as f:
+            blacklist_url = json.load(f)
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {blacklist_path}")
+        return
+    except json.JSONDecodeError:
+        print(f"错误: {blacklist_path} 不是有效的JSON格式")
+        return
+
+    # 4. 遍历 OVideos.json 提取 episodes 里的 url
     # OVideos.json 的顶层是分类（如 "Movie", "Drama"）
     for category, items in ovideos.items():
         for item in items:
@@ -38,6 +50,12 @@ def main():
                 # 获取 episodes 列表
                 episodes = playlist.get('episodes', [])
                 for episode_url in episodes:
+                    
+                    # 明确检查 episode_url 是否是黑名单字典的键
+                    if episode_url in blacklist_url.keys():
+                        # 如果在黑名单中，直接跳过
+                        print(f"检测到黑名单链接，已跳过: {episode_url}")
+                        continue
                     
                     # 核心逻辑判断
                     if episode_url in url_mapping:

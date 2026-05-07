@@ -1,20 +1,9 @@
-import hashlib
-
-def compute_md5(path):
-    hash_md5 = hashlib.md5()
-    try:
-        with open(path, "rb") as f:
-            # 每次读取 4096 字节，防止大文件占用过多内存
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-    except FileNotFoundError:
-        return "文件未找到，请检查路径是否正确。"
-
-# 你的目标文件路径
-file_path = "/Users/yanzhang/Coding/LocalServer/Resources/ONews/onews_260131.json"
-
-# 执行计算并打印结果
-md5_result = compute_md5(file_path)
-print(f"文件: {file_path}")
-print(f"MD5 码为: {md5_result}")
+import sys, subprocess
+text = subprocess.run(['pbpaste'], capture_output=True, text=True).stdout
+chars = [c for c in text if not c.isspace()]
+if len(chars) == 0:
+    sys.exit(1)
+cn = sum(1 for c in chars if 0x4e00<=ord(c)<=0x9fff or 0x3400<=ord(c)<=0x4dbf or 0xf900<=ord(c)<=0xfaff or 0x3000<=ord(c)<=0x303f or 0xff00<=ord(c)<=0xffef)
+if cn / len(chars) < 2/3:
+    sys.exit(1)
+sys.exit(0)
