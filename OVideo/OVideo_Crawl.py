@@ -11,6 +11,12 @@ from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
 
+# 抓取模式配置
+# 切换为 "score" 即可使用新规则
+SORT_TYPE = "score" 
+# 当 SORT_TYPE 为 "score" 时生效
+SCORE_YEAR = "2026" 
+
 # 1. 创建一个全局的 Session 对象
 # 这样可以复用 TCP/TLS 连接，极大减少握手错误 (Error 35)
 # 强制使用 HTTP/1.1 (http_version=1) 可以避免很多 CDN 的 HTTP/2 握手 Bug
@@ -19,9 +25,7 @@ http_session = c_requests.Session(
     http_version=1  # 强制降级到 HTTP/1.1，解决 WRONG_VERSION_NUMBER 报错
 )
 
-# =============================================================
 # 配置区域
-# =============================================================
 # 列表页所在域名
 LIST_BASE_URL = "https://www.pdy0.com"
 # 详情页所在域名
@@ -31,12 +35,17 @@ OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 # 封面图片保存目录
 COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 
+# ==========================================
+# 新增：黑名单播放源配置，遇到这些源将直接跳过不抓取
+# ==========================================
+EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
+
 # 分类配置
 CATEGORIES = {
-    "Movie": {"id": 1, "enabled": True,  "pages": 4},
-    "Drama": {"id": 2, "enabled": True,  "pages": 4},
-    "Show":  {"id": 3, "enabled": True, "pages": 4},
-    "Anime": {"id": 4, "enabled": True, "pages": 4},
+    "Movie": {"id": 1, "enabled": True,  "pages": 2},
+    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+    "Show":  {"id": 3, "enabled": True, "pages": 2},
+    "Anime": {"id": 4, "enabled": True, "pages": 2},
     # "Short": {"id": 30, "enabled": True, "pages": 1},
 }
 
@@ -59,6 +68,20 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 # =============================================================
 # 工具函数
 # =============================================================
+
+def save_data(data: dict):
+    """
+    实时保存数据到 JSON 文件。
+    使用临时文件替换法，防止写入过程中断导致 JSON 损坏。
+    """
+    temp_file = OUTPUT_FILE + ".tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        # 写入成功后，替换原文件
+        os.replace(temp_file, OUTPUT_FILE)
+    except Exception as e:
+        print(f"  [错误] 实时保存失败: {e}")
 
 def get_url_path(url: str) -> str:
     """提取 URL 的路径部分，用于忽略域名差异进行去重。例如提取 /mv/466215.html"""
@@ -168,10 +191,6 @@ def fetch(url: str) -> str | None:
     return None
 
 
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d-%H-%M")
-
-
 def clean_ws(s: str) -> str:
     """把连续空白（含 \\r \\n \\t 等）压缩为单个空格，并 strip。"""
     return re.sub(r"\s+", " ", s).strip()
@@ -277,7 +296,6 @@ def parse_detail_page(html: str, name: str, url: str,
                       info: str = "") -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {
-        "time": now_str(),
         "name": name,
         "url": url,
         "info": info,
@@ -290,7 +308,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "date": "",
         "alias": "",
         "intro": "",
-        "评分": [],
+        "评分": [], # 默认初始化为空列表
         "playlist": [],
     }
 
@@ -343,20 +361,45 @@ def parse_detail_page(html: str, name: str, url: str,
         data["地区"] = regions[0] if regions else ""
 
     # 上映 / 又名
+    # --- 修改后的逻辑 ---
     for span in info_block.find_all("span"):
         text = span.get_text(" ", strip=True)
+        
         if text.startswith("上映："):
-            data["date"] = clean_ws(text)
+            # 1. 先清理空白
+            cleaned = clean_ws(text)
+            # 2. 去掉前缀 "上映："
+            cleaned = cleaned.replace("上映：", "", 1)
+            # 3. 如果需要去掉 "(美国网络)" 中的 "网络" 二字，可以使用正则替换
+            # 这里的意思是把 "(...网络)" 替换为 "(...)"
+            cleaned = re.sub(r"\((.*?)(网络)\)", r"(\1)", cleaned)
+            data["date"] = cleaned
+
         elif text.startswith("又名："):
             data["alias"] = clean_ws(text)
 
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
     if span:
+        scores_dict = {}
         for s in span.find_all("span"):
             t = clean_ws(s.get_text(" ", strip=True))
-            if t and ("豆瓣" in t or "IMDB" in t):
-                data["评分"].append(t)
+            if t:
+                # 使用正则提取平台名称和分数，兼容 "豆瓣 7.2" 或 "IMDB --"
+                match = re.search(r"(豆瓣|IMDB)\s*([0-9.]+|--)", t, re.IGNORECASE)
+                if match:
+                    platform = match.group(1)
+                    if platform.upper() == "IMDB":
+                        platform = "IMDB"
+                    score = match.group(2)
+                    
+                    # 只有当分数不是 "--" 时，才写入字典
+                    if score != "--":
+                        scores_dict[platform] = score
+        
+        # 如果字典里有有效数据，则赋值给 data["评分"]；否则保持默认的空列表 []
+        if scores_dict:
+            data["评分"] = scores_dict
 
     # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
@@ -381,7 +424,10 @@ def parse_playlist(soup) -> list[dict]:
     # 关键改动：把搜索范围锁定到 #url-content1
     online_section = soup.select_one("#url-content1")
     if not online_section:
-        return playlist
+        return []
+
+    allowed_playlist = []   # 存放正常的播放源
+    excluded_playlist = []  # 存放黑名单中的播放源
 
     tabs = online_section.select(".playlist-tab ul.swiper-wrapper > li.swiper-slide")
     for tab in tabs:
@@ -405,20 +451,45 @@ def parse_playlist(soup) -> list[dict]:
                 href = a.get("href", "")
                 if href:
                     episodes.append(urljoin(DETAIL_BASE_URL, href))
+        
+        # 如果解析到了剧集，则根据黑名单进行分类存放
         if episodes:
-            playlist.append({"name": channel_name, "episodes": episodes})
-    return playlist
+            playlist_item = {"name": channel_name, "episodes": episodes}
+            
+            if channel_name in EXCLUDED_SOURCES:
+                excluded_playlist.append(playlist_item)
+            else:
+                allowed_playlist.append(playlist_item)
+
+    # ==========================================
+    # 核心逻辑：
+    # 如果有正常的源，优先返回正常的源。
+    # 如果正常的源为空，说明只有黑名单里的源，则返回黑名单源作为兜底。
+    # ==========================================
+    if allowed_playlist:
+        return allowed_playlist
+    else:
+        return excluded_playlist
 
 
 # =============================================================
 # 主流程
 # =============================================================
 def build_list_url(cat_id: int, page: int) -> str:
-    return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
+    """
+    根据当前的 SORT_TYPE 配置，生成不同的 URL 结构
+    """
+    if SORT_TYPE == "score":
+        # 新规律: https://www.pdy0.com/ms/1--score------2---2026.html
+        # 注意：这里的 2 是页码，2026 是年份
+        return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---{SCORE_YEAR}.html"
+    else:
+        # 原规律: https://www.pdy0.com/ms/1--hits------2---.html
+        return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
 
 
 def crawl_category(cat_name: str, cat_cfg: dict,
-                   existing_list: list, index_map: dict) -> tuple[int, int]:
+                   existing_list: list, index_map: dict, all_data: dict) -> tuple[int, int]:
     """
     existing_list: final[cat_name]，原地修改（追加 / 替换）
     index_map:    index[cat_name]，{(name, path): info}，原地更新
@@ -498,6 +569,9 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     "info": item["info"], 
                     "image": detail.get("image", "")
                 }
+                # --- 【关键修改】在此处实时保存 ---
+                save_data(all_data) 
+                print(f"     [已实时保存到磁盘]")
             except Exception as e:
                 print(f"     [解析失败] {e}")
 
@@ -514,22 +588,18 @@ def main():
     # 2. 逐分类抓取（增量追加）
     for cat_name, cat_cfg in CATEGORIES.items():
         # 确保分类键存在
-        if cat_name not in final or not isinstance(final[cat_name], list):
-            final[cat_name] = []
-        if cat_name not in index:
-            index[cat_name] = {}
+        if cat_name not in final: final[cat_name] = []
+        if cat_name not in index: index[cat_name] = {}
 
         if not cat_cfg.get("enabled"):
             print(f"跳过分类: {cat_name}（未启用）")
             continue
 
-        new_n, upd_n = crawl_category(cat_name, cat_cfg, final[cat_name], index[cat_name])
+        # 传入 final 对象，以便在子函数中实时保存
+        new_n, upd_n = crawl_category(cat_name, cat_cfg, final[cat_name], index[cat_name], final)
         print(f"  → 分类 {cat_name} 新增 {new_n} 条，更新 {upd_n} 条")
 
-    # 3. 写回文件
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(final, f, ensure_ascii=False, indent=4)
-    print(f"\n✅ 完成，已写入 {OUTPUT_FILE}")
+    print(f"\n✅ 全部抓取任务结束。")
 
 
 if __name__ == "__main__":

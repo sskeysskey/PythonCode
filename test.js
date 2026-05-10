@@ -13,7 +13,9 @@ chrome.action.onClicked.addListener(async (tab) => {
         tab.url.includes("nytimes.com") ||
         tab.url.includes("washingtonpost.com") ||
         tab.url.includes("asia.nikkei.com") ||
-        tab.url.includes("dw.com") // 【新增】 DW 支持
+        tab.url.includes("dw.com") ||
+        tab.url.includes("rfi.fr") ||
+        tab.url.includes("bbc.com")
     ) {
         try {
             // 执行文本提取与复制操作
@@ -281,414 +283,467 @@ function extractAndCopy() {
     let textContent = '';
     let imagesFoundForDownload = false; // 用于跟踪是否至少尝试下载了一张图片
 
-    // 处理 wsj.com
-    if (window.location.hostname.includes("wsj.com")) {
-        // 扩大搜索范围，有时候内容不在 article 标签直属下，但在 main 或 paywall 容器中
-        // 优先锁定 article，如果没有则回退到 document
-        const contentRoot = document.querySelector('article') || document.querySelector('main') || document;
+    if (window.location.hostname.includes("ft.com")) {
+        const siteContent = document.getElementById('site-content');
+        // 先尝试最常见的新版结构，再 fallback 到旧版
+        const articleBody =
+            document.getElementById('article-body') ||
+            siteContent?.querySelector('#article-body');
 
-        if (contentRoot) {
-            // 【关键修改 1】在选择器数组中增加了 h2 和 h3 标签
-            // 将所有可能的文本选择器放入一个数组
-            // 注意：顺序不再决定提取顺序，DOM流的物理位置决定提取顺序
-            const textSelectors = [
-                // 1. 视差画廊 (Parallax Gallery)
-                '.pg-media-text h4',
-                '.pg-media-text p',
+        if (articleBody) {
+            // 1. 文本提取：兼容 <p> 和最外层 <div> 两种容器
+            let paras = Array.from(articleBody.querySelectorAll('p'));
+            // 加回新版里文字被 <div> 包裹的情况
+            const divParas = Array.from(articleBody.children)
+                .filter(el => el.tagName === 'DIV');
+            paras = [...new Set([...paras, ...divParas])];
 
-                // 2. 增加：标准正文中的小标题 (匹配你的 HTML 中的 <h3 data-type="hed">)
-                'h2[data-type="hed"]',
-                'h3[data-type="hed"]',
-
-                // 3. 标准正文段落
-                'p[data-type="paragraph"]',
-
-                // 4. 针对 WSJ 不同版式的特定 CSS类名
-                'p.css-1009hy1-StyledNewsKitParagraph',
-                'p.css-k3zb6l-Paragraph',
-                'p[class*="emoc1hq1"]',
-                'p[class*="css-1jdwmf4"]',
-
-                // 5. Paywall 容器下的段落 (作为兜底)
-                '.paywall p'
-            ];
-
-            // 使用 join(',') 将选择器合并，querySelectorAll 会按照 DOM 在页面中的物理顺序返回元素
-            // 这样返回的 nodeList 是严格按照 HTML 页面从上到下的顺序排列的
-            const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
-
-            // 将 NodeList 转换为数组并去重 (防止同一个元素被多个选择器命中)
-            let uniqueElements = [...new Set(allElements)];
-
-            textContent = uniqueElements
-                .map(el => {
-                    // 过滤逻辑：跳过不需要的元素
-                    if (
-                        el.closest('.ai2html_export') || // 排除图表内嵌文字
-                        el.closest('figcaption') ||      // 排除图片说明(通常由图片下载逻辑处理)
-                        el.className.includes('g-pstyle')
-                    ) {
-                        return '';
-                    }
-
-                    // 【关键修改 2】扩展标题判断逻辑，包含 h2, h3, h4
-                    const tagName = el.tagName.toLowerCase();
-                    const isHeader = tagName === 'h2' || tagName === 'h3' || tagName === 'h4';
-
-                    let text = el.textContent.trim()
-                        .replace(/<!--[\s\S]*?-->/g, '') // 去除注释
-                        .replace(/[•∞@]/g, '')
-                        .replace(/\s+/g, ' ')
-                        .replace(/&nbsp;/g, ' ')
-                        .replace(/<\/?[^>]+>/g, '') // 去除HTML标签
-                        .trim();
-
-                    // 再次过滤无效文本
-                    if (
-                        !text ||
-                        text.length <= 1 ||
-                        ['@', '•', '∞', 'flex'].includes(text) ||
-                        /^\s*$/.test(text) ||
-                        /^Advertisement$/i.test(text) ||
-                        text.includes("Newsletter Sign-up") ||
-                        text.includes("Catch up on the headlines") ||
-                        text.includes("News and analysis of the New York City") ||
-                        text.includes("Latest news and key analysis") ||
-                        text.includes("广告")
-                    ) {
-                        return '';
-                    }
-
-                    // 如果是标题，前后加换行符及【】以区分
-                    return isHeader ? `\n【${text}】\n` : text;
-                })
-                .filter(text => text.length > 0) // 移除空字符串
-                .join('\n\n'); // 用双换行符连接段落
-
-            // 【2】只有当文本提取成功后，再进行图片下载
-            if (textContent) {
-                // 查找"Show Conversation"元素
-                const showConversationElement = document.querySelector('.css-1nc85ca-Show0rHideCommentsSpan');
-
-                // 【修改】扩展图片查找范围，增加对视差画廊图片的抓取
-                let allImages = [
-                    // 【新增】抓取视差画廊中的图片
-                    ...Array.from(document.querySelectorAll('.pg-element img')),
-                    // 【新增】抓取位于 <main> 标签下、<article> 标签外的头图
-                    ...Array.from(document.querySelectorAll('main > .bigTop picture img')),
-                    // --- 以下为原有选择器，保持不变 ---
-                    ...Array.from(document.querySelectorAll('article picture.css-u314cv img')),
-                    ...Array.from(document.querySelectorAll('article .origami-item img')),
-                    ...Array.from(document.querySelectorAll('article [data-type="inset"] img')),
-                    ...Array.from(document.querySelectorAll('article figure img'))
-                ];
-
-                // 【新增】对抓取到的图片进行去重
-                allImages = [...new Set(allImages)];
-
-                // 【新增】过滤掉 "What to Read Next" 等推荐区域的图片
-                allImages = allImages.filter(img => {
-                    if (
-                        img.closest('[data-testid^="wtrn-block"]') ||
-                        img.closest('[aria-label="What to Read Next"]')
-                    ) {
-                        return false;
-                    }
-                    return true;
-                });
-
-                // 如果找到"Show Conversation"元素，则过滤掉其后的图片
-                if (showConversationElement) {
-                    allImages = allImages.filter(img => {
-                        const position = showConversationElement.compareDocumentPosition(img);
-                        return !(position & Node.DOCUMENT_POSITION_FOLLOWING);
-                    });
-                }
-
-                // 继续进行剩余过滤
-                allImages = allImages.filter(img => {
-                    const imgSrc = img.src || '';
-
-                    if (imgSrc.toLowerCase().endsWith('.svg') ||
-                        imgSrc.includes('/icons/') ||
-                        imgSrc.includes('/social') ||
-                        imgSrc.includes('/ui/') ||
-                        img.closest('button, .share-button, .toolbar')) {
-                        return false;
-                    }
-
-                    const imgWidth = img.width || img.naturalWidth || 0;
-                    const imgHeight = img.height || img.naturalHeight || 0;
-                    if (imgWidth > 0 && imgHeight > 0 && (imgWidth < 150 || imgHeight < 150)) {
-                        return false;
-                    }
-
-                    return true;
-                });
-
-                if (allImages.length === 0) {
-                    chrome.runtime.sendMessage({ action: 'noImages' });
-                } else {
-                    const processedUrls = new Set();
-
-                    allImages.forEach(img => {
-                        if (img) {
-                            let highestResUrl = img.src;
-
-                            if (img.srcset) {
-                                const cleanSrcset = img.srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                                const srcsetEntries = cleanSrcset.split(',').map(entry => {
-                                    const [url, width] = entry.trim().split(/\s+/);
-                                    const widthNum = parseInt(width?.replace(/[^\d]/g, '') || '0');
-                                    return {
-                                        url: url.trim(),
-                                        width: widthNum
-                                    };
-                                });
-
-                                const highestResSrc = srcsetEntries.reduce((prev, current) => {
-                                    return (current.width > prev.width) ? current : prev;
-                                }, srcsetEntries[0]);
-
-                                if (highestResSrc && highestResSrc.url) {
-                                    highestResUrl = highestResSrc.url;
-                                }
-                            }
-
-                            const baseUrl = highestResUrl.split('?')[0];
-                            const finalUrl = `${baseUrl}?width=700&size=1.2610340479192939&pixel_ratio=2`;
-
-                            if (!processedUrls.has(baseUrl)) {
-                                processedUrls.add(baseUrl);
-
-                                let altText = '';
-
-                                // 【新增】优先从视差画廊的标题提取描述
-                                const pgTextWrapper = img.closest('.pg-element')?.querySelector('.pg-media-text');
-                                if (pgTextWrapper) {
-                                    const pgTitle = pgTextWrapper.querySelector('h4.pg-title');
-                                    const pgCaption = pgTextWrapper.querySelector('.pg-image-caption');
-                                    if (pgTitle && pgTitle.textContent.trim()) {
-                                        altText = pgTitle.textContent.trim();
-                                    } else if (pgCaption && pgCaption.textContent.trim()) {
-                                        altText = pgCaption.textContent.trim();
-                                    }
-                                }
-
-                                // 如果视差画廊没有找到描述，使用原有逻辑
-                                if (!altText) {
-                                    const origamiCaption = img.closest('.origami-wrapper')?.querySelector('.origami-caption');
-                                    const figureEl = img.closest('figure');
-                                    let captionSpan;
-                                    if (figureEl) {
-                                        // 【修改】修正了对 figcaption 的查找逻辑，使其更健壮
-                                        const figcaptionEl = figureEl.nextElementSibling?.tagName.toLowerCase() === 'figcaption'
-                                            ? figureEl.nextElementSibling
-                                            : figureEl.querySelector('figcaption');
-                                        if (figcaptionEl) {
-                                            captionSpan = figcaptionEl.querySelector('.css-426zcb-CaptionSpan');
-                                        }
-                                    }
-                                    const creditSpan = img.closest('[data-type="image"]')?.querySelector('.css-7jz429-Credit');
-
-                                    if (origamiCaption) {
-                                        altText = origamiCaption.textContent;
-                                    } else if (captionSpan) {
-                                        altText = captionSpan.textContent;
-                                    } else if (creditSpan) {
-                                        altText = creditSpan.textContent;
-                                    } else {
-                                        altText = img.alt || 'wsj_image';
-                                    }
-                                }
-
-                                // 为默认文件名添加时间戳
-                                if (altText === 'wsj_image') {
-                                    const seconds = new Date().getSeconds();
-                                    altText = `wsj_image-${seconds}`;
-                                }
-
-                                const processFileName = (text) => {
-                                    text = text.replace(/[/\\?%*:|"<>+]/g, '-')
-                                        .replace(/\s+/g, ' ')
-                                        .trim();
-                                    if (text.length > 200) {
-                                        text = text.substr(0, 196).split(' ').slice(0, -1).join(' ');
-                                    }
-                                    return `${text}.jpg`;
-                                };
-
-                                chrome.runtime.sendMessage({
-                                    action: 'downloadImage',
-                                    url: finalUrl,
-                                    filename: processFileName(altText)
-                                });
-                            }
-                        }
-                    });
-                }
-            }
-        }
-    }
-
-    // ==========================================
-    // 2. 【新增】DW (德国之声) 处理逻辑
-    // ==========================================
-    else if (window.location.hostname.includes("dw.com")) {
-        // DW 的内容通常在 article 标签内
-        const contentRoot = document.querySelector('article') || document.querySelector('#main-content') || document;
-
-        if (contentRoot) {
-            // 1. 提取文本
-            // DW 的正文和标题通常在 data-tracking-name="rich-text" 的 div 下
-            const textSelectors = [
-                'div[data-tracking-name="rich-text"] h2',
-                'div[data-tracking-name="rich-text"] h3',
-                'div[data-tracking-name="rich-text"] p'
-            ];
-
-            const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
-            let uniqueElements = [...new Set(allElements)];
-
-            textContent = uniqueElements
-                .map(el => {
-                    // 1. 过滤视频容器
-                    if (el.closest('.vjs-wrapper')) return '';
-                    if (el.textContent.includes("To view this video please enable JavaScript")) return '';
-
-                    const tagName = el.tagName.toLowerCase();
-
-                    // 2. 基础文本清理
-                    let text = el.textContent.trim()
-                        .replace(/\s+/g, ' ')
-                        .replace(/&nbsp;/g, ' ')
-                        .trim();
-
-                    // ★★★ 修改点：精准过滤包含“长平观察：”的整段内容 ★★★
-                    if (text.includes("长平观察：")) {
-                        return '';
-                    }
-
-                    // 3. ★★★ 新增：过滤社交媒体推广和版权声明 ★★★
-                    if (
-                        text.includes("DW中文有Instagram") ||
-                        text.includes("摘编自其他媒体") ||
-                        text.includes("dw.chinese") ||
-                        text.includes("德国之声版权声明") ||
-                        text.startsWith("© 20") // 匹配 © 2026年...
-                    ) {
-                        return '';
-                    }
-
-                    // 4. 过滤无效字符
-                    if (!text || text.length <= 1 || ['@', '•', '∞'].includes(text)) {
-                        return '';
-                    }
-
-                    // 5. 标题格式化
-                    if (tagName === 'h2' || tagName === 'h3') {
-                        return `\n【${text}】\n`;
-                    }
-                    return text;
-                })
-                .filter(text => text.length > 0)
+            // 原有的 FT.com 段落过滤逻辑
+            const kept = paras.filter(p => {
+                const text = p.textContent.trim();
+                if (!text || text.length <= 1) return false;
+                if (text === '@' || text === '•' || text === '».') return false;
+                if (text.includes('is the author of') ||
+                    text.toLowerCase().includes('follow ft weekend')) return false;
+                if (text.toLowerCase().includes('change has been made') ||
+                    text.toLowerCase().includes('story was originally published'))
+                    return false;
+                if (text.toLowerCase().includes('subscribe') ||
+                    text.toLowerCase().includes('newsletter'))
+                    return false;
+                if (text.toLowerCase().includes('follow') &&
+                    (text.includes('instagram') || text.includes('twitter')))
+                    return false;
+                // 排除主要由 <em> 组成的段落
+                const emTags = p.getElementsByTagName('em');
+                if (emTags.length > 0 && emTags[0].textContent.length > text.length / 2)
+                    return false;
+                // 排除大量链接
+                const links = p.getElementsByTagName('a');
+                if (links.length > 2) return false;
+                return true;
+            });
+            const textContent = kept
+                .map(p => p.textContent.trim())
                 .join('\n\n');
 
+            // 2. 图片下载：先按老逻辑抓特定类名的 <figure>，再 fallback 到 siteContent 下所有 <figure>
+            let imageFigures = Array.from(
+                document.querySelectorAll(
+                    'figure.n-content-image, figure.n-content-picture, ' +
+                    'figure.o-topper_visual, .main-image'
+                )
+            );
+            if (imageFigures.length === 0 && siteContent) {
+                imageFigures = Array.from(siteContent.querySelectorAll('figure'));
+            }
+            // 同一元素去重
+            imageFigures = [...new Set(imageFigures)];
 
-            // 2. 提取并下载图片
-            if (textContent) {
-                // DW 的图片通常在 figure 标签内
-                let allImages = [...document.querySelectorAll('article figure img')];
+            if (imageFigures.length === 0) {
+                chrome.runtime.sendMessage({ action: 'noImages' });
+            } else {
+                let seenUrls = new Set();
+                let seenNames = new Set();
+                imageFigures.forEach((fig, idx) => {
+                    // 取 <picture><img> 或 fig.querySelector('img')
+                    const pic = fig.querySelector('picture');
+                    const img = pic ? pic.querySelector('img') : fig.querySelector('img');
+                    if (!img) return;
 
-                // 去重
-                allImages = [...new Set(allImages)];
+                    // 最高分辨率
+                    let url = img.src;
+                    if (img.srcset) {
+                        const candidates = img.srcset
+                            .split(',')
+                            .map(entry => {
+                                const [u, w] = entry.trim().split(/\s+/);
+                                return { url: u, width: parseInt(w) || 0 };
+                            })
+                            .filter(c => c.width > 0)
+                            .sort((a, b) => b.width - a.width);
+                        if (candidates[0]) url = candidates[0].url;
+                    }
+                    url = url.trim();
+                    if (!/^https?:\/\//.test(url) || seenUrls.has(url)) return;
+                    seenUrls.add(url);
 
-                // ★★★ 关键修改：过滤掉低清占位图 (lq-img) ★★★
-                // DW 页面中一个 figure 里通常有两个 img，一个是 lq-img (placeholder)，一个是 hq-img (real)
-                // 如果不过滤，会导致重复下载，且 lq-img 可能会导致文件名冲突或下载为 HTML
-                allImages = allImages.filter(img => !img.classList.contains('lq-img'));
+                    // 描述：合并所有 span 并去掉版权 ©…
+                    let caption = '';
+                    const fc = fig.querySelector('figcaption');
+                    if (fc) {
+                        caption = Array.from(fc.querySelectorAll('span'))
+                            .map(sp => sp.textContent.trim())
+                            .join(' ')
+                            .replace(/©.*$/g, '')
+                            .trim();
+                    }
+                    if (!caption) caption = img.alt.trim();
+                    if (!caption) caption = `ft-image-${Date.now()}-${idx}`;
 
-                if (allImages.length === 0) {
+                    // ★★★ 修改点 ★★★
+                    // 2. 修改正则表达式，增加对'+'的过滤
+                    // 清洗成合法文件名，防重名
+                    let base = caption
+                        .replace(/[/\\?%*:|"<>+]/g, '') // 过滤掉非法字符以及+和-号
+                        .replace(/\s+/g, ' ')
+                        .substring(0, 200)
+                        .trim();
+                    let filename = `${base}.jpg`;
+                    let counter = 1;
+                    while (seenNames.has(filename)) {
+                        filename = `${base}(${counter++}).jpg`;
+                    }
+                    seenNames.add(filename);
+
                     chrome.runtime.sendMessage({
-                        action: 'noImages'
+                        action: 'downloadImage',
+                        url,
+                        filename
                     });
-                } else {
-                    const processedUrls = new Set();
-                    allImages.forEach(img => {
+                });
+            }
+
+            // 3. 复制并返回 true
+            if (textContent) {
+                const ta = document.createElement('textarea');
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                ta.value = textContent;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                return true;
+            }
+        } else {
+            // 没找到 #article-body
+            chrome.runtime.sendMessage({ action: 'noImages' });
+        }
+        return false;
+    }
+
+    // 处理 bloomberg.com
+    else if (window.location.hostname.includes("bloomberg.com")) {
+        // 定义主要内容选择器
+        const mainSelectors = [
+            // ★★★ 新增/修改 ① ★★★
+            // 优先匹配你提供的新版 "feature_article" 页面的正文段落。
+            // 这个选择器通过模糊匹配类名来确保稳定性。
+            'p[class*="ArticleBodyText_articleBodyContent"]',
+            // --- 以下为原有选择器，保持不变 ---
+            '.body-content p[class*="media-ui-Paragraph_text"]',
+            'p.media-ui-Paragraph_text-SqIsdNjhOtO-',
+            'p[class*="media-ui-Paragraph_text"]',
+            'p.paywall[data-component="paragraph"]',
+            // 更通用的选择器，用于捕获可能的段落
+            'p[class*="Paragraph"]',
+            'p[class*="paragraph"]',
+            // Svelte-like 结构
+            'main.dvz-content p[class*="copy-width"]',
+            'main.dvz-content p.dropcap[class*="svelte-"]',
+            // 针对新 "css--" 命名结构
+            'main#dvz__mount div[class*="css--paragraph-wrapper"] > p',
+            // ---- 新增：捕获列表项 ---- //
+            'li[data-component="unordered-list-item"]',
+            'li[class*="media-ui-UnorderedList_item"]'
+        ];
+
+        // 需要排除的选择器
+        const excludeSelectors = [
+            '.UpNext_upNext__C39c6',
+            '[data-testid="story-card-small"]',
+            '.story-card-small',
+            '.styles_moreFromBloomberg_HrR5_',
+            '.recirc-box-small-list',
+            'div[data-testid="social-share-primary"]',
+            'aside'
+        ];
+
+        let paragraphs = [];
+
+        // 获取主要内容
+        mainSelectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(element => {
+                // 检查是否在被排除的区域内
+                const isInExcludedArea = excludeSelectors.some(exSel =>
+                    element.closest(exSel) !== null
+                );
+
+                if (!isInExcludedArea) {
+                    paragraphs.push(element);
+                }
+            });
+        });
+
+        // 提取和清理文本
+        textContent = [...new Set(paragraphs)]
+            .map(el => {
+                let text = el.textContent || '';
+                return text
+                    .trim()
+                    // 移除 HTML 注释
+                    .replace(/<!--[\s\S]*?-->/g, '')
+                    // 移除特殊符号
+                    .replace(/[•∞@]/g, '')
+                    // 去掉伪元素标记
+                    .replace(/:marker/g, '')
+                    // 规范化空白
+                    .replace(/\s+/g, ' ')
+                    .replace(/&nbsp;/g, ' ')
+                    // 移除调试标记，如 "== $0"
+                    .replace(/==\s*\$\d+/g, '')
+                    // 移除剩余标签
+                    // .replace(/<\/?[^>]+(>|$)/g, '')
+                    .trim();
+            })
+            .filter(text => {
+                return text
+                    && text.length > 10                // 最小长度
+                    && !/^[@•∞]/.test(text)            // 不以特殊字符开头
+                    && !/^\s*$/.test(text)             // 不全是空白
+                    && !['flex', 'Advertisement'].includes(text)
+                    && !/^[.\s]*$/.test(text)
+                    && !/^Up Next:/.test(text)
+                    && !/^You are using an/.test(text)
+                    && !/^Read More:/i.test(text);     // ★★★ 新增：过滤掉以 "Read More:" 开头的段落 (加了 'i' 忽略大小写) ★★★
+            })
+            .join('\n\n');
+
+        // 如果提取到了有效文本，则进行图片下载
+        if (textContent) {
+            // 查找所有类型的图片容器
+            // 新增：同时查找新结构中的 figure 标签，通常带有 svelte-xxxx 类名，且在 main.dvz-content 内
+            const figureElements = document.querySelectorAll(
+                // Old structure
+                'figure[data-component="article-image"], ' +
+                // Svelte-like structure
+                'main.dvz-content figure[class*="svelte-"], ' +
+                // New "css--" lede image structure
+                'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], ' +
+                // Fallback for other potential figures in new "css--" structure (more generic)
+                'main#dvz__mount section[class*="--root-container"] figure'
+            );
+
+            // 检查是否找到了符合条件的图片
+            let foundValidImages = false;
+
+            // 用于存储已处理的图片URL
+            const processedUrls = new Set();
+
+            if (figureElements && figureElements.length > 0) {
+                figureElements.forEach(figure => {
+                    let img = null;
+                    let caption = '';
+                    let highestResUrl = '';
+                    let figureType = 'unknown'; // To help debug or adapt logic
+
+                    // Try to identify figure type and extract img/caption accordingly
+
+                    // Type 1: Old structure (data-component="article-image")
+                    if (figure.matches('figure[data-component="article-image"]')) {
+                        figureType = 'old_structure';
+                        img = figure.querySelector('img.ui-image.high-res-img');
                         if (img) {
-                            // 查找高清图 URL (复用 WSJ 的 srcset 解析逻辑)
-                            let highestResUrl = img.src;
                             if (img.srcset) {
-                                const cleanSrcset = img.srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                                const srcsetEntries = cleanSrcset.split(',').map(entry => {
-                                    // DW 的 srcset 格式通常是 "url width_descriptor"
-                                    const parts = entry.trim().split(/\s+/);
-                                    // 取最后一部分作为宽度，去掉 'w'
-                                    const widthStr = parts[parts.length - 1];
-                                    const url = parts[0];
-                                    const widthNum = parseInt(widthStr?.replace(/[^0-9]/g, '') || '0');
-                                    return {
-                                        url: url,
-                                        width: widthNum
-                                    };
-                                });
-
-                                // 找到宽度最大的图片
-                                const highestResSrc = srcsetEntries.reduce((prev, current) => {
-                                    return (current.width > prev.width) ? current : prev;
-                                }, srcsetEntries[0]);
-                                if (highestResSrc && highestResSrc.url) {
-                                    highestResUrl = highestResSrc.url;
-                                }
+                                const srcsetEntries = img.srcset.split(',')
+                                    .map(entry => {
+                                        const parts = entry.trim().split(' ');
+                                        const url = parts[0].trim();
+                                        const width = parseInt(parts[parts.length - 1]) || 0;
+                                        return { url, width };
+                                    })
+                                    .filter(entry => entry.url && entry.width > 0)
+                                    .sort((a, b) => b.width - a.width);
+                                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
                             }
+                            if (!highestResUrl && img.src) highestResUrl = img.src;
 
-                            // 清理 URL
-                            const finalUrl = highestResUrl.split('?')[0];
-
-                            if (!processedUrls.has(finalUrl)) {
-                                processedUrls.add(finalUrl);
-
-                                // 提取图片描述
-                                let altText = '';
-                                const figure = img.closest('figure');
-                                if (figure) {
-                                    const figcaption = figure.querySelector('figcaption');
-                                    if (figcaption) {
-                                        // 移除版权信息等杂质
-                                        const clone = figcaption.cloneNode(true);
-                                        const smalls = clone.querySelectorAll('small, .copyright');
-                                        smalls.forEach(s => s.remove());
-                                        altText = clone.textContent.trim();
+                            const figcaptionElement = figure.querySelector('figcaption');
+                            // ★★★ 新增/修改 ② ★★★
+                            // 优化了标题提取逻辑。优先查找包含 "Caption_caption" 类名的 `<span>`，
+                            // 这样可以精确获取描述文本，避免包含 "Source: ..." 等信息。
+                            // 如果找不到，则回退到原来的逻辑，确保兼容旧版页面。
+                            if (figcaptionElement) {
+                                const specificCaptionSpan = figcaptionElement.querySelector('span[class*="Caption_caption"]');
+                                if (specificCaptionSpan) {
+                                    caption = specificCaptionSpan.textContent.trim();
+                                } else {
+                                    // Fallback to original logic
+                                    const captionSpans = figcaptionElement.querySelectorAll('span');
+                                    if (captionSpans && captionSpans.length > 0) {
+                                        caption = Array.from(captionSpans).map(span => span.textContent.trim()).filter(text => text).join(' ');
+                                    } else {
+                                        caption = figcaptionElement.textContent.trim();
                                     }
                                 }
-                                // 兜底描述
-                                if (!altText) altText = img.title || img.alt || 'dw_image';
-
-                                // ★★★ 关键修改：增强文件名清理逻辑 ★★★
-                                const processFileName = (text) => {
-                                    text = text
-                                        // 1. 移除中文引号和句号，防止文件名出现 ".." 或 ".html" 混淆
-                                        .replace(/[“”。，,]/g, '')
-                                        // 2. 移除系统非法字符
-                                        .replace(/[\\/?%*:|"<>+]/g, '-')
-                                        .replace(/\s+/g, ' ')
-                                        .trim();
-                                    if (text.length > 100) {
-                                        text = text.substr(0, 96) + '...';
-                                    }
-                                    return `${text}.jpg`;
-                                };
-
-                                chrome.runtime.sendMessage({
-                                    action: 'downloadImage',
-                                    url: finalUrl,
-                                    filename: processFileName(altText)
-                                });
                             }
                         }
-                    });
-                }
+                    }
+                    // Type 2: Svelte-like structure (main.dvz-content figure[class*="svelte-"])
+                    else if (figure.matches('main.dvz-content figure[class*="svelte-"]')) {
+                        figureType = 'svelte_structure';
+                        img = figure.querySelector('dvz-lede-image-container img');
+                        if (!img) img = figure.querySelector('img');
+
+                        if (img && img.src) {
+                            highestResUrl = img.src;
+                            const figcaptionElement = figure.querySelector('figcaption');
+                            if (figcaptionElement) {
+                                const specificCaptionSpan = figcaptionElement.querySelector('span.caption');
+                                if (specificCaptionSpan) {
+                                    caption = specificCaptionSpan.textContent.trim();
+                                } else {
+                                    const captionSpans = figcaptionElement.querySelectorAll('span');
+                                    if (captionSpans && captionSpans.length > 0) {
+                                        // 合并所有span的文本内容
+                                        caption = Array.from(captionSpans)
+                                            .map(span => span.textContent.trim())
+                                            .filter(text => text) // 过滤空文本
+                                            .join(' ');
+                                    } else {
+                                        caption = figcaptionElement.textContent.trim();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Type 3: New "css--" structure (e.g., lede image)
+                    else if (figure.matches('main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], main#dvz__mount section[class*="--root-container"] figure')) {
+                        figureType = 'css_structure';
+                        img = figure.querySelector('img.css--lede-image'); // Specific to lede image
+                        if (!img) img = figure.querySelector('img'); // More generic fallback within the figure
+
+                        if (img) {
+                            const srcsetAttr = img.srcset || img.dataset.srcset; // Prioritize srcset, then data-srcset
+                            if (srcsetAttr) {
+                                const srcsetEntries = srcsetAttr.split(',')
+                                    .map(entry => {
+                                        // 提取URL和宽度
+                                        const parts = entry.trim().split(' ');
+                                        const url = parts[0].trim();
+                                        // 从类似 "1200w" 的字符串中提取数字
+                                        const width = parseInt(parts[parts.length - 1]) || 0;
+                                        return { url, width };
+                                    })
+                                    .filter(entry => entry.url && entry.width > 0)
+                                    .sort((a, b) => b.width - a.width);
+                                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                            }
+                            if (!highestResUrl && img.src) highestResUrl = img.src;
+
+                            // Caption for new "css--" structure
+                            // The caption might be in div.css--caption-outer-wrapper > figcaption.css--caption-wrapper
+                            const captionWrapper = figure.querySelector('div.css--caption-outer-wrapper');
+                            let figcaptionElement = null;
+                            if (captionWrapper) {
+                                figcaptionElement = captionWrapper.querySelector('figcaption.css--caption-wrapper');
+                            } else { // If outer wrapper not found, try directly
+                                figcaptionElement = figure.querySelector('figcaption.css--caption-wrapper');
+                            }
+
+                            if (figcaptionElement) {
+                                const creditSpan = figcaptionElement.querySelector('span.css--credit');
+                                if (creditSpan) {
+                                    caption = creditSpan.textContent.trim();
+                                } else { // Fallback if specific span.css--credit is not found
+                                    caption = figcaptionElement.textContent.trim();
+                                }
+                            }
+                        }
+                    }
+
+                    // Common processing for img and caption if found
+                    if (img && highestResUrl) {
+                        // Clean URL and ensure it's absolute
+                        highestResUrl = highestResUrl.replace(/\s+/g, '');
+                        if (highestResUrl.startsWith('//')) { // Protocol-relative URL
+                            highestResUrl = window.location.protocol + highestResUrl;
+                        } else if (highestResUrl.startsWith('/')) { // Origin-relative URL
+                            highestResUrl = new URL(highestResUrl, window.location.origin).href;
+                        } else if (!highestResUrl.match(/^https?:\/\//i) && !highestResUrl.startsWith('blob:')) {
+                            // Potentially a path-relative URL, resolve against document base URI
+                            try {
+                                highestResUrl = new URL(highestResUrl, window.location.href).href;
+                            } catch (e) {
+                                console.error('Error creating absolute URL from path-relative:', e, highestResUrl);
+                                return; // Skip this image if URL is problematic
+                            }
+                        }
+                        // Absolute URLs (http, https) will pass through correctly with new URL() if base is provided.
+
+                        if (!processedUrls.has(highestResUrl)) {
+                            processedUrls.add(highestResUrl);
+                            foundValidImages = true;
+
+                            // 改进文件扩展名提取
+                            let extension = 'jpg'; // 默认扩展名
+                            try {
+                                const pathname = new URL(highestResUrl).pathname;
+                                const lastDot = pathname.lastIndexOf('.');
+                                if (lastDot !== -1 && lastDot < pathname.length - 1) {
+                                    const extCandidate = pathname.substring(lastDot + 1).toLowerCase().split('?')[0]; // Remove query params from ext
+                                    if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(extCandidate)) {
+                                        extension = extCandidate;
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('Could not parse URL for extension, defaulting to jpg:', highestResUrl);
+                            }
+
+
+                            let filename;
+                            const cleanTextForFilename = (text) => {
+                                if (!text) return '';
+                                return text
+                                    .replace(/&nbsp;/g, ' ')
+                                    .replace(/Photograph(?:er)?[\s\S]*$/i, '')
+                                    .replace(/\s*(?:Source[-:–—]?)\s*.*$/i, '')
+                                    .replace(/[/\\?%*:|"<>+]/g, '-') // Remove invalid chars
+                                    .trim();
+                            };
+
+                            let cleanedCaption = cleanTextForFilename(caption);
+                            let cleanedAlt = cleanTextForFilename(img.alt);
+
+                            if (cleanedCaption) {
+                                filename = `${cleanedCaption}.${extension}`;
+                            } else if (cleanedAlt) {
+                                filename = `${cleanedAlt}.${extension}`;
+                            } else {
+                                // 如果既没有alt也没有caption，使用时间戳
+                                const timestamp = new Date().getTime();
+                                filename = `bloomberg-image-${timestamp}.${extension}`;
+                            }
+
+                            // Ensure filename is not excessively long
+                            const maxLen = 200;
+                            if (filename.length > maxLen) {
+                                const namePart = filename.substring(0, filename.length - (extension.length + 1));
+                                filename = namePart.substring(0, maxLen - (extension.length + 1)) + '.' + extension;
+                            }
+
+                            // Ensure filename is not empty before extension
+                            if (filename.startsWith('.' + extension)) {
+                                filename = `bloomberg-image-${new Date().getTime()}.${extension}`;
+                            }
+
+
+                            chrome.runtime.sendMessage({
+                                action: 'downloadImage',
+                                url: highestResUrl,
+                                filename: filename
+                            });
+                        }
+                    }
+                });
             }
+
+            if (!foundValidImages) {
+                chrome.runtime.sendMessage({ action: 'noImages' });
+            }
+        } else {
+            chrome.runtime.sendMessage({ action: 'noImages' });
         }
     }
 

@@ -469,6 +469,9 @@ function extractAndCopy() {
         const isInExcludedArea = excludeSelectors.some(exSel =>
           element.closest(exSel) !== null
         );
+        // ★★★ 新增：如果段落内嵌了 figure（即图片容器），则跳过
+        // 避免把 figcaption 的说明文字当作正文抓下来
+        if (element.querySelector('figure')) return;
 
         if (!isInExcludedArea) {
           paragraphs.push(element);
@@ -515,14 +518,12 @@ function extractAndCopy() {
       // 查找所有类型的图片容器
       // 新增：同时查找新结构中的 figure 标签，通常带有 svelte-xxxx 类名，且在 main.dvz-content 内
       const figureElements = document.querySelectorAll(
-        // Old structure
         'figure[data-component="article-image"], ' +
-        // Svelte-like structure
         'main.dvz-content figure[class*="svelte-"], ' +
-        // New "css--" lede image structure
         'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], ' +
-        // Fallback for other potential figures in new "css--" structure (more generic)
-        'main#dvz__mount section[class*="--root-container"] figure'
+        'main#dvz__mount section[class*="--root-container"] figure, ' +
+        // ★★★ 新增：新版文章正文内嵌入的 figure（结构: <p><figure><img><figcaption><p>...</p></figcaption></figure></p>）
+        '.body-content figure'
       );
 
       // 检查是否找到了符合条件的图片
@@ -649,6 +650,44 @@ function extractAndCopy() {
                 } else { // Fallback if specific span.css--credit is not found
                   caption = figcaptionElement.textContent.trim();
                 }
+              }
+            }
+          }
+
+          // Type 4: .body-content 内嵌入的裸 figure（Bloomberg 新版正文图）
+          else if (figure.matches('.body-content figure')) {
+            figureType = 'body_content_figure';
+            img = figure.querySelector('img');
+            if (img) {
+              // 优先使用 srcset 取最高分辨率
+              if (img.srcset) {
+                const srcsetEntries = img.srcset.split(',')
+                  .map(entry => {
+                    const parts = entry.trim().split(' ');
+                    const url = parts[0].trim();
+                    const width = parseInt(parts[parts.length - 1]) || 0;
+                    return { url, width };
+                  })
+                  .filter(entry => entry.url && entry.width > 0)
+                  .sort((a, b) => b.width - a.width);
+                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+              }
+              if (!highestResUrl && img.src) highestResUrl = img.src;
+
+              // figcaption 里一般是 <p>文本</p> 结构
+              const figcaptionElement = figure.querySelector('figcaption');
+              if (figcaptionElement) {
+                const captionP = figcaptionElement.querySelector('p');
+                if (captionP) {
+                  caption = captionP.textContent.trim();
+                } else {
+                  caption = figcaptionElement.textContent.trim();
+                }
+                // 去掉 "Source: xxx" / "Photographer: xxx" 这类署名
+                caption = caption
+                  .replace(/\s*Source\s*[:：].*$/i, '')
+                  .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
+                  .trim();
               }
             }
           }
@@ -2674,10 +2713,29 @@ function extractAndCopy() {
       .filter(t => t && t.length > 1 && !/^[•@∞]/.test(t))
       .join('\n\n');
 
-    // 2. 提取并下载图片 (后续逻辑保持不变, 因为现在 textContent 能被正确获取)
+    // 2. 提取并下载图片
     if (textContent) {
-      // 找到所有 figure
-      const figures = Array.from(container.querySelectorAll('figure'));
+      // 扩大搜索范围：同时覆盖 <header> 里的 lede 图片和 <article> 里的图片
+      // 优先用 .grid-full-inner-standard 作为图片搜索容器（它同时包含 header 和 article）
+      const imgContainer =
+        document.querySelector('.grid-full-inner-standard') ||
+        document.querySelector('main') ||
+        document.body;
+
+      // 收集所有 figure：包含文章正文里的，以及 header/topper 里的 lede 图片
+      let figures = Array.from(imgContainer.querySelectorAll('figure'));
+
+      // 额外兜底：显式抓取 lede-image（有些页面 figure 会嵌套在不同层级）
+      const ledeFig = document.querySelector(
+        'figure[data-testid="lede-image"], #topper-lede-art figure, #default-topper figure'
+      );
+      if (ledeFig && !figures.includes(ledeFig)) {
+        figures.unshift(ledeFig); // 头图放第一张
+      }
+
+      // 去重
+      figures = [...new Set(figures)];
+
       if (figures.length === 0) {
         chrome.runtime.sendMessage({ action: 'noImages', reason: 'No figure elements found.' });
       } else {
