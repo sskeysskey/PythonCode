@@ -11,11 +11,44 @@ from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
 
+# ==========================================
 # 抓取模式配置
+# ==========================================
 # 切换为 "score" 即可使用新规则
 SORT_TYPE = "score" 
-# 当 SORT_TYPE 为 "score" 时生效
-SCORE_YEAR = "2026" 
+
+# ==========================================
+# 多年份抓取任务配置 (核心修改点)
+# ==========================================
+# 你可以在这里自由配置多个年份，每个年份可以有完全不同的分类、是否启用(enabled)以及抓取页数(pages)
+TASKS = [
+    {
+        "year": "2026",
+        "categories": {
+            "Movie": {"id": 1, "enabled": True,  "pages": 2},
+            "Drama": {"id": 2, "enabled": True,  "pages": 2},
+            "Show":  {"id": 3, "enabled": True,  "pages": 2},
+            "Anime": {"id": 4, "enabled": True,  "pages": 2},
+        }
+    },
+    {
+        "year": "2025",
+        "categories": {
+            "Movie": {"id": 1, "enabled": True,  "pages": 4},
+            "Drama": {"id": 2, "enabled": True,  "pages": 2},
+            "Show":  {"id": 3, "enabled": False, "pages": 1},
+            "Anime": {"id": 4, "enabled": True,  "pages": 2},
+            # "Short": {"id": 30, "enabled": True, "pages": 1},
+        }
+    },
+    # {
+    #     "year": "2024",
+    #     "categories": {
+    #         "Movie": {"id": 1, "enabled": True,  "pages": 1},
+    #         "Drama": {"id": 2, "enabled": True,  "pages": 1},
+    #     }
+    # }
+]
 
 # 1. 创建一个全局的 Session 对象
 # 这样可以复用 TCP/TLS 连接，极大减少握手错误 (Error 35)
@@ -36,18 +69,9 @@ OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 
 # ==========================================
-# 新增：黑名单播放源配置，遇到这些源将直接跳过不抓取
+# 黑名单播放源配置，遇到这些源将直接跳过不抓取
 # ==========================================
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
-
-# 分类配置
-CATEGORIES = {
-    "Movie": {"id": 1, "enabled": True,  "pages": 2},
-    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-    "Show":  {"id": 3, "enabled": True, "pages": 2},
-    "Anime": {"id": 4, "enabled": True, "pages": 2},
-    # "Short": {"id": 30, "enabled": True, "pages": 1},
-}
 
 # 网络请求配置
 HEADERS = {
@@ -159,7 +183,7 @@ def download_cover(img_url: str, video_id: str) -> str:
         #     print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
         #     time.sleep(sleep_time)
         
-        # 每次失败后，强制等待 3 到 9 秒之间的随机时间
+        # 每次失败后，强制等待 4 到 9 秒之间的随机时间
         if i < RETRY_TIMES - 1:
             sleep_time = random.uniform(4.0, 9.0)
             print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
@@ -308,7 +332,10 @@ def parse_detail_page(html: str, name: str, url: str,
         "date": "",
         "alias": "",
         "intro": "",
-        "评分": [], # 默认初始化为空列表
+        "评分": {
+            "豆瓣": "",
+            "IMDB": ""
+        },
         "playlist": [],
     }
 
@@ -329,7 +356,6 @@ def parse_detail_page(html: str, name: str, url: str,
         video_id = extract_video_id(url, name)
         data["image"] = download_cover(img_url, video_id)
         time.sleep(SLEEP_BETWEEN_REQUESTS)
-    # ====== 封面图结束 ======
 
     info_block = soup.select_one("div.vod-info .info") or soup
 
@@ -361,7 +387,6 @@ def parse_detail_page(html: str, name: str, url: str,
         data["地区"] = regions[0] if regions else ""
 
     # 上映 / 又名
-    # --- 修改后的逻辑 ---
     for span in info_block.find_all("span"):
         text = span.get_text(" ", strip=True)
         
@@ -381,7 +406,6 @@ def parse_detail_page(html: str, name: str, url: str,
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
     if span:
-        scores_dict = {}
         for s in span.find_all("span"):
             t = clean_ws(s.get_text(" ", strip=True))
             if t:
@@ -395,11 +419,7 @@ def parse_detail_page(html: str, name: str, url: str,
                     
                     # 只有当分数不是 "--" 时，才写入字典
                     if score != "--":
-                        scores_dict[platform] = score
-        
-        # 如果字典里有有效数据，则赋值给 data["评分"]；否则保持默认的空列表 []
-        if scores_dict:
-            data["评分"] = scores_dict
+                        data["评分"][platform] = score
 
     # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
@@ -475,32 +495,32 @@ def parse_playlist(soup) -> list[dict]:
 # =============================================================
 # 主流程
 # =============================================================
-def build_list_url(cat_id: int, page: int) -> str:
+def build_list_url(cat_id: int, page: int, year: str) -> str:
     """
-    根据当前的 SORT_TYPE 配置，生成不同的 URL 结构
+    根据当前的 SORT_TYPE 配置和传入的 year，生成不同的 URL 结构
     """
     if SORT_TYPE == "score":
         # 新规律: https://www.pdy0.com/ms/1--score------2---2026.html
-        # 注意：这里的 2 是页码，2026 是年份
-        return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---{SCORE_YEAR}.html"
+        return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---{year}.html"
     else:
         # 原规律: https://www.pdy0.com/ms/1--hits------2---.html
+        # 如果不是 score 模式，通常不需要年份参数，这里保持原样
         return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
 
 
 def crawl_category(cat_name: str, cat_cfg: dict,
-                   existing_list: list, index_map: dict, all_data: dict) -> tuple[int, int]:
+                   existing_list: list, index_map: dict, all_data: dict, year: str) -> tuple[int, int]:
     """
     existing_list: final[cat_name]，原地修改（追加 / 替换）
     index_map:    index[cat_name]，{(name, path): info}，原地更新
     返回：(新增数量, 更新数量)
     """
-    print(f"\n=== 开始抓取分类: {cat_name} (id={cat_cfg['id']}, pages={cat_cfg['pages']}) ===")
+    print(f"\n=== 开始抓取分类: {cat_name} (id={cat_cfg['id']}, pages={cat_cfg['pages']}, year={year}) ===")
     new_count = 0
     updated_count = 0
 
     for page in range(1, cat_cfg["pages"] + 1):
-        list_url = build_list_url(cat_cfg["id"], page)
+        list_url = build_list_url(cat_cfg["id"], page, year)
         print(f"\n[列表页] {list_url}")
         html = fetch(list_url)
         time.sleep(SLEEP_BETWEEN_REQUESTS)
@@ -569,7 +589,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     "info": item["info"], 
                     "image": detail.get("image", "")
                 }
-                # --- 【关键修改】在此处实时保存 ---
+                # 在此处实时保存
                 save_data(all_data) 
                 print(f"     [已实时保存到磁盘]")
             except Exception as e:
@@ -585,21 +605,29 @@ def main():
     print(f"已有数据分类数: {len(final)}；"
           f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")
 
-    # 2. 逐分类抓取（增量追加）
-    for cat_name, cat_cfg in CATEGORIES.items():
-        # 确保分类键存在
-        if cat_name not in final: final[cat_name] = []
-        if cat_name not in index: index[cat_name] = {}
+    # 2. 遍历多任务配置（按年份和分类抓取）
+    for task in TASKS:
+        year = task.get("year", "")
+        categories_cfg = task.get("categories", {})
+        
+        print(f"\n==================================================")
+        print(f"🚀 开始执行年份抓取任务: {year}")
+        print(f"==================================================")
 
-        if not cat_cfg.get("enabled"):
-            print(f"跳过分类: {cat_name}（未启用）")
-            continue
+        for cat_name, cat_cfg in categories_cfg.items():
+            # 确保分类键存在
+            if cat_name not in final: final[cat_name] = []
+            if cat_name not in index: index[cat_name] = {}
 
-        # 传入 final 对象，以便在子函数中实时保存
-        new_n, upd_n = crawl_category(cat_name, cat_cfg, final[cat_name], index[cat_name], final)
-        print(f"  → 分类 {cat_name} 新增 {new_n} 条，更新 {upd_n} 条")
+            if not cat_cfg.get("enabled"):
+                print(f"跳过分类: {cat_name}（在 {year} 年配置中未启用）")
+                continue
 
-    print(f"\n✅ 全部抓取任务结束。")
+            # 传入 final 对象，以便在子函数中实时保存，同时传入 year
+            new_n, upd_n = crawl_category(cat_name, cat_cfg, final[cat_name], index[cat_name], final, year)
+            print(f"  → 年份 {year} 分类 {cat_name} 新增 {new_n} 条，更新 {upd_n} 条")
+
+    print(f"\n✅ 全部年份抓取任务结束。")
 
 
 if __name__ == "__main__":

@@ -3,40 +3,83 @@ import argparse
 import pyperclip
 
 
+# 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
+REGION_FILTER_CATEGORIES = {'Drama'}
+
+# 命中任一关键字就跳过该项目
+# 只写 '大陆' 可避免误伤 "中国香港" / "中国台湾"；
+# 如果想把 "中国"、"中国大陆" 都算上，就加 '中国'
+REGION_BLOCK_KEYWORDS = ('大陆', '中国')
+
+def get_scan_episodes(episodes, category, show_last_n):
+    """
+    根据分类返回"本次实际要扫描的 episodes 列表"。
+    - Show: 只取末尾 show_last_n 条（不足则全拿）
+    - 其他分类: 原样返回
+    """
+    if category == 'Show' and show_last_n > 0:
+        return episodes[-show_last_n:]
+    return episodes
+
+
 def is_channel_viable(episodes, blacklist_url):
     """
-    判断一个 channel 是否"可用":
+    判断"要扫描的那段 episodes"是否可用:
     - 至少要有一个 episode
-    - 所有 episode 都不在黑名单里（保证 mapping 能成一套完整的）
+    - 所有待扫 episode 都不在黑名单里
     """
     if not episodes:
         return False
     return all(url not in blacklist_url for url in episodes)
 
 
-def pick_playlists_to_scan(playlists, blacklist_url, only_first_channel, item_label):
+def pick_playlists_to_scan(playlists, blacklist_url, only_first_channel,
+                           item_label, category, show_last_n):
     """
     按顺序筛选 channel：
-    - only_first_channel=True：返回第一个可用 channel（列表形式，可能为空）
-    - only_first_channel=False：返回所有可用 channel
-    过程中把被跳过的 channel 打印出来，便于排查。
+    - only_first_channel=True: 返回第一个可用 channel
+    - only_first_channel=False: 返回所有可用 channel
+    返回列表的每一项是 (playlist, scan_episodes) 元组，
+    其中 scan_episodes 是"实际要扫描的 url 列表"。
     """
     viable = []
     for idx, playlist in enumerate(playlists, start=1):
-        episodes = playlist.get('episodes', [])
-        if not episodes:
+        episodes_all = playlist.get('episodes', [])
+        scan_episodes = get_scan_episodes(episodes_all, category, show_last_n)
+
+        if not scan_episodes:
             print(f"  [跳过] {item_label} 第 {idx} 个 channel 为空")
             continue
-        if not is_channel_viable(episodes, blacklist_url):
-            print(f"  [跳过] {item_label} 第 {idx} 个 channel 含黑名单链接，顺延到下一个")
+        if not is_channel_viable(scan_episodes, blacklist_url):
+            print(f"  [跳过] {item_label} 第 {idx} 个 channel 的待扫片段含黑名单链接，顺延到下一个")
             continue
 
-        viable.append(playlist)
+        viable.append((playlist, scan_episodes))
         if only_first_channel:
-            # 只需要第一个可用的，拿到就停
-            print(f"  [采用] {item_label} 第 {idx} 个 channel")
+            if category == 'Show':
+                print(f"  [采用] {item_label} 第 {idx} 个 channel "
+                      f"(Show 末尾 {len(scan_episodes)} 条，原共 {len(episodes_all)} 集)")
+            else:
+                print(f"  [采用] {item_label} 第 {idx} 个 channel (共 {len(scan_episodes)} 集)")
             break
     return viable
+
+def should_skip_by_region(item, category,
+                         filter_categories=REGION_FILTER_CATEGORIES,
+                         blocked_keywords=REGION_BLOCK_KEYWORDS):
+    """
+    只有当 category 在 filter_categories 中时才进行地区过滤。
+    命中任一关键字则返回 True（=需要跳过）。
+    """
+    if category not in filter_categories:
+        return False
+
+    region = item.get('地区', '')
+    if isinstance(region, list):
+        region = ''.join(region)
+    region = str(region)
+
+    return any(kw in region for kw in blocked_keywords)
 
 
 def main():
@@ -49,8 +92,15 @@ def main():
         action='store_true',
         help='扫描每个项目下所有可用 channel（默认只扫每个项目的第一个可用 channel）'
     )
+    parser.add_argument(
+        '--show-last-n',
+        type=int,
+        default=5,
+        help='Show 分类每个 channel 只扫末尾 N 条（默认 5；设为 0 则不裁剪）'
+    )
     args = parser.parse_args()
     ONLY_FIRST_CHANNEL = not args.all_channels
+    SHOW_LAST_N = args.show_last_n
 
     # 定义文件路径
     ovideos_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
@@ -92,33 +142,37 @@ def main():
 
     mode_desc = "仅扫描每个项目的第一个可用 channel" if ONLY_FIRST_CHANNEL else "扫描每个项目的所有可用 channel"
     print(f"[模式] {mode_desc}")
+    print(f"[Show 裁剪] 每个 channel 只扫末尾 {SHOW_LAST_N} 条"
+          if SHOW_LAST_N > 0 else "[Show 裁剪] 关闭（扫全部）")
 
     # 4. 遍历 OVideos.json 提取 episodes 里的 url
-    # OVideos.json 的顶层是分类（如 "Movie", "Drama"）
+    # OVideos.json 的顶层是分类（如 "Movie", "Show"）
     for category, items in ovideos.items():
         for item in items:
+            # 用于日志的项目标识
+            item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
+            
+            # ====== 地区过滤（仅对配置中的分类生效）======
+            if should_skip_by_region(item, category):
+                print(f"  [跳过项目] {item_label} 地区为「{item.get('地区')}」，按 {category} 过滤规则跳过")
+                continue
+
             # 获取 playlist 列表，如果没有则默认为空列表
             playlists = item.get('playlist', [])
 
-            # 用于日志的项目标识
-            item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
-
             # 先按规则筛出要扫描的 channel
             playlists_to_scan = pick_playlists_to_scan(
-                playlists, blacklist_url, ONLY_FIRST_CHANNEL, item_label
+                playlists, blacklist_url, ONLY_FIRST_CHANNEL,
+                item_label, category, SHOW_LAST_N
             )
 
             if not playlists_to_scan:
                 print(f"  [放弃项目] {item_label} 所有 channel 均不可用，跳过该项目")
                 continue
 
-            for playlist in playlists_to_scan:
-                # 获取 episodes 列表
-                episodes = playlist.get('episodes', [])
-                for episode_url in episodes:
-                    # 注意：到这里的 channel 已经保证没有黑名单链接，
-                    # 所以这里不再需要 blacklist 检查。
-
+            for playlist, scan_episodes in playlists_to_scan:
+                for episode_url in scan_episodes:
+                    # 此时 scan_episodes 已保证无黑名单链接
                     if episode_url in url_mapping:
                         # 如果找到了匹配的（冒号左边存在）
                         if url_mapping[episode_url] == "":
