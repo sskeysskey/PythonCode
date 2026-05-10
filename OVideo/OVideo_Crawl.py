@@ -3,13 +3,22 @@ import os
 import time
 import random
 import re
-from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
+
+import ssl
+from urllib3.util.ssl_ import create_urllib3_context
+
+# 标准 requests 的 Session（作为 curl_cffi 失败时的兜底）
+_std_session = requests.Session()
+
+# 候选 impersonate 列表，失败时轮换
+_IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"]
+
 
 # ==========================================
 # 抓取模式配置
@@ -116,79 +125,96 @@ def get_url_path(url: str) -> str:
 
 def download_cover(img_url: str, video_id: str) -> str:
     """
-    使用 curl_cffi Session 下载图片，增加稳定性和重试退避机制
+    图片下载 - 多策略降级：
+      1) curl_cffi 短连接（不复用 Session）+ 轮换 impersonate
+      2) 协议切换（https <-> http）
+      3) 标准 requests 兜底
     """
     if not img_url:
         return ""
 
     ensure_dir(COVER_IMAGE_DIR)
 
-    # 取扩展名（容错处理 query string）
     base = img_url.split("?")[0].split("#")[0]
     ext = os.path.splitext(base)[1].lower()
     if ext not in ALLOWED_IMG_EXT:
         ext = ".jpg"
 
-    # —— 文件名策略：用视频 ID ——
     filename = f"{video_id}{ext}"
-
     filepath = os.path.join(COVER_IMAGE_DIR, filename)
 
-    # 如果文件已存在且大小大于0，直接跳过
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
         return filename
 
     headers = dict(HEADERS)
     headers["Referer"] = DETAIL_BASE_URL
+    headers["Connection"] = "close"  # 关键：不要 Keep-Alive
 
-    for i in range(RETRY_TIMES):
+    # 构造 URL 候选列表：原始 + 协议切换
+    url_candidates = [img_url]
+    if img_url.startswith("https://"):
+        url_candidates.append("http://" + img_url[8:])
+    elif img_url.startswith("http://"):
+        url_candidates.append("https://" + img_url[7:])
+
+    def _save(content: bytes) -> bool:
+        if not content:
+            return False
+        with open(filepath, "wb") as f:
+            f.write(content)
+        if os.path.getsize(filepath) > 0:
+            return True
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return False
+
+    # ---------- 策略 1：curl_cffi 短连接 + 轮换指纹 ----------
+    for attempt in range(RETRY_TIMES):
+        impersonate = _IMPERSONATE_POOL[attempt % len(_IMPERSONATE_POOL)]
+        for url in url_candidates:
+            try:
+                # 每次新建一个临时 session，用完即弃，避免连接池污染
+                resp = c_requests.get(
+                    url,
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT,
+                    impersonate=impersonate,
+                    verify=False,          # 容错：部分 CDN 证书链不完整
+                )
+                if resp.status_code == 200 and _save(resp.content):
+                    print(f"     [封面已下载|curl_cffi/{impersonate}] {filename}")
+                    return filename
+                else:
+                    print(f"     [curl_cffi HTTP {resp.status_code}] {url}")
+            except Exception as e:
+                msg = str(e)
+                # 只打印关键信息，避免刷屏
+                short = msg.split("See https")[0].strip()
+                print(f"     [curl_cffi 失败 {attempt+1}/{RETRY_TIMES} impersonate={impersonate}] {short}")
+
+        # 轻量退避
+        time.sleep(random.uniform(1.5, 3.0))
+
+    # ---------- 策略 2：标准 requests 兜底 ----------
+    print("     [降级] 切换到标准 requests 库重试...")
+    for url in url_candidates:
         try:
-            # 2. 使用全局的 session 发起请求，而不是 c_requests.get
-            resp = http_session.get(
-                img_url, 
+            resp = _std_session.get(
+                url,
                 headers=headers,
-                timeout=REQUEST_TIMEOUT
+                timeout=REQUEST_TIMEOUT,
+                verify=False,
+                stream=False,
             )
-            
-            if resp.status_code == 200:
-                # 确保完整接收数据后再写入，减少 Error 23 (写入失败) 的概率
-                content = resp.content
-                if content:
-                    with open(filepath, "wb") as f:
-                        f.write(content)
-                        
-                    if os.path.getsize(filepath) > 0:
-                        print(f"     [封面已下载] {filename}")
-                        return filename
-                
-                # 如果内容为空或文件大小为0，删除损坏的文件并重试
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+            if resp.status_code == 200 and _save(resp.content):
+                print(f"     [封面已下载|requests] {filename}")
+                return filename
             else:
-                print(f"     [图片HTTP {resp.status_code}] {img_url}")
-                
+                print(f"     [requests HTTP {resp.status_code}] {url}")
         except Exception as e:
-            print(f"     [图片下载失败 {i+1}/{RETRY_TIMES}] {e}")
-            
-        # 3. 失败后的随机退避策略 (Random Exponential Backoff)
-        # 避免立刻重试再次撞上服务器的限流防火墙
-        # if i < RETRY_TIMES - 1:
-        #     sleep_time = random.uniform(1.0, 3.0) * (i + 1)
-        #     time.sleep(sleep_time)
+            print(f"     [requests 失败] {e}")
 
-        # --- 修改后的退避逻辑 ---
-        # if i < RETRY_TIMES - 1:
-        #     # 基础等待时间 2-5 秒，随重试次数指数增加
-        #     sleep_time = random.uniform(2.0, 5.0) * (2 ** i)
-        #     print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
-        #     time.sleep(sleep_time)
-        
-        # 每次失败后，强制等待 4 到 9 秒之间的随机时间
-        if i < RETRY_TIMES - 1:
-            sleep_time = random.uniform(4.0, 9.0)
-            print(f"     [退避] 等待 {sleep_time:.2f} 秒后重试...")
-            time.sleep(sleep_time)
-            
+    print(f"     [❌ 最终失败] {img_url}")
     return ""
 
 
