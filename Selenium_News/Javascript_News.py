@@ -6,7 +6,7 @@ import subprocess
 import webbrowser
 import pyautogui
 import numpy as np
-import platform # <--- 新增
+import platform
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup

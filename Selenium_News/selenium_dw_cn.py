@@ -12,7 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException
 import platform
 
 # ================= 配置区域 (DW 专用) =================
@@ -89,7 +89,9 @@ def main():
     new_rows = []
     new_rows1 = []
     old_content = []
-
+    old_content_loaded = False   # ✅ 新增：是否成功读取旧数据
+    scrape_success = False        # ✅ 新增：是否成功抓取
+    
     try:
         print("正在访问 DW CN...")
         driver.get("https://www.dw.com/zh/")
@@ -132,8 +134,13 @@ def main():
                                         l = cols[1].find('a')['href'] if cols[1].find('a') else None
                                         old_content.append([date_str, t, l])
                                 except: continue
+                old_content_loaded = True   # ✅ 标记成功
             except Exception as e:
                 print(f"读取旧文件警告: {e}")
+                old_content_loaded = False  # ✅ 标记失败
+        else:
+            # 文件不存在，视为首次运行
+            old_content_loaded = True
 
         # ================= 4. 抓取与提取 (增强版) =================
         # DW 链接特征：包含 /a- 且后面跟数字
@@ -180,6 +187,7 @@ def main():
             except Exception:
                 continue
 
+        scrape_success = True   # ✅ 走到最后才算成功
         print(f"解析完成，获得 {len(raw_data_list)} 条原始数据，开始逻辑过滤...")
 
         # --- 步骤 C: 逻辑过滤 (增强屏蔽版) ---
@@ -245,9 +253,37 @@ def main():
 
     except Exception as e:
         print("抓取错误:", e)
-
+        scrape_success = False
     finally:
         driver.quit()
+    
+    # ================= 5. 文件写入（加保护）=================
+    # 🚨 熔断：只有旧数据读取成功 + 抓取成功，才允许覆盖文件
+    if not old_content_loaded:
+        print("❌ 旧数据未能成功读取，为保护历史数据，拒绝写入！")
+        return
+    
+    if not scrape_success:
+        print("❌ 本次抓取失败，为保护历史数据，拒绝写入！")
+        return
+    
+    # 即使抓取成功但一条新数据都没有，也要谨慎
+    if not new_rows and not old_content:
+        print("❌ 新旧数据都为空，拒绝写入空文件！")
+        return
+    
+    import shutil
+
+    # 在写入之前
+    if os.path.exists(NEW_HTML_PATH):
+        backup_path = NEW_HTML_PATH + f".bak_{formatted_datetime}"
+        shutil.copy2(NEW_HTML_PATH, backup_path)
+        print(f"📦 已备份到: {backup_path}")
+        
+        # 可选：只保留最近 5 个备份
+        backups = sorted(glob.glob(NEW_HTML_PATH + ".bak_*"))
+        for old_bak in backups[:-5]:
+            os.remove(old_bak)
 
     # ================= 5. 文件写入 =================
     os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)

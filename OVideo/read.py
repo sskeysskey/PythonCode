@@ -11,6 +11,12 @@ REGION_FILTER_CATEGORIES = {'Drama'}
 # 如果想把 "中国"、"中国大陆" 都算上，就加 '中国'
 REGION_BLOCK_KEYWORDS = ('大陆', '中国')
 
+# 评分过滤阈值：豆瓣或 IMDB 任一 >= 此值即通过
+RATING_THRESHOLD = 6.5
+# 参与评分比较的字段（按顺序尝试）
+RATING_FIELDS = ('豆瓣', 'IMDB')
+
+
 def get_scan_episodes(episodes, category, show_last_n):
     """
     根据分类返回"本次实际要扫描的 episodes 列表"。
@@ -64,6 +70,7 @@ def pick_playlists_to_scan(playlists, blacklist_url, only_first_channel,
             break
     return viable
 
+
 def should_skip_by_region(item, category,
                          filter_categories=REGION_FILTER_CATEGORIES,
                          blocked_keywords=REGION_BLOCK_KEYWORDS):
@@ -82,6 +89,33 @@ def should_skip_by_region(item, category,
     return any(kw in region for kw in blocked_keywords)
 
 
+def _parse_rating(value):
+    """把评分值解析成 float；空串/None/非法值 -> None"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
+                         rating_fields=RATING_FIELDS):
+    """
+    豆瓣或 IMDB 任一 >= threshold 即通过（返回 False）；
+    全部为空或低于阈值 -> 跳过（返回 True）。
+    """
+    ratings = item.get('评分', {}) or {}
+    for field in rating_fields:
+        score = _parse_rating(ratings.get(field))
+        if score is not None and score >= threshold:
+            return False
+    return True
+
+
 def main():
     # ============ 解析命令行参数 ============
     parser = argparse.ArgumentParser(
@@ -98,9 +132,16 @@ def main():
         default=5,
         help='Show 分类每个 channel 只扫末尾 N 条（默认 5；设为 0 则不裁剪）'
     )
+    parser.add_argument(
+        '--rating-threshold',
+        type=float,
+        default=RATING_THRESHOLD,
+        help=f'评分阈值，豆瓣或 IMDB 任一 >= 此值才处理（默认 {RATING_THRESHOLD}）'
+    )
     args = parser.parse_args()
     ONLY_FIRST_CHANNEL = not args.all_channels
     SHOW_LAST_N = args.show_last_n
+    rating_threshold = args.rating_threshold
 
     # 定义文件路径
     ovideos_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
@@ -144,6 +185,7 @@ def main():
     print(f"[模式] {mode_desc}")
     print(f"[Show 裁剪] 每个 channel 只扫末尾 {SHOW_LAST_N} 条"
           if SHOW_LAST_N > 0 else "[Show 裁剪] 关闭（扫全部）")
+    print(f"[评分过滤] 豆瓣或 IMDB 任一 >= {rating_threshold} 才处理")
 
     # 4. 遍历 OVideos.json 提取 episodes 里的 url
     # OVideos.json 的顶层是分类（如 "Movie", "Show"）
@@ -151,12 +193,19 @@ def main():
         for item in items:
             # 用于日志的项目标识
             item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
-            
+
             # ====== 地区过滤（仅对配置中的分类生效）======
             if should_skip_by_region(item, category):
                 print(f"  [跳过项目] {item_label} 地区为「{item.get('地区')}」，按 {category} 过滤规则跳过")
                 continue
 
+            # ====== 评分过滤：豆瓣或 IMDB 任一 >= 阈值才处理 ======
+            if should_skip_by_rating(item, threshold=rating_threshold):
+                ratings = item.get('评分', {}) or {}
+                print(f"  [跳过项目] {item_label} 评分不达标"
+                      f"（豆瓣={ratings.get('豆瓣', '')!r}, IMDB={ratings.get('IMDB', '')!r}，阈值={rating_threshold}）")
+                continue
+            
             # 获取 playlist 列表，如果没有则默认为空列表
             playlists = item.get('playlist', [])
 
@@ -195,7 +244,6 @@ def main():
                         with open(mapping_path, 'w', encoding='utf-8') as f:
                             # indent=4 保证格式化输出，ensure_ascii=False 保证中文字符正常显示（虽然这里全是url）
                             json.dump(url_mapping, f, indent=4, ensure_ascii=False)
-
                         print(f"发现新链接，已添加到 mapping 文件并复制到剪贴板:\n{episode_url}")
                         return # 结束程序
 
