@@ -237,64 +237,65 @@ def close_browser_tabs(num_tabs):
 def open_webpage_and_monitor_bloomberg():
     clean_files("bloomberg")
     print("Opening Bloomberg main page...")
-    webbrowser.open("https://www.bloomberg.com/asia")
+    # webbrowser.open("https://www.bloomberg.com/asia")
+    webbrowser.open("https://www.bloomberg.com")
     
     print("Waiting for first file download...")
     while count_files("bloomberg") < 1:
         time.sleep(2)
     print("\nFirst file detected!")
     
-    print("Opening Bloomberg Asia page...")
-    template_paths = {
-        "asia": os.path.join(RESOURCE_DIR, "scraper_asia.png")
-    }
+    # print("Opening Bloomberg Asia page...")
+    # template_paths = {
+    #     "asia": os.path.join(RESOURCE_DIR, "scraper_asia.png")
+    # }
     
-    templates = {}
-    for key, path in template_paths.items():
-        if os.path.exists(path):
-            templates[key] = cv2.imread(path, cv2.IMREAD_COLOR)
-        else:
-            print(f"Warning: Template not found at {path}")
+    # templates = {}
+    # for key, path in template_paths.items():
+    #     if os.path.exists(path):
+    #         templates[key] = cv2.imread(path, cv2.IMREAD_COLOR)
+    #     else:
+    #         print(f"Warning: Template not found at {path}")
     
-    found_asia_image = False
-    timeout_stop = time.time() + 10
+    # found_asia_image = False
+    # timeout_stop = time.time() + 10
     
-    if "asia" in templates:
-        while not found_asia_image and time.time() < timeout_stop:
-            location_asia, shape_asia = find_image_on_screen(templates["asia"])
-            if location_asia:
-                # 计算中心点 (物理像素 -> 逻辑像素)
-                phys_center_x = location_asia[0] + shape_asia[1] // 2
-                phys_center_y = location_asia[1] + shape_asia[0] // 2
+    # if "asia" in templates:
+    #     while not found_asia_image and time.time() < timeout_stop:
+    #         location_asia, shape_asia = find_image_on_screen(templates["asia"])
+    #         if location_asia:
+    #             # 计算中心点 (物理像素 -> 逻辑像素)
+    #             phys_center_x = location_asia[0] + shape_asia[1] // 2
+    #             phys_center_y = location_asia[1] + shape_asia[0] // 2
                 
-                # 动态缩放
-                center_x = int(phys_center_x / SCALE_FACTOR)
-                center_y = int(phys_center_y / SCALE_FACTOR)
+    #             # 动态缩放
+    #             center_x = int(phys_center_x / SCALE_FACTOR)
+    #             center_y = int(phys_center_y / SCALE_FACTOR)
                 
-                # 1. 点击找到的 asia 图片位置
-                pyautogui.click(center_x, center_y)
-                found_asia_image = True
-                print(f"找到asia图片位置: {location_asia} (Logic: {center_x}, {center_y})")
+    #             # 1. 点击找到的 asia 图片位置
+    #             pyautogui.click(center_x, center_y)
+    #             found_asia_image = True
+    #             print(f"找到asia图片位置: {location_asia} (Logic: {center_x}, {center_y})")
                 
-                # ================= 新增逻辑开始 =================
-                time.sleep(0.8)                  # 间隔 0.5 秒
+    #             # ================= 新增逻辑开始 =================
+    #             time.sleep(0.8)                  # 间隔 0.5 秒
                 
-                # 2. 鼠标向下移动 40 像素 (逻辑像素)
-                pyautogui.move(0, 40)            
+    #             # 2. 鼠标向下移动 40 像素 (逻辑像素)
+    #             pyautogui.move(0, 40)            
                 
-                time.sleep(0.8)                  # 间隔 0.5 秒
+    #             time.sleep(0.8)                  # 间隔 0.5 秒
                 
-                # 3. 执行点击操作
-                pyautogui.click()                
+    #             # 3. 执行点击操作
+    #             pyautogui.click()                
                 
-                time.sleep(0.5)                  # 间隔 0.5 秒，防止操作过快
-                # ================= 新增逻辑结束 =================
-            else:
-                time.sleep(1)
+    #             time.sleep(0.5)                  # 间隔 0.5 秒，防止操作过快
+    #             # ================= 新增逻辑结束 =================
+    #         else:
+    #             time.sleep(1)
     
-    print("Waiting for second file download...")
-    while count_files("bloomberg") < 2:
-        time.sleep(2)
+    # print("Waiting for second file download...")
+    # while count_files("bloomberg") < 2:
+    #     time.sleep(2)
     print("\nAll Bloomberg files downloaded.")
     close_browser_tabs(1)
 

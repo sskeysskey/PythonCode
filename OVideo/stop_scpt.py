@@ -9,7 +9,7 @@ def create_file_on_desktop():
     desktop_path = home_dir / "Desktop"
     
     # 3. 构建文件的完整路径
-    file_path = desktop_path / "stop_downie.txt"
+    file_path = desktop_path / "stop_scpt.txt"
     
     try:
         # 4. 创建并写入文件
