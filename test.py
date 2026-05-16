@@ -2,39 +2,64 @@ import json
 import os
 
 # 定义文件路径
-file_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
+mapping_file_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping.json'
+blacklist_file_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blacklist_url.json'
 
-def remove_time_field(file_path):
-    # 1. 检查文件是否存在
-    if not os.path.exists(file_path):
-        print(f"错误：找不到文件 {file_path}")
+def process_migration():
+    # 1. 加载数据
+    try:
+        with open(mapping_file_path, 'r', encoding='utf-8') as f:
+            mapping_data = json.load(f)
+        with open(blacklist_file_path, 'r', encoding='utf-8') as f:
+            blacklist_data = json.load(f)
+    except Exception as e:
+        print(f"读取文件失败: {e}")
         return
 
-    try:
-        # 2. 读取 JSON 文件
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+    moved_items = []
+    keys_to_delete = []
 
-        # 3. 定义需要处理的键名（Movie 和 Drama）
-        categories = ['Movie', 'Drama', 'Show', 'Anime']
-
-        # 4. 遍历并删除 time 字段
-        for category in categories:
-            if category in data:
-                for item in data[category]:
-                    if 'time' in item:
-                        del item['time']
-        
-        # 5. 将修改后的数据写回文件
-        # ensure_ascii=False 保证中文正常显示，indent=4 让 JSON 格式美观
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+    # 2. 遍历 blacklist 进行筛选
+    for key, value in blacklist_data.items():
+        # 确保 value 是列表且有内容
+        if isinstance(value, list) and len(value) > 0:
+            url = value[0]
             
-        print(f"成功！已从 {file_path} 中删除了所有 'time' 字段。")
+            # 条件判断：包含 "/p.bvvvvv" 且 不包含 "%"
+            if "/p.bvvvvv" in url and "%" not in url:
+                # 3. 标记为移动
+                mapping_data[key] = value
+                keys_to_delete.append(key)
+                moved_items.append({
+                    "key": key,
+                    "url": url,
+                    "title": value[1] if len(value) > 1 else "无标题"
+                })
 
-    except Exception as e:
-        print(f"发生错误: {e}")
+    # 4. 执行删除操作
+    for key in keys_to_delete:
+        del blacklist_data[key]
 
-# 执行函数
+    # 5. 输出日志
+    print("--- 迁移日志 ---")
+    if not moved_items:
+        print("没有找到符合条件的条目进行迁移。")
+    else:
+        for item in moved_items:
+            print(f"已迁移: {item['title']}")
+            print(f"  Key: {item['key']}")
+            print(f"  URL: {item['url']}")
+            print("-" * 20)
+    print(f"共迁移 {len(moved_items)} 条数据。")
+
+    # 6. 保存回文件
+    with open(mapping_file_path, 'w', encoding='utf-8') as f:
+        json.dump(mapping_data, f, ensure_ascii=False, indent=4)
+    
+    with open(blacklist_file_path, 'w', encoding='utf-8') as f:
+        json.dump(blacklist_data, f, ensure_ascii=False, indent=4)
+    
+    print("\n文件已更新并保存。")
+
 if __name__ == "__main__":
-    remove_time_field(file_path)
+    process_migration()

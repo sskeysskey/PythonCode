@@ -6,6 +6,8 @@ import re
 from urllib.parse import urljoin, urlparse
 
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
@@ -21,42 +23,85 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 
 
 # ==========================================
-# 抓取模式配置
+# 抓取任务总配置
 # ==========================================
-# 切换为 "score" 即可使用新规则
-SORT_TYPE = "score" 
-
-# ==========================================
-# 多年份抓取任务配置 (核心修改点)
-# ==========================================
-# 你可以在这里自由配置多个年份，每个年份可以有完全不同的分类、是否启用(enabled)以及抓取页数(pages)
+# 顺序就是执行顺序：先跑 score,再跑 hits
+# 每组有独立的 enabled 开关,关闭后整组跳过
 TASKS = [
     {
-        "year": "2026",
-        "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 2},
-            "Drama": {"id": 2, "enabled": True,  "pages": 2},
-            "Show":  {"id": 3, "enabled": True,  "pages": 2},
-            "Anime": {"id": 4, "enabled": True,  "pages": 2},
-        }
+        "sort_type": "score",
+        "enabled": True,           # ← score 模式总开关
+        "jobs": [
+            {
+                "year": "2026",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+                    "Show":  {"id": 3, "enabled": True,  "pages": 2},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
+                }
+            },
+            {
+                "year": "2025",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 4},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
+                }
+            },
+            {
+                "year": "2024",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 4},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
+                }
+            },
+            # --- 新增：score 模式，不需要年份 ---
+            {
+                "year": "",  # 这里留空
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True, "pages": 4},
+                    "Drama": {"id": 2, "enabled": True, "pages": 3},
+                    "Show":  {"id": 3, "enabled": True, "pages": 2},
+                    "Anime": {"id": 4, "enabled": True, "pages": 2},
+                }
+            },
+        ]
     },
     {
-        "year": "2025",
-        "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 4},
-            "Drama": {"id": 2, "enabled": True,  "pages": 2},
-            "Show":  {"id": 3, "enabled": False, "pages": 1},
-            "Anime": {"id": 4, "enabled": True,  "pages": 2},
-            # "Short": {"id": 30, "enabled": True, "pages": 1},
-        }
+        "sort_type": "hits",
+        "enabled": True,           # ← hits 模式总开关
+        "jobs": [
+            {
+                # hits 模式不需要年份,留空字符串即可
+                "year": "",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
+                }
+            },
+        ]
     },
-    # {
-    #     "year": "2024",
-    #     "categories": {
-    #         "Movie": {"id": 1, "enabled": True,  "pages": 1},
-    #         "Drama": {"id": 2, "enabled": True,  "pages": 1},
-    #     }
-    # }
+    {
+        "sort_type": "time",
+        "enabled": True,           # ← time 模式总开关
+        "jobs": [
+            {
+                "year": "",        # time 模式也不需要年份
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
+                }
+            },
+        ]
+    },
 ]
 
 # 1. 创建一个全局的 Session 对象
@@ -67,9 +112,45 @@ http_session = c_requests.Session(
     http_version=1  # 强制降级到 HTTP/1.1，解决 WRONG_VERSION_NUMBER 报错
 )
 
+# ============== 自定义 TLS Adapter:强制更宽松的 SSL 配置 ==============
+class TLSAdapter(requests.adapters.HTTPAdapter):
+    """
+    解决某些老旧 CDN 因 SECLEVEL 或 TLS 版本问题导致的 WRONG_VERSION_NUMBER。
+    通过降级 cipher 安全等级、放宽 TLS 版本范围,提高兼容性。
+    """
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        except ssl.SSLError:
+            pass
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1
+            ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+        except Exception:
+            pass
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+
+# 用于"自定义 TLS"降级策略的 session
+_tls_session = requests.Session()
+_tls_session.mount("https://", TLSAdapter())
+_tls_session.mount("http://", requests.adapters.HTTPAdapter())
+
+
+# ============== 第三方图片代理服务(最强兜底) ==============
+# 这些代理服务器和你本机不在同一个网络环境,可以绕过本地/CDN 对你 IP 的封锁
+IMAGE_PROXY_TEMPLATES = [
+    "https://images.weserv.nl/?url={host_and_path}",
+    "https://wsrv.nl/?url={host_and_path}",
+]
+
 # 配置区域
 # 列表页所在域名
-LIST_BASE_URL = "https://www.pdy0.com"
+LIST_BASE_URL = "https://www.pdy1.com"
 # 详情页所在域名
 DETAIL_BASE_URL = "https://www.pys2.com"
 # 输出 JSON 文件路径
@@ -125,10 +206,10 @@ def get_url_path(url: str) -> str:
 
 def download_cover(img_url: str, video_id: str) -> str:
     """
-    图片下载 - 多策略降级：
-      1) curl_cffi 短连接（不复用 Session）+ 轮换 impersonate
-      2) 协议切换（https <-> http）
-      3) 标准 requests 兜底
+    图片下载 - 新策略(节省时间):
+      1) curl_cffi 单次尝试(chrome 指纹)
+      2) 失败立即走第三方图片代理(经验证最稳)
+      3) 代理也失败再回头试 TLS 降级 / 标准 requests / 多 impersonate 重试
     """
     if not img_url:
         return ""
@@ -148,9 +229,9 @@ def download_cover(img_url: str, video_id: str) -> str:
 
     headers = dict(HEADERS)
     headers["Referer"] = DETAIL_BASE_URL
-    headers["Connection"] = "close"  # 关键：不要 Keep-Alive
+    headers["Connection"] = "close"
 
-    # 构造 URL 候选列表：原始 + 协议切换
+    # 协议切换候选
     url_candidates = [img_url]
     if img_url.startswith("https://"):
         url_candidates.append("http://" + img_url[8:])
@@ -158,7 +239,7 @@ def download_cover(img_url: str, video_id: str) -> str:
         url_candidates.append("https://" + img_url[7:])
 
     def _save(content: bytes) -> bool:
-        if not content:
+        if not content or len(content) < 200:
             return False
         with open(filepath, "wb") as f:
             f.write(content)
@@ -168,51 +249,103 @@ def download_cover(img_url: str, video_id: str) -> str:
             os.remove(filepath)
         return False
 
-    # ---------- 策略 1：curl_cffi 短连接 + 轮换指纹 ----------
+    # ---------- 策略 1:curl_cffi 单次快速尝试 ----------
+    for url in url_candidates:
+        try:
+            resp = c_requests.get(
+                url,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+                impersonate="chrome",
+                verify=False,
+            )
+            if resp.status_code == 200 and _save(resp.content):
+                print(f"     [封面已下载|curl_cffi/chrome] {filename}")
+                return filename
+            else:
+                print(f"     [curl_cffi HTTP {resp.status_code}] {url}")
+        except Exception as e:
+            short = str(e).split("See https")[0].strip()
+            print(f"     [curl_cffi 单次失败] {short}")
+
+    # ---------- 策略 2:第三方图片代理(主要兜底,经验证最稳) ----------
+    print("     [快速降级] 直接走第三方图片代理...")
+    parsed = urlparse(img_url)
+    host_and_path = parsed.netloc + parsed.path
+    if parsed.query:
+        host_and_path += "?" + parsed.query
+
+    proxy_headers = {"User-Agent": HEADERS["User-Agent"]}
+
+    for proxy_tpl in IMAGE_PROXY_TEMPLATES:
+        proxy_url = proxy_tpl.format(host_and_path=host_and_path)
+        for use_curl in (True, False):
+            try:
+                if use_curl:
+                    resp = c_requests.get(
+                        proxy_url,
+                        headers=proxy_headers,
+                        timeout=REQUEST_TIMEOUT * 2,
+                        impersonate="chrome",
+                        verify=False,
+                    )
+                else:
+                    resp = _std_session.get(
+                        proxy_url,
+                        headers=proxy_headers,
+                        timeout=REQUEST_TIMEOUT * 2,
+                        verify=False,
+                    )
+                if resp.status_code == 200 and _save(resp.content):
+                    via = proxy_tpl.split("/?")[0]
+                    method = "curl_cffi" if use_curl else "requests"
+                    print(f"     [封面已下载|proxy/{method}] {filename} via {via}")
+                    return filename
+                else:
+                    print(f"     [proxy HTTP {resp.status_code}] {proxy_url[:100]}")
+            except Exception as e:
+                print(f"     [proxy 失败] {str(e)[:120]}")
+
+    # ---------- 策略 3:深度兜底(仅当代理也挂了才执行) ----------
+    print("     [深度兜底] 代理也失败,尝试 TLS 降级 + 多 impersonate 重试...")
+
+    # 3a) 自定义 TLS Adapter
+    for url in url_candidates:
+        try:
+            resp = _tls_session.get(url, headers=headers,
+                                    timeout=REQUEST_TIMEOUT, verify=False)
+            if resp.status_code == 200 and _save(resp.content):
+                print(f"     [封面已下载|tls_session] {filename}")
+                return filename
+        except Exception as e:
+            print(f"     [tls_session 失败] {str(e)[:120]}")
+
+    # 3b) 标准 requests
+    for url in url_candidates:
+        try:
+            resp = _std_session.get(url, headers=headers,
+                                    timeout=REQUEST_TIMEOUT, verify=False)
+            if resp.status_code == 200 and _save(resp.content):
+                print(f"     [封面已下载|requests] {filename}")
+                return filename
+        except Exception as e:
+            print(f"     [requests 失败] {str(e)[:120]}")
+
+    # 3c) curl_cffi 轮换指纹 + 短退避(最后挣扎)
     for attempt in range(RETRY_TIMES):
         impersonate = _IMPERSONATE_POOL[attempt % len(_IMPERSONATE_POOL)]
         for url in url_candidates:
             try:
-                # 每次新建一个临时 session，用完即弃，避免连接池污染
-                resp = c_requests.get(
-                    url,
-                    headers=headers,
-                    timeout=REQUEST_TIMEOUT,
-                    impersonate=impersonate,
-                    verify=False,          # 容错：部分 CDN 证书链不完整
-                )
+                resp = c_requests.get(url, headers=headers,
+                                      timeout=REQUEST_TIMEOUT,
+                                      impersonate=impersonate, verify=False)
                 if resp.status_code == 200 and _save(resp.content):
                     print(f"     [封面已下载|curl_cffi/{impersonate}] {filename}")
                     return filename
-                else:
-                    print(f"     [curl_cffi HTTP {resp.status_code}] {url}")
             except Exception as e:
-                msg = str(e)
-                # 只打印关键信息，避免刷屏
-                short = msg.split("See https")[0].strip()
+                short = str(e).split("See https")[0].strip()
                 print(f"     [curl_cffi 失败 {attempt+1}/{RETRY_TIMES} impersonate={impersonate}] {short}")
-
-        # 轻量退避
-        time.sleep(random.uniform(1.5, 3.0))
-
-    # ---------- 策略 2：标准 requests 兜底 ----------
-    print("     [降级] 切换到标准 requests 库重试...")
-    for url in url_candidates:
-        try:
-            resp = _std_session.get(
-                url,
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-                verify=False,
-                stream=False,
-            )
-            if resp.status_code == 200 and _save(resp.content):
-                print(f"     [封面已下载|requests] {filename}")
-                return filename
-            else:
-                print(f"     [requests HTTP {resp.status_code}] {url}")
-        except Exception as e:
-            print(f"     [requests 失败] {e}")
+        time.sleep(random.uniform(2, 4))
 
     print(f"     [❌ 最终失败] {img_url}")
     return ""
@@ -521,32 +654,37 @@ def parse_playlist(soup) -> list[dict]:
 # =============================================================
 # 主流程
 # =============================================================
-def build_list_url(cat_id: int, page: int, year: str) -> str:
+def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
     """
-    根据当前的 SORT_TYPE 配置和传入的 year，生成不同的 URL 结构
+    根据传入的 sort_type 和 year 生成不同的列表页 URL。
+      - score 模式: /ms/1--score------2---2026.html  (需要 year)
+      - hits  模式: /ms/1--hits------2---.html       (不需要 year)
+      - time  模式: /ms/1--time------2---.html       (不需要 year)
     """
-    if SORT_TYPE == "score":
-        # 新规律: https://www.pdy0.com/ms/1--score------2---2026.html
-        return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---{year}.html"
-    else:
-        # 原规律: https://www.pdy0.com/ms/1--hits------2---.html
-        # 如果不是 score 模式，通常不需要年份参数，这里保持原样
+    if sort_type == "score":
+        # 如果有年份，拼接年份；如果没有，则不拼接
+        if year:
+            return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---{year}.html"
+        else:
+            return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---.html"
+    elif sort_type == "hits":
         return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
+    elif sort_type == "time":  # <--- 新增这一行
+        return f"{LIST_BASE_URL}/ms/{cat_id}--time------{page}---.html" # <--- 确保 URL 格式正确
+    else:
+        raise ValueError(f"未知的 sort_type: {sort_type}")
 
 
 def crawl_category(cat_name: str, cat_cfg: dict,
-                   existing_list: list, index_map: dict, all_data: dict, year: str) -> tuple[int, int]:
-    """
-    existing_list: final[cat_name]，原地修改（追加 / 替换）
-    index_map:    index[cat_name]，{(name, path): info}，原地更新
-    返回：(新增数量, 更新数量)
-    """
-    print(f"\n=== 开始抓取分类: {cat_name} (id={cat_cfg['id']}, pages={cat_cfg['pages']}, year={year}) ===")
+                   existing_list: list, index_map: dict,
+                   all_data: dict, year: str, sort_type: str) -> tuple[int, int]:
+    print(f"\n=== 开始抓取分类: {cat_name} "
+          f"(sort={sort_type}, id={cat_cfg['id']}, pages={cat_cfg['pages']}, year={year or '无'}) ===")
     new_count = 0
     updated_count = 0
 
     for page in range(1, cat_cfg["pages"] + 1):
-        list_url = build_list_url(cat_cfg["id"], page, year)
+        list_url = build_list_url(cat_cfg["id"], page, year, sort_type)
         print(f"\n[列表页] {list_url}")
         html = fetch(list_url)
         time.sleep(SLEEP_BETWEEN_REQUESTS)
@@ -557,7 +695,6 @@ def crawl_category(cat_name: str, cat_cfg: dict,
         print(f"  -> 共找到 {len(items)} 部")
 
         for idx_i, item in enumerate(items, 1):
-            # 提取路径，忽略域名差异
             item_path = get_url_path(item["url"])
             key = (item["name"], item_path)
             old_data = index_map.get(key)
@@ -565,37 +702,27 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             if old_data is not None:
                 old_info = old_data.get("info", "")
                 old_image = old_data.get("image", "")
-
-                # 如果 info 没变，且 image 不为空，则跳过
                 if old_info == item["info"] and old_image:
                     print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
                     continue
 
             is_update = old_data is not None
-            # 根据情况打印不同的 Tag
             if is_update and old_data.get("info") == item["info"] and not old_data.get("image"):
                 tag = "[补图]"
             else:
                 tag = "[更新]" if is_update else "[新增]"
-                
+
             print(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}")
 
-            # 2. 抓详情页
             detail_html = fetch(item["url"])
             time.sleep(SLEEP_BETWEEN_REQUESTS)
             if not detail_html:
                 continue
 
             try:
-                detail = parse_detail_page(
-                    detail_html,
-                    item["name"],
-                    item["url"],
-                    info=item["info"]
-                )
+                detail = parse_detail_page(detail_html, item["name"], item["url"], info=item["info"])
 
                 if is_update:
-                    # 替换原有项（保留位置），匹配时同样忽略域名差异
                     replaced = False
                     for i, old in enumerate(existing_list):
                         old_path = get_url_path(old.get("url", ""))
@@ -610,13 +737,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
-                # 更新索引中的 info 和 image
                 index_map[key] = {
-                    "info": item["info"], 
+                    "info": item["info"],
                     "image": detail.get("image", "")
                 }
-                # 在此处实时保存
-                save_data(all_data) 
+                save_data(all_data)
                 print(f"     [已实时保存到磁盘]")
             except Exception as e:
                 print(f"     [解析失败] {e}")
@@ -625,35 +750,46 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
 
 def main():
-    # 1. 读取已有数据，构建去重索引
     final = load_existing(OUTPUT_FILE)
     index = build_index(final)
     print(f"已有数据分类数: {len(final)}；"
           f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")
 
-    # 2. 遍历多任务配置（按年份和分类抓取）
-    for task in TASKS:
-        year = task.get("year", "")
-        categories_cfg = task.get("categories", {})
-        
-        print(f"\n==================================================")
-        print(f"🚀 开始执行年份抓取任务: {year}")
-        print(f"==================================================")
+    for task_group in TASKS:
+        sort_type = task_group.get("sort_type", "")
+        if not task_group.get("enabled"):
+            print(f"\n⏭  跳过 {sort_type} 模式(总开关已关闭)")
+            continue
 
-        for cat_name, cat_cfg in categories_cfg.items():
-            # 确保分类键存在
-            if cat_name not in final: final[cat_name] = []
-            if cat_name not in index: index[cat_name] = {}
+        print(f"\n##################################################")
+        print(f"🎯 进入抓取模式: {sort_type.upper()}")
+        print(f"##################################################")
 
-            if not cat_cfg.get("enabled"):
-                print(f"跳过分类: {cat_name}（在 {year} 年配置中未启用）")
-                continue
+        for job in task_group.get("jobs", []):
+            year = job.get("year", "")
+            categories_cfg = job.get("categories", {})
 
-            # 传入 final 对象，以便在子函数中实时保存，同时传入 year
-            new_n, upd_n = crawl_category(cat_name, cat_cfg, final[cat_name], index[cat_name], final, year)
-            print(f"  → 年份 {year} 分类 {cat_name} 新增 {new_n} 条，更新 {upd_n} 条")
+            print(f"\n==================================================")
+            print(f"🚀 [{sort_type}] 开始执行任务: year={year or '无'}")
+            print(f"==================================================")
 
-    print(f"\n✅ 全部年份抓取任务结束。")
+            for cat_name, cat_cfg in categories_cfg.items():
+                if cat_name not in final: final[cat_name] = []
+                if cat_name not in index: index[cat_name] = {}
+
+                if not cat_cfg.get("enabled"):
+                    print(f"跳过分类: {cat_name}(在 [{sort_type}/{year or '无'}] 配置中未启用)")
+                    continue
+
+                new_n, upd_n = crawl_category(
+                    cat_name, cat_cfg,
+                    final[cat_name], index[cat_name],
+                    final, year, sort_type
+                )
+                print(f"  → [{sort_type}] year={year or '无'} 分类 {cat_name} "
+                      f"新增 {new_n} 条,更新 {upd_n} 条")
+
+    print(f"\n✅ 全部抓取任务结束。")
 
 
 if __name__ == "__main__":

@@ -427,26 +427,22 @@ function extractAndCopy() {
   else if (window.location.hostname.includes("bloomberg.com")) {
     // 定义主要内容选择器
     const mainSelectors = [
-      // ★★★ 新增/修改 ① ★★★
-      // 优先匹配你提供的新版 "feature_article" 页面的正文段落。
-      // 这个选择器通过模糊匹配类名来确保稳定性。
       'p[class*="ArticleBodyText_articleBodyContent"]',
-      // --- 以下为原有选择器，保持不变 ---
       '.body-content p[class*="media-ui-Paragraph_text"]',
       'p.media-ui-Paragraph_text-SqIsdNjhOtO-',
       'p[class*="media-ui-Paragraph_text"]',
       'p.paywall[data-component="paragraph"]',
-      // 更通用的选择器，用于捕获可能的段落
       'p[class*="Paragraph"]',
       'p[class*="paragraph"]',
-      // Svelte-like 结构
       'main.dvz-content p[class*="copy-width"]',
       'main.dvz-content p.dropcap[class*="svelte-"]',
-      // 针对新 "css--" 命名结构
       'main#dvz__mount div[class*="css--paragraph-wrapper"] > p',
-      // ---- 新增：捕获列表项 ---- //
       'li[data-component="unordered-list-item"]',
-      'li[class*="media-ui-UnorderedList_item"]'
+      'li[class*="media-ui-UnorderedList_item"]',
+      // ★★★ 新增：新版 ds-- 结构（photo essay / feature 页面）★★★
+      'p[class*="ds--paragraph"]',
+      'main.dvz-content p[class*="ds--paragraph"]',
+      '#dvz_mount p[class*="ds--paragraph"]'
     ];
 
     // 需要排除的选择器
@@ -522,8 +518,11 @@ function extractAndCopy() {
         'main.dvz-content figure[class*="svelte-"], ' +
         'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], ' +
         'main#dvz__mount section[class*="--root-container"] figure, ' +
-        // ★★★ 新增：新版文章正文内嵌入的 figure（结构: <p><figure><img><figcaption><p>...</p></figcaption></figure></p>）
-        '.body-content figure'
+        '.body-content figure, ' +
+        // ★★★ 新增：新版 ds-- 结构的 figure（photo essay 头图 + 正文图 + 多图网格）★★★
+        'figure.ds--figure, ' +
+        'main.dvz-content figure.ds--figure, ' +
+        '#dvz_mount figure.ds--figure'
       );
 
       // 检查是否找到了符合条件的图片
@@ -688,6 +687,55 @@ function extractAndCopy() {
                   .replace(/\s*Source\s*[:：].*$/i, '')
                   .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
                   .trim();
+              }
+            }
+          }
+
+          // Type 5: 新版 "ds--" 结构（dvz-content / dvz_mount 下的 photo essay & feature article）
+          else if (figure.matches('figure.ds--figure')) {
+            figureType = 'ds_structure';
+            img = figure.querySelector('img.ds--image') || figure.querySelector('img');
+
+            if (img) {
+              // 优先用 srcset 取最高分辨率
+              if (img.srcset) {
+                const srcsetEntries = img.srcset.split(',')
+                  .map(entry => {
+                    const parts = entry.trim().split(/\s+/);
+                    const url = parts[0].trim();
+                    const width = parseInt(parts[parts.length - 1]) || 0;
+                    return { url, width };
+                  })
+                  .filter(entry => entry.url && entry.width > 0)
+                  .sort((a, b) => b.width - a.width);
+                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+              }
+              if (!highestResUrl && img.src) highestResUrl = img.src;
+
+              // figcaption 一般是 <figcaption class="... ds--caption ...">文本</figcaption>
+              const figcaptionElement =
+                figure.querySelector('figcaption.ds--caption') ||
+                figure.querySelector('figcaption[class*="ds--caption"]') ||
+                figure.querySelector('figcaption');
+
+              if (figcaptionElement) {
+                // 有的版本里把摄影师/来源单独包在 span 里，优先取主描述
+                const captionMain = figcaptionElement.querySelector('span:not([class*="credit"]):not([class*="source"])');
+                if (captionMain && captionMain.textContent.trim()) {
+                  caption = captionMain.textContent.trim();
+                } else {
+                  caption = figcaptionElement.textContent.trim();
+                }
+                // 去掉 "Source: xxx" / "Photographer: xxx" 这类署名
+                caption = caption
+                  .replace(/\s*Source\s*[:：].*$/i, '')
+                  .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
+                  .trim();
+              }
+
+              // 图集 photo-essay 头图通常没有 figcaption，回退到 alt
+              if (!caption && img.alt) {
+                caption = img.alt.trim();
               }
             }
           }

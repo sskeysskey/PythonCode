@@ -163,12 +163,13 @@ def main():
     is_blacklist_item = any(keyword in json_filename for keyword in BLACKLIST_KEYWORDS)
     
     # 新增逻辑：如果 URL 包含 "//p.bvvvvv" 或者包含 "%"，则标记为需要黑名单
-    url_contains_blacklist_char = "//p.bvvvvv" in url or "%" in url
+    # url_contains_blacklist_char = "//p.bvvvvv" in url or "%" in url
+    url_contains_blacklist_char = "%" in url
 
     should_blacklist = False  # 统一控制是否走黑名单逻辑的开关
 
     if url_contains_blacklist_char:
-        print("⚠️ 检测到 URL 包含黑名单特征 (//p.bvvvvv 或 %)，将直接加入黑名单...")
+        print("⚠️ 检测到 URL 包含黑名单特征 (%)，将直接加入黑名单...")
         should_blacklist = True
     elif is_blacklist_item:
         matched_keywords = [k for k in BLACKLIST_KEYWORDS if k in json_filename]
