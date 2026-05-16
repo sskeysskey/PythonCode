@@ -402,9 +402,8 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, path): {"info": info, "image": image}}}，
-    用于判断该条目是否已存在、info 是否变化，以及图片是否缺失。
-    注意：这里使用 URL 的 path（忽略域名）作为 key，实现多域名去重。
+    返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
+    用于判断该条目是否已存在、info / update 是否变化,以及图片是否缺失。
     """
     idx = {}
     for cat, items in existing.items():
@@ -414,11 +413,15 @@ def build_index(existing: dict) -> dict:
                 name = it.get("name", "")
                 url = it.get("url", "")
                 info = it.get("info", "")
+                update = it.get("update", "")     # ← 新增
                 image = it.get("image", "")
                 if name and url:
-                    # 提取路径，忽略域名差异
                     path = get_url_path(url)
-                    m[(name, path)] = {"info": info, "image": image}
+                    m[(name, path)] = {
+                        "info": info,
+                        "update": update,         # ← 新增
+                        "image": image,
+                    }
         idx[cat] = m
     return idx
 
@@ -478,11 +481,29 @@ def _find_span_by_label(info_block, label: str):
 def parse_detail_page(html: str, name: str, url: str,
                       info: str = "") -> dict:
     soup = BeautifulSoup(html, "html.parser")
+
+    # ====== 提取最后更新时间 ======
+    # HTML 结构: <div class="otherbox">当前为<em>HD</em>资源，最后更新于<em>2026-05-14 13:33:05</em></div>
+    update_time = ""
+    otherbox = soup.select_one("div.vod-info .otherbox") or soup.select_one(".otherbox")
+    if otherbox:
+        ems = otherbox.find_all("em")
+        # 最后一个 <em> 通常是时间戳
+        if ems:
+            last_text = clean_ws(ems[-1].get_text(strip=True))
+            # 校验一下是不是时间格式,避免错误抓到 HD/资源类型
+            if re.search(r"\d{4}-\d{2}-\d{2}", last_text):
+                update_time = last_text
+            elif len(ems) >= 2:
+                # 兜底:取倒数第一个 em 的文本
+                update_time = clean_ws(ems[-1].get_text(strip=True))
+
     data = {
         "name": name,
         "url": url,
         "info": info,
-        "image": "",          
+        "update": update_time,   # ← 新增字段,放在 info 之后、image 之前
+        "image": "",
         "导演": "",
         "编剧": [],
         "主演": [],
@@ -498,7 +519,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "playlist": [],
     }
 
-    # ====== 封面图 ======
+    # ====== 封面图 ======   (↓↓↓ 下面这段代码保持原样,不要改 ↓↓↓)
     img_url = ""
     pic_img = soup.select_one("div.vod-info .pic img")
     if pic_img:
@@ -700,17 +721,28 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             old_data = index_map.get(key)
 
             if old_data is not None:
-                old_info = old_data.get("info", "")
-                old_image = old_data.get("image", "")
-                if old_info == item["info"] and old_image:
+                old_info   = old_data.get("info", "")
+                old_update = old_data.get("update", "")   # ← 新增
+                old_image  = old_data.get("image", "")
+                # 三个条件全部满足才跳过:
+                #   1) info 未变  2) 已下载封面  3) 已经有 update(老数据可能没有)
+                if (old_info == item["info"]
+                        and old_image
+                        and old_update):
                     print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
                     continue
 
+            # 判定本次是新增 / 补图 / 补update / 普通更新
             is_update = old_data is not None
-            if is_update and old_data.get("info") == item["info"] and not old_data.get("image"):
-                tag = "[补图]"
+            if is_update:
+                if not old_data.get("update"):
+                    tag = "[补update]"
+                elif old_data.get("info") == item["info"] and not old_data.get("image"):
+                    tag = "[补图]"
+                else:
+                    tag = "[更新]"
             else:
-                tag = "[更新]" if is_update else "[新增]"
+                tag = "[新增]"
 
             print(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}")
 
@@ -721,6 +753,10 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
             try:
                 detail = parse_detail_page(detail_html, item["name"], item["url"], info=item["info"])
+
+                # 详情页解析完拿到了新的 update,如果跟老的不一致,日志提示一下
+                if is_update and old_data.get("update") and old_data.get("update") != detail.get("update", ""):
+                    print(f"     [update 变化] {old_data.get('update')} → {detail.get('update')}")
 
                 if is_update:
                     replaced = False
@@ -737,9 +773,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
+                # 索引同步更新(包括 update)
                 index_map[key] = {
-                    "info": item["info"],
-                    "image": detail.get("image", "")
+                    "info":   item["info"],
+                    "update": detail.get("update", ""),   # ← 新增
+                    "image":  detail.get("image", ""),
                 }
                 save_data(all_data)
                 print(f"     [已实时保存到磁盘]")
