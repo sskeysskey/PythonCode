@@ -47,12 +47,14 @@ def capture_screen():
         return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
 # 查找图片
-def find_image_on_screen(template, threshold=0.9):
+def find_image_on_screen(template, screen=None, threshold=0.9):
     """
     在屏幕上查找图片
+    新增 screen 参数：如果传入了截屏数据，则直接使用，避免重复截屏提高效率
     返回: (max_loc, shape) 或 (None, None)
     """
-    screen = capture_screen()
+    if screen is None:
+        screen = capture_screen()
     
     # 简单的尺寸校验，防止模板比屏幕还大导致报错
     if template.shape[0] > screen.shape[0] or template.shape[1] > screen.shape[1]:
@@ -124,13 +126,20 @@ def main():
         except ValueError:
             print("参数格式错误，使用默认阈值 50")
 
-    # ==== 1. 加载 Copy 模板 ====
-    template_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_copy.png")
-    if not os.path.exists(template_path):
-        print(f"错误：找不到模板文件 {template_path}")
+    # ==== 1. 加载 Copy 和 Forbidden 模板 ====
+    template_copy_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_copy.png")
+    template_forbidden_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_forbidden.png")
+    
+    if not os.path.exists(template_copy_path):
+        print(f"错误：找不到模板文件 {template_copy_path}")
+        sys.exit(3) # 模板缺失错误
+        
+    if not os.path.exists(template_forbidden_path):
+        print(f"错误：找不到模板文件 {template_forbidden_path}")
         sys.exit(3) # 模板缺失错误
     
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    template_copy = cv2.imread(template_copy_path, cv2.IMREAD_COLOR)
+    template_forbidden = cv2.imread(template_forbidden_path, cv2.IMREAD_COLOR)
     
     max_attempts = 3
     current_attempt = 1
@@ -145,15 +154,24 @@ def main():
             print("寻找超时：未能在规定时间内找到复制按钮")
             sys.exit(2) # 状态码 2：超时退出
             
-        # 1. 初次寻找 Copy 按钮 (触发条件)
-        location, shape = find_image_on_screen(template)
+        # 截取当前屏幕，供后续两个模板共用，提高匹配效率
+        current_screen = capture_screen()
+        
+        # 1. 优先寻找 Forbidden 按钮
+        forbidden_loc, _ = find_image_on_screen(template_forbidden, screen=current_screen)
+        if forbidden_loc:
+            print("检测到 qianwen_forbidden 图片，触发拒答机制，跳过当前文章。")
+            sys.exit(4)
+            
+        # 2. 寻找 Copy 按钮 (触发条件)
+        location, shape = find_image_on_screen(template_copy, screen=current_screen)
         
         if location:
             print("初步定位到 Copy 按钮，等待 1 秒以确保 UI 稳定...")
             sleep(1) # 等待 1 秒
             
-            # 2. 再次寻找，获取最新的坐标
-            new_location, new_shape = find_image_on_screen(template)
+            # 再次寻找，获取最新的坐标 (这里不传 current_screen，因为需要获取 1 秒后的最新屏幕状态)
+            new_location, new_shape = find_image_on_screen(template_copy)
             
             # 如果第二次没找到（可能页面刷新了），则跳过本次循环继续找
             if not new_location:
@@ -170,7 +188,7 @@ def main():
             sleep(0.5) 
             content = pyperclip.paste()
 
-            # 先判断是否是 qianwen 拒答
+            # 先判断是否是 qianwen 拒答文本
             if is_refusal_response(content):
                 print("检测到 qianwen 拒答内容，跳过当前文章。")
                 sys.exit(4)
@@ -193,7 +211,7 @@ def main():
                     print("已达到最大尝试次数，内容均不合格。")
                     sys.exit(1)
         else:
-            # 没找到 Copy 按钮，滚动屏幕继续寻找
+            # 没找到 Copy 按钮也没有 Forbidden 按钮，滚动屏幕继续寻找
             pyautogui.scroll(SCROLL_AMOUNT)
             sleep(1)
             

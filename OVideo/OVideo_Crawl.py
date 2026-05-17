@@ -150,7 +150,7 @@ IMAGE_PROXY_TEMPLATES = [
 
 # 配置区域
 # 列表页所在域名
-LIST_BASE_URL = "https://www.pdy1.com"
+LIST_BASE_URL = "https://www.pys2.com"
 # 详情页所在域名
 DETAIL_BASE_URL = "https://www.pys2.com"
 # 输出 JSON 文件路径

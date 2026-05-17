@@ -726,7 +726,7 @@ def pre_run_checks(news_directory):
     now = datetime.now()
     
     # 1. 判断运行时间是否是午夜12点到下午18点之间 (0 <= hour < 18)
-    if not (0 <= now.hour < 18):
+    if not (0 <= now.hour < 22):
         print(f"\n[提示] 当前时间是 {now.strftime('%H:%M')}，不在允许运行的时间段（00:00 - 18:00）内。程序将退出。\n")
         sys.exit(0)
         

@@ -427,26 +427,22 @@ function extractAndCopy() {
     else if (window.location.hostname.includes("bloomberg.com")) {
         // 定义主要内容选择器
         const mainSelectors = [
-            // ★★★ 新增/修改 ① ★★★
-            // 优先匹配你提供的新版 "feature_article" 页面的正文段落。
-            // 这个选择器通过模糊匹配类名来确保稳定性。
             'p[class*="ArticleBodyText_articleBodyContent"]',
-            // --- 以下为原有选择器，保持不变 ---
             '.body-content p[class*="media-ui-Paragraph_text"]',
             'p.media-ui-Paragraph_text-SqIsdNjhOtO-',
             'p[class*="media-ui-Paragraph_text"]',
             'p.paywall[data-component="paragraph"]',
-            // 更通用的选择器，用于捕获可能的段落
             'p[class*="Paragraph"]',
             'p[class*="paragraph"]',
-            // Svelte-like 结构
             'main.dvz-content p[class*="copy-width"]',
             'main.dvz-content p.dropcap[class*="svelte-"]',
-            // 针对新 "css--" 命名结构
             'main#dvz__mount div[class*="css--paragraph-wrapper"] > p',
-            // ---- 新增：捕获列表项 ---- //
             'li[data-component="unordered-list-item"]',
-            'li[class*="media-ui-UnorderedList_item"]'
+            'li[class*="media-ui-UnorderedList_item"]',
+            // ★★★ 新增：新版 ds-- 结构（photo essay / feature 页面）★★★
+            'p[class*="ds--paragraph"]',
+            'main.dvz-content p[class*="ds--paragraph"]',
+            '#dvz_mount p[class*="ds--paragraph"]'
         ];
 
         // 需要排除的选择器
@@ -522,8 +518,11 @@ function extractAndCopy() {
                 'main.dvz-content figure[class*="svelte-"], ' +
                 'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], ' +
                 'main#dvz__mount section[class*="--root-container"] figure, ' +
-                // ★★★ 新增：新版文章正文内嵌入的 figure（结构: <p><figure><img><figcaption><p>...</p></figcaption></figure></p>）
-                '.body-content figure'
+                '.body-content figure, ' +
+                // ★★★ 新增：新版 ds-- 结构的 figure（photo essay 头图 + 正文图 + 多图网格）★★★
+                'figure.ds--figure, ' +
+                'main.dvz-content figure.ds--figure, ' +
+                '#dvz_mount figure.ds--figure'
             );
 
             // 检查是否找到了符合条件的图片
@@ -692,6 +691,55 @@ function extractAndCopy() {
                         }
                     }
 
+                    // Type 5: 新版 "ds--" 结构（dvz-content / dvz_mount 下的 photo essay & feature article）
+                    else if (figure.matches('figure.ds--figure')) {
+                        figureType = 'ds_structure';
+                        img = figure.querySelector('img.ds--image') || figure.querySelector('img');
+
+                        if (img) {
+                            // 优先用 srcset 取最高分辨率
+                            if (img.srcset) {
+                                const srcsetEntries = img.srcset.split(',')
+                                    .map(entry => {
+                                        const parts = entry.trim().split(/\s+/);
+                                        const url = parts[0].trim();
+                                        const width = parseInt(parts[parts.length - 1]) || 0;
+                                        return { url, width };
+                                    })
+                                    .filter(entry => entry.url && entry.width > 0)
+                                    .sort((a, b) => b.width - a.width);
+                                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                            }
+                            if (!highestResUrl && img.src) highestResUrl = img.src;
+
+                            // figcaption 一般是 <figcaption class="... ds--caption ...">文本</figcaption>
+                            const figcaptionElement =
+                                figure.querySelector('figcaption.ds--caption') ||
+                                figure.querySelector('figcaption[class*="ds--caption"]') ||
+                                figure.querySelector('figcaption');
+
+                            if (figcaptionElement) {
+                                // 有的版本里把摄影师/来源单独包在 span 里，优先取主描述
+                                const captionMain = figcaptionElement.querySelector('span:not([class*="credit"]):not([class*="source"])');
+                                if (captionMain && captionMain.textContent.trim()) {
+                                    caption = captionMain.textContent.trim();
+                                } else {
+                                    caption = figcaptionElement.textContent.trim();
+                                }
+                                // 去掉 "Source: xxx" / "Photographer: xxx" 这类署名
+                                caption = caption
+                                    .replace(/\s*Source\s*[:：].*$/i, '')
+                                    .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
+                                    .trim();
+                            }
+
+                            // 图集 photo-essay 头图通常没有 figcaption，回退到 alt
+                            if (!caption && img.alt) {
+                                caption = img.alt.trim();
+                            }
+                        }
+                    }
+
                     // Common processing for img and caption if found
                     if (img && highestResUrl) {
                         // Clean URL and ensure it's absolute
@@ -785,6 +833,183 @@ function extractAndCopy() {
             chrome.runtime.sendMessage({ action: 'noImages' });
         }
     }
+
+    // 新增：Washington Post 处理
+    else if (window.location.hostname.includes("washingtonpost.com")) {
+        // ① 先取最可能的文章容器，fallback 到 body
+        const container = document.querySelector('article') || document.body;
+
+        // --- 修改开始 ---
+        // 1. 提取正文：按优先级尝试多个选择器，以适应不同页面版本
+        let paras = [];
+
+        // 尝试选择器 1 (适用于2024年及之后的新版页面)
+        paras = Array.from(container.querySelectorAll('p[data-contentid]'));
+        if (paras.length > 0) {
+        }
+
+        // 如果没找到，尝试选择器 2 (旧版页面)
+        if (paras.length === 0) {
+            paras = Array.from(container.querySelectorAll('p[data-component="Text"]'));
+        }
+
+        // 如果还没找到，尝试选择器 3 (更旧版页面)
+        if (paras.length === 0) {
+            paras = Array.from(container.querySelectorAll('p[data-apitype="text"]'));
+        }
+        // --- 修改结束 ---
+
+        textContent = paras
+            .map(p => p.textContent.trim())
+            .filter(t => t && t.length > 1 && !/^[•@∞]/.test(t))
+            .join('\n\n');
+
+        // 2. 提取并下载图片
+        if (textContent) {
+            // 扩大搜索范围：同时覆盖 <header> 里的 lede 图片和 <article> 里的图片
+            // 优先用 .grid-full-inner-standard 作为图片搜索容器（它同时包含 header 和 article）
+            const imgContainer =
+                document.querySelector('.grid-full-inner-standard') ||
+                document.querySelector('main') ||
+                document.body;
+
+            // 收集所有 figure：包含文章正文里的，以及 header/topper 里的 lede 图片
+            let figures = Array.from(imgContainer.querySelectorAll('figure'));
+
+            // 额外兜底：显式抓取 lede-image（有些页面 figure 会嵌套在不同层级）
+            const ledeFig = document.querySelector(
+                'figure[data-testid="lede-image"], #topper-lede-art figure, #default-topper figure'
+            );
+            if (ledeFig && !figures.includes(ledeFig)) {
+                figures.unshift(ledeFig); // 头图放第一张
+            }
+
+            // 去重
+            figures = [...new Set(figures)];
+
+            if (figures.length === 0) {
+                chrome.runtime.sendMessage({ action: 'noImages', reason: 'No figure elements found.' });
+            } else {
+                const processedUrls = new Set();
+                const processedFiles = new Set();
+                figures.forEach((fig, idx) => {
+                    const img = fig.querySelector('img');
+                    if (!img) return;
+
+                    // 拿最高分辨率的 URL
+                    let bestUrl = img.src;
+                    if (img.srcset) {
+                        const entries = img.srcset
+                            .split(',')
+                            .map(s => {
+                                const parts = s.trim().split(/\s+/);
+                                const url = parts[0];
+                                // 处理 "1x", "2x" 或 "300w", "1024w" 等格式
+                                let w = 0;
+                                if (parts.length > 1) {
+                                    const w_str = parts[parts.length - 1];
+                                    if (w_str.endsWith('w')) {
+                                        w = parseInt(w_str.slice(0, -1), 10) || 0;
+                                    } else if (w_str.endsWith('x')) {
+                                        // 对于 'x' 描述符，我们可以给一个权重，例如 1x=1, 2x=2
+                                        // 但 'w' 描述符通常更精确，优先使用 'w'
+                                        // 如果只有 'x'，可以简单地取最后一个 'x' 的值
+                                        // 或者，如果混合使用，需要更复杂的逻辑。
+                                        // 这里简化处理：如果srcset中主要是 'w'，则 'x' 的权重可能不那么重要
+                                        // 如果只有 'x'，则可以按 'x' 的值排序
+                                        w = (parseInt(w_str.slice(0, -1), 10) || 0) * 1000; // 给 'x' 一个较大的基数以便排序
+                                    }
+                                }
+                                return { url, w };
+                            })
+                            .sort((a, b) => b.w - a.w); // 宽度大的优先
+
+                        if (entries[0] && entries[0].url && (entries[0].url.startsWith('http:') || entries[0].url.startsWith('https:'))) {
+                            bestUrl = entries[0].url;
+                        } else if (entries[0] && entries[0].url) {
+                            console.warn(`[WP Parser] srcset URL '${entries[0].url}' might be invalid or not better. Keeping src: '${img.src}'`);
+                        }
+                    }
+
+                    // 确保URL是绝对路径且协议有效
+                    try {
+                        // 如果 bestUrl 已经是绝对路径，new URL 会正确处理
+                        // 如果 bestUrl 是相对路径，它会相对于 window.location.href 解析
+                        const absoluteUrl = new URL(bestUrl, window.location.href);
+                        if (!['http:', 'https:'].includes(absoluteUrl.protocol)) {
+                            console.warn(`[WP Parser] Skipping image with invalid protocol: ${bestUrl}`);
+                            return;
+                        }
+                        bestUrl = absoluteUrl.href;
+                    } catch (e) {
+                        console.warn(`[WP Parser] Skipping image due to invalid URL '${bestUrl}':`, e);
+                        return;
+                    }
+
+                    if (processedUrls.has(bestUrl)) return;
+                    processedUrls.add(bestUrl);
+
+                    // caption 或 alt 或时间戳
+                    let name = '';
+                    const capEl = fig.querySelector('figcaption');
+                    if (capEl && capEl.textContent.trim()) {
+                        name = capEl.textContent.trim();
+                    } else if (img.alt && img.alt.trim()) {
+                        name = img.alt.trim();
+                    }
+
+                    if (!name || name.toLowerCase() === 'image' || name.toLowerCase() === 'photo' || name.toLowerCase().startsWith('loading')) {
+                        name = `wp-image-${Date.now()}-${idx}`;
+                    }
+
+                    // 清洗文件名
+                    let filename = name
+                        .replace(/[/\\?%*:|"<>+]/g, '-')
+                        .replace(/\s+/g, '_')
+                        .replace(/[^\w.-]/g, '')
+                        .trim();
+
+                    const MAX_FILENAME_BASE_LENGTH = 180;
+                    if (filename.length > MAX_FILENAME_BASE_LENGTH) {
+                        filename = filename.slice(0, MAX_FILENAME_BASE_LENGTH);
+                    }
+                    filename = filename.replace(/[-._]+$/, '');
+
+                    if (!filename) {
+                        filename = `wp-image-${Date.now()}-${idx}`;
+                    }
+                    filename += '.jpg';
+
+
+                    if (processedFiles.has(filename)) {
+                        const namePart = filename.substring(0, filename.lastIndexOf('.'));
+                        const extPart = filename.substring(filename.lastIndexOf('.'));
+                        let counter = 1;
+                        let newFilenameTry;
+                        do {
+                            newFilenameTry = `${namePart}_${counter}${extPart}`;
+                            counter++;
+                        } while (processedFiles.has(newFilenameTry) && counter < 100);
+                        filename = newFilenameTry;
+                        if (processedFiles.has(filename)) {
+                            console.warn(`[WP Parser] Filename conflict for ${name}, could not resolve. Skipping.`);
+                            return;
+                        }
+                    }
+                    processedFiles.add(filename);
+
+                    chrome.runtime.sendMessage({
+                        action: 'downloadImage',
+                        url: bestUrl,
+                        filename
+                    });
+                });
+            }
+        } else {
+            chrome.runtime.sendMessage({ action: 'noImages', reason: 'Text content could not be extracted with any of the available selectors.' });
+        }
+    }
+
 
     // ==========================================
     // 3. 通用/收尾逻辑
