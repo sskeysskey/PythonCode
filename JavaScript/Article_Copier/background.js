@@ -2112,6 +2112,229 @@ function extractAndCopy() {
         });
       }
 
+    } else if (document.querySelector('div[data-testid="LivePage"], .arena-liveblog')) {
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      // ★★★ 新增逻辑: 针对 Reuters Live Blog (直播报道) 页面 ★★★
+      // ★★★ 例如: /world/europe/eurovision-... live page 等       ★★★
+      // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      const livePageContainer = document.querySelector(
+        'div[data-testid="LivePage"], .arena-liveblog'
+      );
+
+      if (livePageContainer) {
+        imagesFoundForDownload = true;
+        const processedUrls = new Set();
+        const seenNames = new Set();
+        const textParts = [];
+
+        // -------- 工具函数：从 srcset 中挑最高分辨率 --------
+        const pickHighestFromSrcset = (srcset) => {
+          if (!srcset) return '';
+          const candidates = srcset.split(',')
+            .map(entry => {
+              const parts = entry.trim().split(/\s+/);
+              const u = parts[0];
+              const w = parts[1] ? parseInt(parts[1]) : 0;
+              return { url: u, width: w };
+            })
+            .filter(c => c.url && c.width > 0 && !c.url.startsWith('data:'))
+            .sort((a, b) => b.width - a.width);
+          return candidates.length ? candidates[0].url : '';
+        };
+
+        // -------- 工具函数：清理 caption --------
+        const cleanCaption = (txt) => {
+          if (!txt) return '';
+          return txt
+            .replace(/\u200B/g, '')                  // 零宽空格
+            .replace(/REUTERS\/.*$/i, '')            // 摄影师署名
+            .replace(/^["“"']+|["""']+$/g, '')       // 首尾引号
+            .replace(/\s+/g, ' ')
+            .trim();
+        };
+
+        // -------- 工具函数：根据 caption 生成唯一文件名 --------
+        const makeFilename = (caption, fallback, url) => {
+          let ext = 'jpg';
+          const m = url.match(/\.(png|jpe?g|webp|gif)(\?|$|_)/i);
+          if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+
+          let base = (caption || fallback)
+            .replace(/[\\/?%*:|"<>+]/g, '-')
+            .replace(/\s+/g, ' ')
+            .substring(0, 180)
+            .trim();
+          if (!base) base = fallback;
+
+          let filename = `${base}.${ext}`;
+          let counter = 1;
+          while (seenNames.has(filename)) {
+            filename = `${base}(${counter++}).${ext}`;
+          }
+          seenNames.add(filename);
+          return filename;
+        };
+
+        // -------- 1. 抓取页面大标题 --------
+        const heading = document.querySelector('h1[data-testid="Heading"]');
+        if (heading && heading.textContent.trim()) {
+          textParts.push(heading.textContent.trim());
+        }
+
+        // -------- 2. 处理顶部 primary-image (lead image) --------
+        const primaryImage = document.querySelector('[data-testid="primary-image"]');
+        if (primaryImage) {
+          const img = primaryImage.querySelector('img');
+          if (img) {
+            let url = pickHighestFromSrcset(img.srcset) || img.src || '';
+            if (url && !processedUrls.has(url)) {
+              processedUrls.add(url);
+
+              let caption = '';
+              // caption 通常在 [data-testid="Body"] 里的第一个 span
+              const capSpan = primaryImage.querySelector(
+                '[data-testid="Body"] span, figcaption span'
+              );
+              if (capSpan) {
+                // 只取 span 的直接文本，避免把 <a>(license) 也带进来
+                caption = Array.from(capSpan.childNodes)
+                  .filter(n => n.nodeType === Node.TEXT_NODE)
+                  .map(n => n.textContent)
+                  .join(' ')
+                  .trim();
+                if (!caption) caption = capSpan.textContent.trim();
+              }
+              if (!caption && img.alt) caption = img.alt.trim();
+              caption = cleanCaption(caption);
+
+              const filename = makeFilename(
+                caption,
+                `reuters-live-lead-${Date.now()}`,
+                url
+              );
+              chrome.runtime.sendMessage({
+                action: 'downloadImage',
+                url: url,
+                filename: filename
+              });
+            }
+          }
+        }
+
+        // -------- 3. 处理直播流卡片 --------
+        const cards = document.querySelectorAll(
+          '[data-testid="live-pbp-card"], .live-message--card'
+        );
+        let liveImgIdx = 0;
+
+        cards.forEach(card => {
+          const body = card.querySelector(
+            '.live-message--card--body, [class*="LivePlayByPlayCardBody"]'
+          );
+          if (!body) return;
+
+          const paragraphs = Array.from(body.querySelectorAll('p'));
+          const skipIndices = new Set();
+
+          paragraphs.forEach((p, pIdx) => {
+            if (skipIndices.has(pIdx)) return;
+
+            const arenaImg = p.querySelector('arena-image');
+            const directImg = p.querySelector('img');
+
+            // ===== A. 图片段落 =====
+            if (arenaImg || directImg) {
+              let imgUrl = '';
+              let imgAlt = '';
+
+              // 优先尝试 shadow DOM 内的 img
+              let innerImg = null;
+              if (arenaImg) {
+                if (arenaImg.shadowRoot) {
+                  innerImg = arenaImg.shadowRoot.querySelector('img');
+                }
+                if (!innerImg) {
+                  innerImg = arenaImg.querySelector('img');
+                }
+                imgAlt = arenaImg.getAttribute('alt') || '';
+              }
+              if (!innerImg) innerImg = directImg;
+
+              if (innerImg) {
+                imgUrl = pickHighestFromSrcset(innerImg.srcset) ||
+                  innerImg.src || '';
+                if (!imgAlt) imgAlt = innerImg.alt || '';
+              }
+
+              // 兜底：直接拿 arena-image 的 src，并去掉 ?w=… 参数取原图
+              if (!imgUrl && arenaImg) {
+                let raw = arenaImg.getAttribute('src') || '';
+                imgUrl = raw.split('?')[0];
+              }
+
+              if (!imgUrl) return;
+              // 转绝对路径
+              try { imgUrl = new URL(imgUrl, window.location.href).href; }
+              catch (e) { return; }
+
+              if (processedUrls.has(imgUrl)) return;
+              processedUrls.add(imgUrl);
+              liveImgIdx++;
+
+              // 找 caption: 紧随其后的 <p><span class="ql-size-small">…</span></p>
+              let caption = '';
+              const nextP = paragraphs[pIdx + 1];
+              if (nextP) {
+                const sizeSmall = nextP.querySelector('.ql-size-small');
+                if (sizeSmall) {
+                  caption = sizeSmall.textContent.trim();
+                  skipIndices.add(pIdx + 1);  // 这段不进正文
+                }
+              }
+              if (!caption) caption = imgAlt;
+              caption = cleanCaption(caption);
+
+              const filename = makeFilename(
+                caption,
+                `reuters-live-${Date.now()}-${liveImgIdx}`,
+                imgUrl
+              );
+              chrome.runtime.sendMessage({
+                action: 'downloadImage',
+                url: imgUrl,
+                filename: filename
+              });
+              return;
+            }
+
+            // ===== B. 文本段落 =====
+            // 跳过纯 caption（整段只有一个 .ql-size-small）
+            const sizeSmallOnly = p.querySelector('.ql-size-small');
+            if (sizeSmallOnly &&
+              p.children.length === 1 &&
+              p.firstElementChild === sizeSmallOnly) {
+              return;
+            }
+
+            const text = p.textContent
+              .replace(/\u200B/g, '')      // 零宽空格
+              .replace(/\s+/g, ' ')
+              .trim();
+
+            if (!text) return;
+            if (text.length <= 1) return;
+            if (['•', '@', '∞', '·', '.'].includes(text)) return;
+
+            textParts.push(text);
+          });
+        });
+
+        textContent = textParts.join('\n\n');
+
+        if (processedUrls.size === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        }
+      }
     } else {
       // ★★★ 下面是原有的 Svelte 和旧版逻辑，保持不变，放在 else 中 ★★★
 
