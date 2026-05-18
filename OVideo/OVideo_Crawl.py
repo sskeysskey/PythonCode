@@ -59,6 +59,24 @@ TASKS = [
                     "Anime": {"id": 4, "enabled": True,  "pages": 2},
                 }
             },
+            {
+                "year": "2023",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
+                }
+            },
+            {
+                "year": "2022",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
+                }
+            },
             # --- 新增：score 模式，不需要年份 ---
             {
                 "year": "",  # 这里留空
@@ -479,7 +497,7 @@ def _find_span_by_label(info_block, label: str):
 
 
 def parse_detail_page(html: str, name: str, url: str,
-                      info: str = "") -> dict:
+                      info: str = "") -> dict | None: # 修改返回类型注解
     soup = BeautifulSoup(html, "html.parser")
 
     # ====== 提取最后更新时间 ======
@@ -613,6 +631,11 @@ def parse_detail_page(html: str, name: str, url: str,
 
     # 播放列表（仅在线观看）
     data["playlist"] = parse_playlist(soup)
+
+    # 【新增逻辑】：如果播放列表为空，说明没有有效资源，直接返回 None
+    if not data["playlist"]:
+        print(f"     [警告] 没有有效播放源，跳过该条目: {name}")
+        return None
 
     return data
 
@@ -752,9 +775,14 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 continue
 
             try:
+                # 【修改处】：接收返回值
                 detail = parse_detail_page(detail_html, item["name"], item["url"], info=item["info"])
+                
+                # 【新增逻辑】：如果返回 None，说明没资源，直接跳过本次循环
+                if detail is None:
+                    continue
 
-                # 详情页解析完拿到了新的 update,如果跟老的不一致,日志提示一下
+                # 详情页解析完拿到了新的 update... (后续逻辑保持不变)
                 if is_update and old_data.get("update") and old_data.get("update") != detail.get("update", ""):
                     print(f"     [update 变化] {old_data.get('update')} → {detail.get('update')}")
 
@@ -786,9 +814,16 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
     return new_count, updated_count
 
+def clean_existing_data(data: dict):
+    for cat in data:
+        if isinstance(data[cat], list):
+            # 过滤掉 playlist 为空的条目
+            data[cat] = [item for item in data[cat] if item.get("playlist")]
+
 
 def main():
     final = load_existing(OUTPUT_FILE)
+    clean_existing_data(final) # <--- 加上这一行即可清理旧的无效数据
     index = build_index(final)
     print(f"已有数据分类数: {len(final)}；"
           f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")

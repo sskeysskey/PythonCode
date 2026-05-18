@@ -283,6 +283,11 @@ def main() -> None:
                 "需要吗", "以上总结", "这份总结", "符合你的预期", "符合您的预期"
             ]
             
+            # --- 新增：针对声明式 AI 废话的关键词 ---
+            ai_statement_keywords = [
+                "以上内容基于", "未添加任何主观", "基于所提供新闻", "本总结仅供参考"
+            ]
+            
             truncate_index = len(lines)
             # 【关键修改】：将扫描范围从最后 5 行扩大到最后 15 行，防止被底部广告/横线挤出扫描区
             scan_limit = max(-1, len(lines) - 7)
@@ -297,6 +302,9 @@ def main() -> None:
                     truncate_index = i
                 # 规则3：针对“这份总结/摘要涵盖了...你觉得...”这类特定句式（增加“摘要”、“内容”等词）
                 elif "你觉得" in current_line and any(word in current_line for word in ["这份总结", "以后总结", "以上就是", "总结", "符合你的预期", "摘要", "梳理"]):
+                    truncate_index = i
+                # 规则 4：针对声明式废话
+                elif any(kw in current_line for kw in ai_statement_keywords):
                     truncate_index = i
 
             # 如果找到了截断点，记录被截断的部分，然后丢弃

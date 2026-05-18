@@ -3483,6 +3483,17 @@ function extractAndCopy() {
   // 3. 通用/收尾逻辑
   // ==========================================
 
+  if (textContent) {
+    // 定义要过滤的字符串
+    const unwantedText = "If you can't see the content of video posts, please adjust your cookie settings";
+
+    // 使用 replaceAll 替换所有匹配项，并去除多余的空行（可选）
+    textContent = textContent.split(unwantedText).join('').trim();
+
+    // 如果替换后导致出现了连续的空行，可以进一步清理（可选）
+    textContent = textContent.replace(/\n{3,}/g, '\n\n');
+  }
+
   // 如果提取到了文本，执行复制
   if (textContent) {
     // 创建一个隐藏的 textarea 元素以复制文本

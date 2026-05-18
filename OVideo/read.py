@@ -9,10 +9,10 @@ REGION_FILTER_CATEGORIES = {'Drama'}
 # 命中任一关键字就跳过该项目
 # 只写 '大陆' 可避免误伤 "中国香港" / "中国台湾"；
 # 如果想把 "中国"、"中国大陆" 都算上，就加 '中国'
-REGION_BLOCK_KEYWORDS = ('大陆', '中国')
+REGION_BLOCK_KEYWORDS = ('大陆', '中国', '内地')
 
 # 评分过滤阈值：豆瓣或 IMDB 任一 >= 此值即通过
-RATING_THRESHOLD = 6.5
+RATING_THRESHOLD = 4.9
 # 参与评分比较的字段（按顺序尝试）
 RATING_FIELDS = ('豆瓣', 'IMDB')
 
@@ -108,6 +108,9 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
     豆瓣或 IMDB 任一 >= threshold 即通过（返回 False）；
     全部为空或低于阈值 -> 跳过（返回 True）。
     """
+    # --- 新增：暂时屏蔽评分过滤 ---
+    # return False 
+
     ratings = item.get('评分', {}) or {}
     for field in rating_fields:
         score = _parse_rating(ratings.get(field))
