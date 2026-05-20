@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-xb6v.com 最新剧集爬取脚本
-- 抓取首页 "最新剧集" 列表
+xb6v.com 最新剧集、最新电影、小编推荐爬取脚本
+- 抓取首页 "最新电影" (Tab 0)、"最新剧集" (Tab 1)、"小编推荐" (Tab 2)
 - 进入子页面解析详细信息
 - 校验播放列表不为空后，再下载封面图到 cover_image 目录
-- 把结果合并写入 OVideos.json 的 Drama 分组
-- 【新增规则】如果抓取到的播放列表为空，则不写入，直接跳过，且不下载图片，并打印日志
-- 【新增规则】当剧集更新成功时，自动将 info 字段更新为 “更新至A集”，并打印 info 变更日志
+- 把结果合并写入 OVideos.json 的相应分组
+- 【规则】如果抓取到的播放列表为空，则不写入，直接跳过，且不下载图片，并打印日志
+- 【规则】当剧集更新成功时，自动将 info 字段更新为 “更新至A集”，并打印 info 变更日志
+- 【规则】"最新电影"与"小编推荐"采用自动分组规则（根据详情页播放列表判断是 Movie 还是 Drama）
 """
 
 import os
@@ -22,7 +23,7 @@ from datetime import datetime
 BASE_URL    = "https://www.xb6v.com/qian50m.html"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
-GROUP_KEY   = "Drama"          # 写入的分组
+GROUP_KEY   = "Drama"          # 默认写入的分组（针对最新剧集栏目）
 PLAYLIST_NAME = "xb6v"         # playlist 里的 name
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0           # 每抓一个子页面之间的休眠秒数
@@ -432,22 +433,39 @@ def find_existing_any_group(data, name, url):
     return None, None
 
 
-def process_recommend(data):
-    print("[抓取] 小编推荐 ...")
-    items = get_list_by_tab(2)
+def process_tab_by_recommend_rules(data, tab_index, tab_name):
+    """
+    通用解析函数：适用于【最新电影】和【小编推荐】
+    - 详情页获取真实 name
+    - 自动根据播放列表判断分组 (Movie / Drama)
+    - 自动处理图片下载和更新逻辑
+    """
+    print(f"[抓取] {tab_name} ...")
+    items = get_list_by_tab(tab_index)
     print(f"  共发现 {len(items)} 条")
     ok, fail = 0, 0
 
     for idx, (name, info, url) in enumerate(items, 1):
         print(f"  ({idx}/{len(items)}) {name}  [{info}]")
         try:
-            # 先看看这条 url 和 name 在两个组里是不是已经有了
-            old_group, existing = find_existing_any_group(data, name, url)
+            # 1. 无论如何，先去详情页抓取一次，以详情页的真实 name 为准
+            # 先用默认的 name 抓取子页面
+            rec = parse_subpage(url, name, info)
+            real_name = rec["name"]  # 详情页拿到的真实名称
+            real_info = rec["info"]  # 详情页拿到的真实 info
+
+            # 2. 拿着真实的 name 和 url 去已有的 Drama & Movie 分组里查找
+            old_group, existing = find_existing_any_group(data, real_name, url)
 
             if existing:
-                # 已存在: 只抓 episodes,然后做 upsert
-                eps = fetch_playlist_only(url)
-                status, added, total = upsert_playlist(existing, eps)
+                # 已存在: 只更新播放列表
+                episodes = {}
+                for pl in rec.get("playlist", []):
+                    if pl.get("name") == PLAYLIST_NAME:
+                        episodes = pl.get("episodes", {})
+                        break
+
+                status, added, total = upsert_playlist(existing, episodes)
                 if status == "updated":
                     old_info = existing.get("info", "")
                     new_info = f"更新至{total}集"
@@ -470,10 +488,7 @@ def process_recommend(data):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # 新记录: 完整解析
-            rec = parse_subpage(url, name, info)
-
-            # 用 episodes 判定分组
+            # 3. 新记录: 提取并校验播放列表
             episodes = {}
             for pl in rec.get("playlist", []):
                 if pl.get("name") == PLAYLIST_NAME:
@@ -491,15 +506,15 @@ def process_recommend(data):
             img_url = rec.get("image", "")
             rec["image"] = download_and_localize_image(img_url)
 
+            # 自动识别分组
             group = detect_group_by_episodes(episodes)
             if group is None:
-                # 理论上上面已经拦截了 episodes 为空的情况，这里作为兜底
-                print("    ! 无 episodes,默认按 Movie 处理")
+                print("    ! 无法明确识别分组, 默认按 Movie 处理")
                 group = "Movie"
 
             status = merge_record(data, rec, group)
             ep_count = len(episodes)
-            print(f"    ✓ {status} -> {group} (共 {ep_count} 集/源)")
+            print(f"    ✓ {status} -> {group} (共 {ep_count} 集/源) [真实名称: {real_name}]")
             ok += 1
 
         except Exception as e:
@@ -556,13 +571,17 @@ def fetch_playlist_only(sub_url):
 # ============== 主流程 ==============
 def main():
     os.makedirs(IMG_DIR, exist_ok=True)
-    print("[1/3] 抓取首页最新剧集列表 ...")
+    data = load_json()
+
+    # --- 1. 抓取最新电影 (Tab 0) ---
+    # 采用推荐栏目的规则：详情页获取真实名称 + 自动判断分组 (Movie/Drama)
+    m_ok, m_fail = process_tab_by_recommend_rules(data, 0, "最新电影")
+
+    # --- 2. 抓取最新剧集 (Tab 1) ---
+    print("[2/4] 抓取首页最新剧集列表 ...")
     items = get_list_by_tab(1)
     print(f"  共发现 {len(items)} 条")
 
-    data = load_json()
-
-    print("[2/3] 逐个抓取子页面 ...")
     ok, fail = 0, 0
     for idx, (name, info, url) in enumerate(items, 1):
         print(f"  ({idx}/{len(items)}) {name}  [{info}]")
@@ -588,14 +607,13 @@ def main():
                     print("    - 忽略跳过：抓取到的剧集数量少于已有数量，不作更新")
                     ok += 1
                 elif status == "no_new":
-                    # 【修改点】已存在记录，但新抓取的播放列表为空时的日志标出
                     print("    ! 忽略跳过：抓取到的播放列表为空，不作更新")
                     fail += 1
                 else:
                     print("    ! 重名，但未抓到播放列表")
                     fail += 1
             else:
-                # 全新记录（即使 name 重名，只要 url 不同也走这里），走完整解析流程
+                # 全新记录，走完整解析流程
                 rec = parse_subpage(url, name, info)
                 
                 # --- 计算集数并检查是否为空 ---
@@ -625,11 +643,13 @@ def main():
             fail += 1
         time.sleep(SLEEP_BETWEEN)
 
-    r_ok, r_fail = process_recommend(data)
+    # --- 3. 抓取小编推荐 (Tab 2) ---
+    r_ok, r_fail = process_tab_by_recommend_rules(data, 2, "小编推荐")
     
+    # --- 4. 保存 JSON ---
     print("[写入] OVideos.json ...")
     save_json(data)
-    print(f"完成: 剧集 成功 {ok}/失败 {fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
+    print(f"完成: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {ok}/失败 {fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
 
 
 if __name__ == "__main__":
