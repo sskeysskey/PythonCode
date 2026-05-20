@@ -21,6 +21,11 @@ _std_session = requests.Session()
 # 候选 impersonate 列表，失败时轮换
 _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"]
 
+# ==========================================
+# 受保护的播放源（由其他爬虫维护，本爬虫不覆盖这些源）
+# 当条目重新抓取时，这些源会从旧数据中保留下来，
+# 只更新这个集合之外的源。后续要新增其它外部源，直接加进来即可。
+PROTECTED_SOURCES = {"xb6v"}
 
 # ==========================================
 # 抓取任务总配置
@@ -122,7 +127,7 @@ TASKS = [
     },
 ]
 
-# 1. 创建一个全局的 Session 对象
+# 1. 创建一个全局 of Session 对象
 # 这样可以复用 TCP/TLS 连接，极大减少握手错误 (Error 35)
 # 强制使用 HTTP/1.1 (http_version=1) 可以避免很多 CDN 的 HTTP/2 握手 Bug
 http_session = c_requests.Session(
@@ -420,9 +425,8 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, path): {"info": info, "update": update, "image": image, "has_xb6v": has_xb6v}}},
+    返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
     用于判断该条目是否已存在、info / update 是否变化,以及图片是否缺失。
-    并增加 is_old_episodes 字段，用来识别旧的 list 格式 episodes。
     """
     idx = {}
     for cat, items in existing.items():
@@ -439,13 +443,21 @@ def build_index(existing: dict) -> dict:
                 playlist = it.get("playlist", [])
                 has_xb6v = any(p.get("name") == "xb6v" for p in playlist)
 
+                # 检查旧数据的 episodes 格式是否为 list (如果是 list 则需要重抓转换为 dict)
+                is_old_episodes = False
+                for p in playlist:
+                    if isinstance(p.get("episodes"), list):
+                        is_old_episodes = True
+                        break
+
                 if name and url:
                     path = get_url_path(url)
                     m[(name, path)] = {
                         "info": info,
                         "update": update,
                         "image": image,
-                        "has_xb6v": has_xb6v,  # ← 新增字段
+                        "has_xb6v": has_xb6v,
+                        "is_old_episodes": is_old_episodes,  # ← 记录是否是旧集数格式
                     }
         idx[cat] = m
     return idx
@@ -652,7 +664,10 @@ def parse_detail_page(html: str, name: str, url: str,
 
 
 def parse_playlist(soup) -> list[dict]:
-    """只解析『在线观看』tab（#url-content1）下的播放列表。"""
+    """
+    只解析『在线观看』tab（#url-content1）下的播放列表。
+    【已修改】：将 episodes 结构从 list 更改为 dict {"集数名": "播放链接"}
+    """
     playlist = []
 
     # 关键改动：把搜索范围锁定到 #url-content1
@@ -675,16 +690,21 @@ def parse_playlist(soup) -> list[dict]:
         if not channel_name:
             channel_name = tab.get_text(strip=True)
 
-        # 找到对应 ul
+        # 去除可能包含的引号或多余空格
+        channel_name = channel_name.replace('"', '').replace('“', '').replace('”', '').strip()
+
         ul_id = target.lstrip("#")
         # 同样限制在 online_section 内
         ul = online_section.find("ul", id=ul_id)
-        episodes = []
+        
+        # 【修改处】：将 episodes 更改为 dict 结构
+        episodes = {}
         if ul:
             for a in ul.select("li a"):
                 href = a.get("href", "")
-                if href:
-                    episodes.append(urljoin(DETAIL_BASE_URL, href))
+                ep_name = a.get_text(strip=True) # 获取如 "第01集"
+                if href and ep_name:
+                    episodes[ep_name] = urljoin(DETAIL_BASE_URL, href)
         
         # 如果解析到了剧集，则根据黑名单进行分类存放
         if episodes:
@@ -757,21 +777,23 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 old_info   = old_data.get("info", "")
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
-                has_xb6v   = old_data.get("has_xb6v", False) # ← 获取是否包含 xb6v
+                has_xb6v   = old_data.get("has_xb6v", False)
+                is_old_episodes = old_data.get("is_old_episodes", False) # 是否是旧的列表集数格式
                 
                 # 【修改处】：如果 info 没变，或者虽然变了但已经有 xb6v 源，都认为满足 info 条件
                 info_condition_met = (old_info == item["info"]) or has_xb6v
 
-                # 三个条件全部满足才跳过:
-                #   1) info条件满足  2) 已下载封面  3) 已经有 update
-                if (info_condition_met and old_image and old_update):
-                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新/已含xb6v] {item['name']}  info={item['info']}")
+                # 【修改处】：如果 episodes 格式是旧的，则不能跳过，必须强制重抓以更新为 dict 格式
+                if (info_condition_met and old_image and old_update and not is_old_episodes):
+                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
                     continue
 
-            # 判定本次是新增 / 补图 / 补update / 普通更新
+            # 判定本次是新增 / 补图 / 补update / 补episode / 普通更新
             is_update = old_data is not None
             if is_update:
-                if not old_data.get("update"):
+                if old_data.get("is_old_episodes", False):
+                    tag = "[补episode]"  # ← 核心要求：当检测到旧格式时，日志输出 [补episode]
+                elif not old_data.get("update"):
                     tag = "[补update]"
                 elif old_data.get("info") == item["info"] and not old_data.get("image"):
                     tag = "[补图]"
@@ -817,12 +839,20 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # 【新增】：提取最新的播放列表中是否包含 xb6v
                 new_has_xb6v = any(p.get("name") == "xb6v" for p in detail.get("playlist", []))
 
+                # 检查新解析的集数格式是否已经成功转为 dict
+                new_is_old = False
+                for p in detail.get("playlist", []):
+                    if isinstance(p.get("episodes"), list):
+                        new_is_old = True
+                        break
+
                 # 索引同步更新
                 index_map[key] = {
                     "info":   item["info"],
                     "update": detail.get("update", ""),
                     "image":  detail.get("image", ""),
-                    "has_xb6v": new_has_xb6v,  # ← 记录到索引中
+                    "has_xb6v": new_has_xb6v,
+                    "is_old_episodes": new_is_old,
                 }
                 save_data(all_data)
                 print(f"     [已实时保存到磁盘]")

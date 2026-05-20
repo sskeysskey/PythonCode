@@ -66,7 +66,7 @@ def split_name_info(raw_title):
     """
     raw_title = raw_title.strip()
     # 找最早出现的分隔符位置
-    m = re.search(r"[\[\［\s]", raw_title)
+    m = re.search(r"[[\［\s]", raw_title)
     if not m:
         return raw_title, ""
     idx = m.start()
@@ -109,18 +109,21 @@ def get_drama_list():
     return items
 
 
-# ============== 播放列表（仅取指定 widget）==============
+# ============== 播放列表（提取为字典结构）==============
 def extract_episodes(soup):
     for widget in soup.select("div.widget.box.row"):
         h3 = widget.find("h3")
         if h3 and "播放地址（无需安装插件" in h3.get_text():
-            eps = []
+            eps = {}
             for a in widget.select("a.lBtn[href]"):
                 href = a["href"]
                 if "DownSys/play" in href:
-                    eps.append(urljoin(BASE_URL, href))
+                    # 获取剧集名称，优先取 a 标签内的文本，若为空则取 title 属性
+                    ep_name = a.get_text(strip=True) or a.get("title", "").strip()
+                    if ep_name:
+                        eps[ep_name] = urljoin(BASE_URL, href)
             return eps
-    return []
+    return {}
 
 
 # ============== 字段正则（兼容 主演/演员）==============
@@ -404,10 +407,13 @@ def upsert_playlist(existing, new_episodes):
         return "no_new", 0
 
     # 查找已有的 xb6v 播放列表
-    old_episodes = []
+    old_episodes = {}
     for pl in existing.get("playlist", []):
         if pl.get("name") == PLAYLIST_NAME:
-            old_episodes = pl.get("episodes", [])
+            old_episodes = pl.get("episodes", {})
+            # 兼容处理：如果已有数据是旧版列表格式，强制将其视为空字典，触发“补episode”更新
+            if isinstance(old_episodes, list):
+                old_episodes = {}
             break
 
     # 1. 无论内容还是条数都没有变化 -> 跳过
@@ -418,7 +424,7 @@ def upsert_playlist(existing, new_episodes):
     if len(new_episodes) < len(old_episodes):
         return "decreased", 0
 
-    # 3. 发生了变化（增加或内容变更） -> 覆盖写入并更新时间
+    # 3. 发生了变化（增加、内容变更或旧版 List 格式补全） -> 覆盖写入并更新时间
     added_count = len(new_episodes) - len(old_episodes)
     
     new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
@@ -454,10 +460,21 @@ def main():
             if existing:
                 # 记录已存在，仅抓取播放列表进行比对
                 eps = fetch_playlist_only(url)
+                
+                # 判断是否属于需要执行“补episode”的旧数据
+                is_old_format = False
+                for pl in existing.get("playlist", []):
+                    if pl.get("name") == PLAYLIST_NAME and isinstance(pl.get("episodes"), list):
+                        is_old_format = True
+                        break
+
                 status, added_count = upsert_playlist(existing, eps)
                 
                 if status == "updated":
-                    print(f"    ✓ 更新：发现新剧集，新增 {added_count} 集，已覆盖写入")
+                    if is_old_format:
+                        print(f"    ✓ [补episode]：检测到旧版列表格式，已成功重构并补全为字典格式")
+                    else:
+                        print(f"    ✓ 更新：发现新剧集，新增 {added_count} 集，已覆盖写入")
                     ok += 1
                 elif status == "no_change":
                     print("    - 无更新跳过：剧集内容和条数均无变化")
@@ -479,7 +496,7 @@ def main():
                 if "playlist" in rec and isinstance(rec["playlist"], list):
                     for pl in rec["playlist"]:
                         if pl.get("name") == PLAYLIST_NAME:
-                            ep_count = len(pl.get("episodes", []))
+                            ep_count = len(pl.get("episodes", {}))
                             break
                 
                 print(f"    ✓ {status} (共 {ep_count} 集)")
