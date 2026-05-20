@@ -3,6 +3,7 @@ import os
 import time
 import random
 import re
+from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -75,6 +76,15 @@ TASKS = [
             },
             {
                 "year": "2022",
+                "categories": {
+                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
+                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
+                    "Show":  {"id": 3, "enabled": True, "pages": 1},
+                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
+                }
+            },
+            {
+                "year": "2021",
                 "categories": {
                     "Movie": {"id": 1, "enabled": True,  "pages": 3},
                     "Drama": {"id": 2, "enabled": True,  "pages": 1},
@@ -205,6 +215,27 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 # =============================================================
 # 工具函数
 # =============================================================
+
+def format_date_str(date_str: str) -> str:
+    """
+    将 '2026年4月3日' 或 '2026年04月03日' 转换为 '2026-04-03'
+    """
+    try:
+        # 使用正则提取所有数字
+        parts = re.findall(r'\d+', date_str)
+        if len(parts) >= 3:
+            year, month, day = parts[0], parts[1], parts[2]
+            # 使用 zfill 补零，确保月和日是两位数
+            return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+        elif len(parts) == 2:
+            # 处理只有年月的情况，如 '2026年4月'
+            return f"{parts[0]}-{parts[1].zfill(2)}"
+        elif len(parts) == 1:
+            # 处理只有年份的情况
+            return parts[0]
+    except Exception:
+        pass
+    return date_str # 如果解析失败，返回原字符串
 
 def save_data(data: dict):
     """
@@ -438,17 +469,6 @@ def build_index(existing: dict) -> dict:
                 info = it.get("info", "")
                 update = it.get("update", "")
                 image = it.get("image", "")
-                
-                # 【新增】：判断旧数据的 playlist 中是否包含 name 为 xb6v 的源
-                playlist = it.get("playlist", [])
-                has_xb6v = any(p.get("name") == "xb6v" for p in playlist)
-
-                # 检查旧数据的 episodes 格式是否为 list (如果是 list 则需要重抓转换为 dict)
-                is_old_episodes = False
-                for p in playlist:
-                    if isinstance(p.get("episodes"), list):
-                        is_old_episodes = True
-                        break
 
                 if name and url:
                     path = get_url_path(url)
@@ -456,8 +476,6 @@ def build_index(existing: dict) -> dict:
                         "info": info,
                         "update": update,
                         "image": image,
-                        "has_xb6v": has_xb6v,
-                        "is_old_episodes": is_old_episodes,  # ← 记录是否是旧集数格式
                     }
         idx[cat] = m
     return idx
@@ -611,10 +629,12 @@ def parse_detail_page(html: str, name: str, url: str,
             cleaned = clean_ws(text)
             # 2. 去掉前缀 "上映："
             cleaned = cleaned.replace("上映：", "", 1)
-            # 3. 如果需要去掉 "(美国网络)" 中的 "网络" 二字，可以使用正则替换
-            # 这里的意思是把 "(...网络)" 替换为 "(...)"
+            # 3. 如果需要去掉 "(美国网络)" 中的 "网络" 二字
             cleaned = re.sub(r"\((.*?)(网络)\)", r"(\1)", cleaned)
-            data["date"] = cleaned
+            
+            # --- 【新增修改】调用格式化函数 ---
+            data["date"] = format_date_str(cleaned)
+            
         elif text.startswith("又名："):
             data["alias"] = clean_ws(text)
 
@@ -777,23 +797,17 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 old_info   = old_data.get("info", "")
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
-                has_xb6v   = old_data.get("has_xb6v", False)
-                is_old_episodes = old_data.get("is_old_episodes", False) # 是否是旧的列表集数格式
-                
-                # 【修改处】：如果 info 没变，或者虽然变了但已经有 xb6v 源，都认为满足 info 条件
-                info_condition_met = (old_info == item["info"]) or has_xb6v
 
-                # 【修改处】：如果 episodes 格式是旧的，则不能跳过，必须强制重抓以更新为 dict 格式
-                if (info_condition_met and old_image and old_update and not is_old_episodes):
+                # 跳过条件：info 没变、且关键字段齐全
+                # 注意：不再因为存在 xb6v 等受保护源就跳过 info 变化
+                if (old_info == item["info"]) and old_image and old_update:
                     print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
                     continue
 
-            # 判定本次是新增 / 补图 / 补update / 补episode / 普通更新
+            # 判定本次是新增 / 补图 / 补update / 普通更新
             is_update = old_data is not None
             if is_update:
-                if old_data.get("is_old_episodes", False):
-                    tag = "[补episode]"  # ← 核心要求：当检测到旧格式时，日志输出 [补episode]
-                elif not old_data.get("update"):
+                if not old_data.get("update"):
                     tag = "[补update]"
                 elif old_data.get("info") == item["info"] and not old_data.get("image"):
                     tag = "[补图]"
@@ -812,13 +826,42 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             try:
                 # 【修改处】：接收返回值
                 detail = parse_detail_page(detail_html, item["name"], item["url"], info=item["info"])
-                
-                # 【新增逻辑】：如果返回 None，说明没资源，直接跳过本次循环
+
+                # 没抓到任何在线源 → 跳过
                 if detail is None:
                     continue
 
-                # 详情页解析完拿到了新的 update... (后续逻辑保持不变)
-                if is_update and old_data.get("update") and old_data.get("update") != detail.get("update", ""):
+                # ===== 关键：合并受保护源（如 xb6v）=====
+                # 这些源由其它爬虫维护，本爬虫不应覆盖。
+                # 做法：先在旧数据中找到这条目，把受保护源摘出来；
+                #       再把新 playlist 中可能同名的源剔掉，把旧的受保护源追加回去。
+                old_entry = None
+                if is_update:
+                    for old in existing_list:
+                        if old.get("name") == item["name"] and \
+                           get_url_path(old.get("url", "")) == item_path:
+                            old_entry = old
+                            break
+
+                if old_entry:
+                    old_playlist = old_entry.get("playlist", [])
+                    protected_in_old = [
+                        p for p in old_playlist
+                        if p.get("name") in PROTECTED_SOURCES
+                    ]
+                    if protected_in_old:
+                        new_playlist = [
+                            p for p in detail.get("playlist", [])
+                            if p.get("name") not in PROTECTED_SOURCES
+                        ]
+                        new_playlist.extend(protected_in_old)
+                        detail["playlist"] = new_playlist
+                        kept_names = [p.get("name") for p in protected_in_old]
+                        print(f"     [保留受保护源] {kept_names}")
+
+                # update 变化提示
+                if is_update and old_data.get("update") and \
+                   old_data.get("update") != detail.get("update", ""):
                     print(f"     [update 变化] {old_data.get('update')} → {detail.get('update')}")
 
                 if is_update:
@@ -836,23 +879,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
-                # 【新增】：提取最新的播放列表中是否包含 xb6v
-                new_has_xb6v = any(p.get("name") == "xb6v" for p in detail.get("playlist", []))
-
-                # 检查新解析的集数格式是否已经成功转为 dict
-                new_is_old = False
-                for p in detail.get("playlist", []):
-                    if isinstance(p.get("episodes"), list):
-                        new_is_old = True
-                        break
-
-                # 索引同步更新
+                # 索引同步更新（不再保存 has_xb6v / is_old_episodes）
                 index_map[key] = {
                     "info":   item["info"],
                     "update": detail.get("update", ""),
                     "image":  detail.get("image", ""),
-                    "has_xb6v": new_has_xb6v,
-                    "is_old_episodes": new_is_old,
                 }
                 save_data(all_data)
                 print(f"     [已实时保存到磁盘]")

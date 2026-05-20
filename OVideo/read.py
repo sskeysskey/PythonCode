@@ -24,12 +24,19 @@ SPECIAL_CHANNEL_NAME = 'xb6v'
 def get_scan_episodes(episodes, category, show_last_n):
     """
     根据分类返回"本次实际要扫描的 episodes 列表"。
+    - episodes 现在是字典 {"第01集": "url1", ...}，需要先提取出 values 列表。
     - Show: 只取末尾 show_last_n 条（不足则全拿）
-    - 其他分类: 原样返回
+    - 其他分类: 原样返回所有 values
     """
+    if not episodes:
+        return []
+    
+    # 将字典的 values 转换为 URL 列表
+    urls_list = list(episodes.values())
+
     if category == 'Show' and show_last_n > 0:
-        return episodes[-show_last_n:]
-    return episodes
+        return urls_list[-show_last_n:]
+    return urls_list
 
 
 def is_channel_viable(episodes, blacklist_url):
@@ -54,7 +61,8 @@ def pick_playlists_to_scan(playlists, blacklist_url, only_first_channel,
     """
     viable = []
     for idx, playlist in enumerate(playlists, start=1):
-        episodes_all = playlist.get('episodes', [])
+        # 兼容新格式：默认获取字典 {}
+        episodes_all = playlist.get('episodes', {}) or {}
         scan_episodes = get_scan_episodes(episodes_all, category, show_last_n)
 
         if not scan_episodes:
@@ -142,12 +150,14 @@ def find_special_channel(playlists, name=SPECIAL_CHANNEL_NAME):
 # ============================================================
 def process_special_xb6v(special_pl, url_mapping, blacklist_url,
                          mapping_path, item_label):
-    episodes = special_pl.get('episodes', []) or []
+    # 兼容新格式：默认获取字典 {}
+    episodes = special_pl.get('episodes', {}) or {}
     if not episodes:
         print(f"  [xb6v] {item_label} 的 xb6v channel episodes 为空，按已完成处理")
         return 'done'
 
-    for episode_url in episodes:
+    # 使用 episodes.values() 遍历字典中的 URL
+    for episode_url in episodes.values():
         if episode_url in blacklist_url:
             # xb6v 单条命中黑名单：跳过该条，但继续看下一条
             print(f"  [xb6v 跳过黑名单] {episode_url}")

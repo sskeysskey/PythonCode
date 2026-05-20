@@ -5,6 +5,8 @@ xb6v.com 最新剧集爬取脚本
 - 进入子页面解析详细信息
 - 下载封面图到 cover_image 目录
 - 把结果合并写入 OVideos.json 的 Drama 分组
+- 【新增规则】如果抓取到的播放列表为空，则不写入，直接跳过，并打印日志
+- 【新增规则】当剧集更新成功时，自动将 info 字段更新为 “更新至A集”，并打印 info 变更日志
 """
 
 import os
@@ -78,35 +80,6 @@ def split_name_info(raw_title):
 def safe_filename(url):
     """从图片 URL 提取文件名"""
     return os.path.basename(url.split("?")[0])
-
-
-# ============== 抓取首页列表 ==============
-def get_drama_list():
-    """
-    返回 [(name, info, sub_url), ...]
-    最新剧集在 #tab-content 下，第二个 ul（class='hide' 但 selected 时 display:block）
-    实际上首页所有 ul 都在 DOM 里，我们根据 tabnav 的顺序来取第二个 ul
-    """
-    html = fetch(BASE_URL)
-    soup = BeautifulSoup(html, "lxml")
-    tab_content = soup.select_one("#tab-content")
-    if not tab_content:
-        raise RuntimeError("找不到 #tab-content，页面结构可能变了")
-
-    uls = tab_content.find_all("ul", recursive=False)
-    # 顺序: 最新电影 / 最新剧集 / 小编推荐
-    if len(uls) < 2:
-        raise RuntimeError(f"#tab-content 下 ul 数量异常: {len(uls)}")
-    drama_ul = uls[1]
-    items = []
-    for a in drama_ul.select("li > a[href]"):
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        if not title or not href:
-            continue
-        name, info = split_name_info(title)
-        items.append((name, info, urljoin(BASE_URL, href)))
-    return items
 
 
 # ============== 播放列表（提取为字典结构）==============
@@ -379,53 +352,178 @@ def save_json(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-def find_existing(data, name):
-    for item in data.get(GROUP_KEY, []):
-        if item.get("name") == name:
+def find_existing(data, name, url, group):
+    """在指定分组中，只有 name 和 url 都一致时才判定为已存在"""
+    for item in data.get(group, []):
+        if item.get("name") == name and item.get("url") == url:
             return item
     return None
 
 
-def merge_record(data, record):
-    """根据 url 去重：已有则更新，没有则追加"""
-    group = data.setdefault(GROUP_KEY, [])
-    for i, item in enumerate(group):
-        if item.get("url") == record["url"] or item.get("name") == record["name"]:
-            group[i] = record
+def merge_record(data, record, group):
+    """根据 name 和 url 双重唯一性去重：均一致则更新，否则追加"""
+    arr = data.setdefault(group, [])
+    for i, item in enumerate(arr):
+        if item.get("url") == record["url"] and item.get("name") == record["name"]:
+            arr[i] = record
             return "updated"
-    group.append(record)
+    arr.append(record)
     return "added"
+
+
+def detect_group_by_episodes(episodes):
+    """
+    根据播放列表按钮文字判断分组:
+      - 出现 '集'  -> Drama
+      - 否则       -> Movie  (含 国语 / 中字 / HD / BD 等)
+    episodes 为空时返回 None,让调用方决定怎么处理
+    """
+    if not episodes:
+        return None
+    
+    keys = list(episodes.keys())
+    if any("集" in k for k in keys):
+        return "Drama"
+    
+    MOVIE_TAGS = ("国语", "中字", "HD", "BD", "蓝光", "4K", "粤语", "英语", "高清", "TC", "正片")
+    if any(tag in k for k in keys for tag in MOVIE_TAGS):
+        return "Movie"
+    
+    return None  # 拿不准就跳过/告警
+
+
+def get_list_by_tab(tab_index):
+    """tab_index: 0=最新电影, 1=最新剧集, 2=小编推荐"""
+    html = fetch(BASE_URL)
+    soup = BeautifulSoup(html, "lxml")
+    tab_content = soup.select_one("#tab-content")
+    if not tab_content:
+        raise RuntimeError("找不到 #tab-content")
+    uls = tab_content.find_all("ul", recursive=False)
+    if len(uls) <= tab_index:
+        raise RuntimeError(f"#tab-content 下 ul 数量不足: {len(uls)}")
+    target_ul = uls[tab_index]
+    items = []
+    for a in target_ul.select("li > a[href]"):
+        title = a.get_text(strip=True)
+        href = a.get("href", "")
+        if not title or not href:
+            continue
+        name, info = split_name_info(title)
+        items.append((name, info, urljoin(BASE_URL, href)))
+    return items
+
+
+def find_existing_any_group(data, name, url):
+    """在 Drama 和 Movie 两个组里查找 name 和 url 均匹配的记录"""
+    for g in ("Drama", "Movie"):
+        for item in data.get(g, []):
+            if item.get("url") == url and item.get("name") == name:
+                return g, item
+    return None, None
+
+
+def process_recommend(data):
+    print("[抓取] 小编推荐 ...")
+    items = get_list_by_tab(2)
+    print(f"  共发现 {len(items)} 条")
+    ok, fail = 0, 0
+
+    for idx, (name, info, url) in enumerate(items, 1):
+        print(f"  ({idx}/{len(items)}) {name}  [{info}]")
+        try:
+            # 先看看这条 url 和 name 在两个组里是不是已经有了
+            old_group, existing = find_existing_any_group(data, name, url)
+
+            if existing:
+                # 已存在: 只抓 episodes,然后做 upsert
+                eps = fetch_playlist_only(url)
+                status, added, total = upsert_playlist(existing, eps)
+                if status == "updated":
+                    old_info = existing.get("info", "")
+                    new_info = f"更新至{total}集"
+                    existing["info"] = new_info
+                    print(f"    ✓ 更新({old_group}): 新增 {added} 集")
+                    print(f"      [info字段更新] 共有 {total} 集，info由原来的「{old_info}」更新为「{new_info}」")
+                    ok += 1
+                elif status == "no_change":
+                    print(f"    - 无更新({old_group})")
+                    ok += 1
+                elif status == "decreased":
+                    print(f"    - 忽略({old_group}): 集数减少")
+                    ok += 1
+                elif status == "no_new":
+                    print(f"    ! 忽略({old_group})：抓取到的播放列表为空，不作更新")
+                    fail += 1
+                else:
+                    print(f"    ! 已存在但未抓到播放列表({old_group})")
+                    fail += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
+
+            # 新记录: 完整解析
+            rec = parse_subpage(url, name, info)
+
+            # 用 episodes 判定分组
+            episodes = {}
+            for pl in rec.get("playlist", []):
+                if pl.get("name") == PLAYLIST_NAME:
+                    episodes = pl.get("episodes", {})
+                    break
+
+            # 全新记录如果 episodes 为空，则不写入并跳过
+            if not episodes:
+                print("    ! 忽略跳过：该新纪录未抓取到任何播放列表(episodes为空)")
+                fail += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
+
+            group = detect_group_by_episodes(episodes)
+            if group is None:
+                # 理论上上面已经拦截了 episodes 为空的情况，这里作为兜底
+                print("    ! 无 episodes,默认按 Movie 处理")
+                group = "Movie"
+
+            status = merge_record(data, rec, group)
+            ep_count = len(episodes)
+            print(f"    ✓ {status} -> {group} (共 {ep_count} 集/源)")
+            ok += 1
+
+        except Exception as e:
+            print(f"    ✗ 抓取失败: {e}")
+            fail += 1
+        time.sleep(SLEEP_BETWEEN)
+
+    return ok, fail
 
 
 def upsert_playlist(existing, new_episodes):
     """
     更新播放列表：
-    - 返回状态码和新增集数 (status, added_count)
-    - status: "no_new" (没抓到), "no_change" (无变化), "decreased" (减少了), "updated" (已更新)
+    - 返回状态码、新增集数和更新后的总集数 (status, added_count, total_count)
+    - status: "no_new" (没抓到/为空), "no_change" (无变化), "decreased" (减少了), "updated" (已更新)
     """
     if not new_episodes:
-        return "no_new", 0
+        return "no_new", 0, 0
 
     # 查找已有的 xb6v 播放列表
     old_episodes = {}
     for pl in existing.get("playlist", []):
         if pl.get("name") == PLAYLIST_NAME:
             old_episodes = pl.get("episodes", {})
-            # 兼容处理：如果已有数据是旧版列表格式，强制将其视为空字典，触发“补episode”更新
-            if isinstance(old_episodes, list):
-                old_episodes = {}
             break
 
     # 1. 无论内容还是条数都没有变化 -> 跳过
     if new_episodes == old_episodes:
-        return "no_change", 0
+        return "no_change", 0, len(old_episodes)
 
     # 2. 条目减少的时候 -> 不用写入
     if len(new_episodes) < len(old_episodes):
-        return "decreased", 0
+        return "decreased", 0, len(old_episodes)
 
-    # 3. 发生了变化（增加、内容变更或旧版 List 格式补全） -> 覆盖写入并更新时间
+    # 3. 发生了变化（增加或内容变更） -> 覆盖写入并更新时间
     added_count = len(new_episodes) - len(old_episodes)
+    total_count = len(new_episodes)
     
     new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
     others = [pl for pl in existing.get("playlist", []) if pl.get("name") != PLAYLIST_NAME]
@@ -433,7 +531,7 @@ def upsert_playlist(existing, new_episodes):
     existing["playlist"] = [new_pl] + others
     existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    return "updated", added_count
+    return "updated", added_count, total_count
 
 
 def fetch_playlist_only(sub_url):
@@ -446,7 +544,7 @@ def fetch_playlist_only(sub_url):
 def main():
     os.makedirs(IMG_DIR, exist_ok=True)
     print("[1/3] 抓取首页最新剧集列表 ...")
-    items = get_drama_list()
+    items = get_list_by_tab(1)
     print(f"  共发现 {len(items)} 条")
 
     data = load_json()
@@ -456,25 +554,19 @@ def main():
     for idx, (name, info, url) in enumerate(items, 1):
         print(f"  ({idx}/{len(items)}) {name}  [{info}]")
         try:
-            existing = find_existing(data, name)
+            # 传入 url，只有 name 和 url 双重一致时才算 existing
+            existing = find_existing(data, name, url, "Drama")
             if existing:
                 # 记录已存在，仅抓取播放列表进行比对
                 eps = fetch_playlist_only(url)
-                
-                # 判断是否属于需要执行“补episode”的旧数据
-                is_old_format = False
-                for pl in existing.get("playlist", []):
-                    if pl.get("name") == PLAYLIST_NAME and isinstance(pl.get("episodes"), list):
-                        is_old_format = True
-                        break
-
-                status, added_count = upsert_playlist(existing, eps)
+                status, added_count, total_count = upsert_playlist(existing, eps)
                 
                 if status == "updated":
-                    if is_old_format:
-                        print(f"    ✓ [补episode]：检测到旧版列表格式，已成功重构并补全为字典格式")
-                    else:
-                        print(f"    ✓ 更新：发现新剧集，新增 {added_count} 集，已覆盖写入")
+                    old_info = existing.get("info", "")
+                    new_info = f"更新至{total_count}集"
+                    existing["info"] = new_info
+                    print(f"    ✓ 更新：发现新剧集，新增 {added_count} 集，已覆盖写入")
+                    print(f"      [info字段更新] 共有 {total_count} 集，info由原来的「{old_info}」更新为「{new_info}」")
                     ok += 1
                 elif status == "no_change":
                     print("    - 无更新跳过：剧集内容和条数均无变化")
@@ -482,16 +574,18 @@ def main():
                 elif status == "decreased":
                     print("    - 忽略跳过：抓取到的剧集数量少于已有数量，不作更新")
                     ok += 1
+                elif status == "no_new":
+                    # 【修改点】已存在记录，但新抓取的播放列表为空时的日志标出
+                    print("    ! 忽略跳过：抓取到的播放列表为空，不作更新")
+                    fail += 1
                 else:
                     print("    ! 重名，但未抓到播放列表")
                     fail += 1
             else:
-                # 全新记录，走完整解析流程
+                # 全新记录（即使 name 重名，只要 url 不同也走这里），走完整解析流程
                 rec = parse_subpage(url, name, info)
-                status = merge_record(data, rec)
                 
-                # --- 新增逻辑：计算集数 ---
-                # 提取 playlist 中的 episodes 数量
+                # --- 新增逻辑：计算集数并检查是否为空 ---
                 ep_count = 0
                 if "playlist" in rec and isinstance(rec["playlist"], list):
                     for pl in rec["playlist"]:
@@ -499,6 +593,14 @@ def main():
                             ep_count = len(pl.get("episodes", {}))
                             break
                 
+                # 全新记录如果播放列表为空，则不写入并跳过
+                if ep_count == 0:
+                    print("    ! 忽略跳过：该新纪录未抓取到任何播放列表(episodes/playlist为空)")
+                    fail += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
+
+                status = merge_record(data, rec, "Drama")
                 print(f"    ✓ {status} (共 {ep_count} 集)")
                 ok += 1
         except Exception as e:
@@ -506,11 +608,11 @@ def main():
             fail += 1
         time.sleep(SLEEP_BETWEEN)
 
-    print("[3/3] 写入 JSON ...")
+    r_ok, r_fail = process_recommend(data)
+    
+    print("[写入] OVideos.json ...")
     save_json(data)
-    print(f"完成：成功 {ok}，失败 {fail}")
-    print(f"JSON: {JSON_PATH}")
-    print(f"图片目录: {IMG_DIR}")
+    print(f"完成: 剧集 成功 {ok}/失败 {fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
 
 
 if __name__ == "__main__":
