@@ -3,9 +3,9 @@
 xb6v.com 最新剧集爬取脚本
 - 抓取首页 "最新剧集" 列表
 - 进入子页面解析详细信息
-- 下载封面图到 cover_image 目录
+- 校验播放列表不为空后，再下载封面图到 cover_image 目录
 - 把结果合并写入 OVideos.json 的 Drama 分组
-- 【新增规则】如果抓取到的播放列表为空，则不写入，直接跳过，并打印日志
+- 【新增规则】如果抓取到的播放列表为空，则不写入，直接跳过，且不下载图片，并打印日志
 - 【新增规则】当剧集更新成功时，自动将 info 字段更新为 “更新至A集”，并打印 info 变更日志
 """
 
@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # ============== 配置 ==============
-BASE_URL    = "https://www.xb6v.com/"
+BASE_URL    = "https://www.xb6v.com/qian50m.html"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 GROUP_KEY   = "Drama"          # 写入的分组
@@ -210,9 +210,29 @@ def parse_score(s):
     return val
 
 
+# ============== 下载并本地化图片的辅助函数 ==============
+def download_and_localize_image(img_url):
+    """下载图片并返回本地文件名，失败则返回空字符串"""
+    if not img_url:
+        return ""
+    fn = safe_filename(img_url)
+    local_path = os.path.join(IMG_DIR, fn)
+    if not os.path.exists(local_path):
+        try:
+            content = fetch(img_url, is_binary=True)
+            os.makedirs(IMG_DIR, exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(content)
+            print(f"  [图片] 已下载 -> {fn}")
+        except Exception as e:
+            print(f"  [图片下载失败] {img_url}: {e}")
+            return ""
+    return fn
+
+
 # ============== 子页面解析 ==============
 def parse_subpage(sub_url, default_name, default_info):
-    """解析子页面，返回一条 JSON 记录 + 封面图 URL"""
+    """解析子页面，返回一条 JSON 记录（此时 image 字段仅保存原始 img_url）"""
     html = fetch(sub_url)
     soup = BeautifulSoup(html, "lxml")
 
@@ -232,7 +252,7 @@ def parse_subpage(sub_url, default_name, default_info):
     # 简介（在 <br> 被替换前先抽，因为 extract_intro 内部会改 <br>）
     intro_text = extract_intro(post)
 
-    # 封面图
+    # 封面图 URL (这里只提取，不下载)
     img_url = ""
     img_tag = post.find("img")
     if img_tag and img_tag.get("src"):
@@ -294,22 +314,6 @@ def parse_subpage(sub_url, default_name, default_info):
     if lei_bie:
         types = [t for t in re.split(r"[\s/、,，]+", lei_bie) if t]
 
-    # 图片本地化
-    image_field = ""
-    if img_url:
-        fn = safe_filename(img_url)            # 0140.jpg
-        image_field = fn                       # 直接赋值，保留扩展名，例如：0140.jpg
-        local_path = os.path.join(IMG_DIR, fn)
-        if not os.path.exists(local_path):
-            try:
-                content = fetch(img_url, is_binary=True)
-                os.makedirs(IMG_DIR, exist_ok=True)
-                with open(local_path, "wb") as f:
-                    f.write(content)
-                print(f"  [图片] 已下载 -> {fn}")
-            except Exception as e:
-                print(f"  [图片下载失败] {img_url}: {e}")
-
     episodes = extract_episodes(soup)
     playlist = []
     if episodes:
@@ -324,7 +328,7 @@ def parse_subpage(sub_url, default_name, default_info):
         "url":    sub_url,
         "info":   info,
         "update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "image":  image_field,
+        "image":  img_url,  # 临时存放原始图片URL，后续确认不为空时再下载替换
         "导演":   director,
         "编剧":   writer_list,
         "主演":   actor_list,
@@ -399,9 +403,14 @@ def get_list_by_tab(tab_index):
     tab_content = soup.select_one("#tab-content")
     if not tab_content:
         raise RuntimeError("找不到 #tab-content")
-    uls = tab_content.find_all("ul", recursive=False)
+    
+    # 过滤掉空的或者不符合预期的 ul
+    uls = [ul for ul in tab_content.find_all("ul", recursive=False) if ul.find("li")]
+    
     if len(uls) <= tab_index:
-        raise RuntimeError(f"#tab-content 下 ul 数量不足: {len(uls)}")
+        print(f"警告：期望获取索引为 {tab_index} 的列表，但实际只找到 {len(uls)} 个有效列表")
+        return []
+        
     target_ul = uls[tab_index]
     items = []
     for a in target_ul.select("li > a[href]"):
@@ -471,12 +480,16 @@ def process_recommend(data):
                     episodes = pl.get("episodes", {})
                     break
 
-            # 全新记录如果 episodes 为空，则不写入并跳过
+            # 全新记录如果 episodes 为空，则不写入并跳过（此时图片完全未下载）
             if not episodes:
                 print("    ! 忽略跳过：该新纪录未抓取到任何播放列表(episodes为空)")
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
+
+            # 确定播放列表不为空，开始下载图片并本地化
+            img_url = rec.get("image", "")
+            rec["image"] = download_and_localize_image(img_url)
 
             group = detect_group_by_episodes(episodes)
             if group is None:
@@ -569,7 +582,7 @@ def main():
                     print(f"      [info字段更新] 共有 {total_count} 集，info由原来的「{old_info}」更新为「{new_info}」")
                     ok += 1
                 elif status == "no_change":
-                    print("    - 无更新跳过：剧集内容和条数均无变化")
+                    print("    - 无更新跳过：剧集内容 and 条数均无变化")
                     ok += 1
                 elif status == "decreased":
                     print("    - 忽略跳过：抓取到的剧集数量少于已有数量，不作更新")
@@ -585,7 +598,7 @@ def main():
                 # 全新记录（即使 name 重名，只要 url 不同也走这里），走完整解析流程
                 rec = parse_subpage(url, name, info)
                 
-                # --- 新增逻辑：计算集数并检查是否为空 ---
+                # --- 计算集数并检查是否为空 ---
                 ep_count = 0
                 if "playlist" in rec and isinstance(rec["playlist"], list):
                     for pl in rec["playlist"]:
@@ -593,12 +606,16 @@ def main():
                             ep_count = len(pl.get("episodes", {}))
                             break
                 
-                # 全新记录如果播放列表为空，则不写入并跳过
+                # 全新记录如果播放列表为空，则不写入并跳过（此时图片完全未下载）
                 if ep_count == 0:
                     print("    ! 忽略跳过：该新纪录未抓取到任何播放列表(episodes/playlist为空)")
                     fail += 1
                     time.sleep(SLEEP_BETWEEN)
                     continue
+
+                # 确定播放列表不为空，开始下载图片并本地化
+                img_url = rec.get("image", "")
+                rec["image"] = download_and_localize_image(img_url)
 
                 status = merge_record(data, rec, "Drama")
                 print(f"    ✓ {status} (共 {ep_count} 集)")
