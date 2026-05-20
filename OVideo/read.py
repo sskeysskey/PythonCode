@@ -6,9 +6,7 @@ import pyperclip
 SKIP_CATEGORIES = set()
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
-# 命中任一关键字就跳过该项目
-# 只写 '大陆' 可避免误伤 "中国香港" / "中国台湾"；
-# 如果想把 "中国"、"中国大陆" 都算上，就加 '中国'
+# 属于模糊匹配，命中任一关键字就跳过该项目
 REGION_FILTER_CATEGORIES = {'Drama'}
 REGION_BLOCK_KEYWORDS = ('大陆', '中国', '内地')
 

@@ -8,6 +8,7 @@ xb6v.com 最新剧集、最新电影、小编推荐爬取脚本
 - 【规则】如果抓取到的播放列表为空，则不写入，直接跳过，且不下载图片，并打印日志
 - 【规则】当剧集更新成功时，自动将 info 字段更新为 “更新至A集”，并打印 info 变更日志
 - 【规则】"最新电影"与"小编推荐"采用自动分组规则（根据详情页播放列表判断是 Movie 还是 Drama）
+- 【优化】增量写入：每成功抓取/更新一条数据，立即写入 JSON，防止中断丢失数据
 """
 
 import os
@@ -27,6 +28,7 @@ GROUP_KEY   = "Drama"          # 默认写入的分组（针对最新剧集栏�
 PLAYLIST_NAME = "xb6v"         # playlist 里的 name
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0           # 每抓一个子页面之间的休眠秒数
+BLACKLIST_NAMES = ["乘风2026"] 
 
 HEADERS = {
     "User-Agent": (
@@ -446,6 +448,11 @@ def process_tab_by_recommend_rules(data, tab_index, tab_name):
     ok, fail = 0, 0
 
     for idx, (name, info, url) in enumerate(items, 1):
+        # --- 新增黑名单拦截 ---
+        if name in BLACKLIST_NAMES:
+            print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            continue
+        
         print(f"  ({idx}/{len(items)}) {name}  [{info}]")
         try:
             # 1. 无论如何，先去详情页抓取一次，以详情页的真实 name 为准
@@ -472,6 +479,11 @@ def process_tab_by_recommend_rules(data, tab_index, tab_name):
                     existing["info"] = new_info
                     print(f"    ✓ 更新({old_group}): 新增 {added} 集")
                     print(f"      [info字段更新] 共有 {total} 集，info由原来的「{old_info}」更新为「{new_info}」")
+                    
+                    # 【增量修改点 1】更新成功后立即写入 JSON 
+                    save_json(data)
+                    print("      [写入] 数据已实时保存至 JSON")
+                    
                     ok += 1
                 elif status == "no_change":
                     print(f"    - 无更新({old_group})")
@@ -510,11 +522,16 @@ def process_tab_by_recommend_rules(data, tab_index, tab_name):
             group = detect_group_by_episodes(episodes)
             if group is None:
                 print("    ! 无法明确识别分组, 默认按 Movie 处理")
-                group = "Movie"
+                group = "Show"
 
             status = merge_record(data, rec, group)
             ep_count = len(episodes)
             print(f"    ✓ {status} -> {group} (共 {ep_count} 集/源) [真实名称: {real_name}]")
+            
+            # 【增量修改点 2】新记录写入成功后立即写入 JSON
+            save_json(data)
+            print("      [写入] 数据已实时保存至 JSON")
+            
             ok += 1
 
         except Exception as e:
@@ -584,6 +601,11 @@ def main():
 
     ok, fail = 0, 0
     for idx, (name, info, url) in enumerate(items, 1):
+        # --- 新增黑名单拦截 ---
+        if name in BLACKLIST_NAMES:
+            print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            continue
+        
         print(f"  ({idx}/{len(items)}) {name}  [{info}]")
         try:
             # 传入 url，只有 name 和 url 双重一致时才算 existing
@@ -599,6 +621,11 @@ def main():
                     existing["info"] = new_info
                     print(f"    ✓ 更新：发现新剧集，新增 {added_count} 集，已覆盖写入")
                     print(f"      [info字段更新] 共有 {total_count} 集，info由原来的「{old_info}」更新为「{new_info}」")
+                    
+                    # 【增量修改点 3】最新剧集更新成功后立即写入 JSON
+                    save_json(data)
+                    print("      [写入] 数据已实时保存至 JSON")
+                    
                     ok += 1
                 elif status == "no_change":
                     print("    - 无更新跳过：剧集内容 and 条数均无变化")
@@ -637,6 +664,11 @@ def main():
 
                 status = merge_record(data, rec, "Drama")
                 print(f"    ✓ {status} (共 {ep_count} 集)")
+                
+                # 【增量修改点 4】最新剧集新记录写入成功后立即写入 JSON
+                save_json(data)
+                print("      [写入] 数据已实时保存至 JSON")
+                
                 ok += 1
         except Exception as e:
             print(f"    ✗ 抓取失败: {e}")
@@ -646,10 +678,10 @@ def main():
     # --- 3. 抓取小编推荐 (Tab 2) ---
     r_ok, r_fail = process_tab_by_recommend_rules(data, 2, "小编推荐")
     
-    # --- 4. 保存 JSON ---
-    print("[写入] OVideos.json ...")
-    save_json(data)
-    print(f"完成: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {ok}/失败 {fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
+    # --- 4. 最终状态打印 ---
+    print("====================================")
+    print(f"所有抓取任务完成! 数据已全部安全保存在 {JSON_PATH}")
+    print(f"统计: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {ok}/失败 {fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
 
 
 if __name__ == "__main__":
