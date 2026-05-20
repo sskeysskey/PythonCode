@@ -2955,19 +2955,19 @@ function extractAndCopy() {
   }
 
   // ==========================================
-  // 新增/修改：Washington Post 处理
+  // Washington Post 处理
   // ==========================================
   else if (window.location.hostname.includes("washingtonpost.com")) {
     // ① 先取最可能的文章容器，fallback 到 body
     const container = document.querySelector('article') || document.body;
 
-    // 1. 提取正文：增加对新版 data-testid 结构的支持
-    // 包含段落(p)、小标题(h2)和列表(li)
+    // 1. 提取正文：增加对新版 data-testid 结构和 .article-content 类的支持
     let paras = Array.from(container.querySelectorAll(
       'p[data-contentid], ' +
       'p[data-component="Text"], ' +
       'p[data-apitype="text"], ' +
       'p[data-testid="paragraph"], ' +
+      'p.article-content, ' + // <-- 【新增】支持新版页面的正文段落
       'h2[data-testid="article-header"], ' +
       'ul[data-testid="list"] li'
     ));
@@ -2978,9 +2978,8 @@ function extractAndCopy() {
       .join('\n\n');
 
     // 2. 提取并下载图片
-    // 注意：移除了对 textContent 成功与否的强依赖，即使没抓到正文，也尝试抓取图片
+    // 【核心修改点 1】：扩大搜索范围，直接使用 main 或 body，避免被 .grid-full-inner-standard 局限导致漏掉正文图片
     const imgContainer =
-      document.querySelector('.grid-full-inner-standard') ||
       document.querySelector('main') ||
       document.body;
 
@@ -3053,9 +3052,12 @@ function extractAndCopy() {
         if (processedUrls.has(bestUrl)) return;
         processedUrls.add(bestUrl);
 
-        // caption 或 alt 或时间戳
+        // 【核心修改点 2】：增强寻找 figcaption 的逻辑，处理 WP 头图 caption 不在 figure 内部的情况
         let name = '';
-        const capEl = fig.querySelector('figcaption');
+        // 优先找 figure 内部的 figcaption，如果找不到，往上找父级容器的同级 figcaption
+        const capEl = fig.querySelector('figcaption') ||
+          (fig.closest('[data-testid="lede-art"]') && fig.closest('[data-testid="lede-art"]').parentElement.querySelector('figcaption'));
+
         if (capEl && capEl.textContent.trim()) {
           name = capEl.textContent.trim();
         } else if (img.alt && img.alt.trim()) {
@@ -3484,14 +3486,31 @@ function extractAndCopy() {
   // ==========================================
 
   if (textContent) {
-    // 定义要过滤的字符串
+    // 1. 新规则：如果包含“Read more of our stories...”，删除该段及之后所有内容
+    const stopPhrase = "Read more of our stories about Philadelphia";
+    const stopIndex = textContent.indexOf(stopPhrase);
+
+    if (stopIndex !== -1) {
+      // 截取从开头到该短语出现位置的文本
+      textContent = textContent.substring(0, stopIndex);
+    }
+
+    // 2. 定义要过滤的固定字符串
     const unwantedText = "If you can't see the content of video posts, please adjust your cookie settings";
 
-    // 使用 replaceAll 替换所有匹配项，并去除多余的空行（可选）
+    // 3. 定义要过滤的包含特定内容的段落（正则匹配）
+    const unwantedParagraphRegex = /^.*Want to contribute to Ripple\?.*$/gm;
+
+    // 执行过滤
+    // 先替换固定字符串
     textContent = textContent.split(unwantedText).join('').trim();
 
-    // 如果替换后导致出现了连续的空行，可以进一步清理（可选）
-    textContent = textContent.replace(/\n{3,}/g, '\n\n');
+    // 再替换正则匹配到的段落
+    textContent = textContent.replace(unwantedParagraphRegex, '');
+
+    // 4. 清理多余的空行
+    // 经过上述操作后，可能会产生连续的空行，这里将其规范化
+    textContent = textContent.replace(/\n{3,}/g, '\n\n').trim();
   }
 
   // 如果提取到了文本，执行复制

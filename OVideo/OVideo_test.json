@@ -15,8 +15,6 @@
             "主演": [
                 "沈腾",
                 "尹正",
-                "陈永胜",
-                "冯绍峰",
                 "郝瀚"
             ],
             "类型": [
@@ -44,18 +42,6 @@
                     "name": "暴风",
                     "episodes": [
                         "https://www.pys1.com/py/483269-9-1.html"
-                    ]
-                },
-                {
-                    "name": "光速",
-                    "episodes": [
-                        "https://www.pys1.com/py/483269-4-1.html"
-                    ]
-                },
-                {
-                    "name": "红牛",
-                    "episodes": [
-                        "https://www.pys1.com/py/483269-5-1.html"
                     ]
                 }
             ]
@@ -101,12 +87,6 @@
                     "episodes": [
                         "https://www.pys1.com/py/492749-2-1.html"
                     ]
-                },
-                {
-                    "name": "红牛",
-                    "episodes": [
-                        "https://www.pys1.com/py/492749-6-1.html"
-                    ]
                 }
             ]
         }
@@ -144,6 +124,13 @@
             },
             "playlist": [
                 {
+                    "name": "xb6v",
+                    "episodes": [
+                        "https://www.xb6v.com/e/DownSys/play/?classid=8&id=28772&pathid2=0&bf=1",
+                        "https://www.xb6v.com/e/DownSys/play/?classid=8&id=28772&pathid2=1&bf=1"
+                    ]
+                },
+                {
                     "name": "天堂",
                     "episodes": [
                         "https://www.pys2.com/py/496549-1-1.html",
@@ -158,15 +145,6 @@
                         "https://www.pys2.com/py/496549-2-1.html",
                         "https://www.pys2.com/py/496549-2-16.html",
                         "https://www.pys2.com/py/496549-2-17.html"
-                    ]
-                },
-                {
-                    "name": "红牛",
-                    "episodes": [
-                        "https://www.pys2.com/py/496549-6-1.html",
-                        "https://www.pys2.com/py/496549-6-2.html",
-                        "https://www.pys2.com/py/496549-6-16.html",
-                        "https://www.pys2.com/py/496549-6-17.html"
                     ]
                 }
             ]
@@ -186,8 +164,6 @@
             ],
             "主演": [
                 "潘粤明",
-                "王鹤棣",
-                "刘闯",
                 "周大勇"
             ],
             "类型": [
@@ -210,23 +186,6 @@
                         "https://www.pys2.com/py/496549-1-2.html",
                         "https://www.pys2.com/py/496549-1-3.html",
                         "https://www.pys2.com/py/496549-1-17.html"
-                    ]
-                },
-                {
-                    "name": "暴风",
-                    "episodes": [
-                        "https://www.pys2.com/py/496549-2-1.html",
-                        "https://www.pys2.com/py/496549-2-16.html",
-                        "https://www.pys2.com/py/496549-2-17.html"
-                    ]
-                },
-                {
-                    "name": "红牛",
-                    "episodes": [
-                        "https://www.pys2.com/py/496549-6-1.html",
-                        "https://www.pys2.com/py/496549-6-2.html",
-                        "https://www.pys2.com/py/496549-6-16.html",
-                        "https://www.pys2.com/py/496549-6-17.html"
                     ]
                 }
             ]
@@ -263,15 +222,6 @@
                 "IMDB": "7.1"
             },
             "playlist": [
-                {
-                    "name": "天堂",
-                    "episodes": [
-                        "https://www.pys2.com/py/496549-1-1.html",
-                        "https://www.pys2.com/py/496549-1-2.html",
-                        "https://www.pys2.com/py/496549-1-3.html",
-                        "https://www.pys2.com/py/496549-1-17.html"
-                    ]
-                },
                 {
                     "name": "暴风",
                     "episodes": [

@@ -1,348 +1,222 @@
--- 定义基础文件路径
-property pythonPath : "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
-property scriptFolder : "/Users/yanzhang/Coding/python_code/"
-
--- ==================================================
--- <<<< 定义全局连续错误计数器
--- ==================================================
-property consecutiveErrors : 0
-
--- ==================================================
--- <<<< 脚本启动时重置计数器
--- ==================================================
-set consecutiveErrors to 0
-
--- 设置文件夹路径
-set downloadsFolder to "/private/tmp/"
-set segmentFileName to "segment_"
-set doneFileName to "done_"
-set newsFilePath to "/Users/yanzhang/Coding/News/today_chn.txt"
-
--- 检查Segments文件夹中是否存在包含"segment"的txt文件
-tell application "System Events"
-	set segmentFileExists to false
-	set filesList to files of folder downloadsFolder whose name contains segmentFileName and name extension is "txt"
-	if (count of filesList) > 0 then
-		set segmentFileExists to true
-	end if
-end tell
-
-tell application "System Events"
-	set doneFileExists to false
-	set filesList to files of folder downloadsFolder whose name contains doneFileName and name extension is "txt"
-	if (count of filesList) > 0 then
-		set doneFileExists to true
-	end if
-end tell
-
--- 检查今天的新闻文件是否存在
-tell application "System Events"
-	set newsFileExists to false
-	if exists file newsFilePath then
-		set newsFileExists to true
-	end if
-end tell
-
-if segmentFileExists then
-	delay 0.1
-else
-	if doneFileExists then
-		if newsFileExists then
-			delay 0.1
-		else
-			set pythonScriptPath to "/Users/yanzhang/Coding/python_code/Selenium_News/Title_Read.py"
-			-- 执行 Python 脚本并检查结果
-			set pythonResult to ""
-			try
-				set pythonResult to do shell script "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath
-			on error errMsg number errNum
-				display dialog "Python 脚本执行时发生错误：" & return & return & errMsg & return & "(错误码: " & errNum & ")" with title "脚本错误" buttons {"终止"} default button "终止"
-				error number -128
-			end try
-			
-			if pythonResult contains "USE_FALLBACK_AND_TERMINATE" then
-				display dialog "未找到 today_eng.html，但检测到备用文件 today_wsjcn.html，可直接使用。" & return & return & "脚本将按要求终止。" with title "文件提示" buttons {"好的"} default button "好的"
-				error "脚本根据指令正常终止。" number -128
-			end if
-		end if
-	else
-		set pythonScriptPath to "/Users/yanzhang/Coding/python_code/Selenium_News/Title_Read.py"
-		-- 执行 Python 脚本并检查结果
-		set pythonResult to ""
-		try
-			set pythonResult to do shell script "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath
-		on error errMsg number errNum
-			display dialog "Python 脚本执行时发生错误：" & return & return & errMsg & return & "(错误码: " & errNum & ")" with title "脚本错误" buttons {"终止"} default button "终止"
-			error number -128
-		end try
-		
-		if pythonResult contains "USE_FALLBACK_AND_TERMINATE" then
-			display dialog "未找到 today_eng.html，但检测到备用文件 today_wsjcn.html，可直接使用。" & return & return & "脚本将按要求终止。" with title "文件提示" buttons {"好的"} default button "好的"
-			error "脚本根据指令正常终止。" number -128
-		end if
-	end if
-end if
+-- 定义 Python 解释器路径，方便复用
+set pythonBin to "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
+-- 定义停止触发文件的路径（桌面上的 stop_scpt.txt）
+set stopFilePath to POSIX path of (path to desktop) & "stop_scpt.txt"
 
 repeat
-	set folderPath to "/tmp/"
-	set fileIndex to 1
-	set fileFound to false
-	
-	tell application "System Events"
-		repeat until fileFound or fileIndex > 15
-			set posixFilePath to folderPath & "segment_" & fileIndex & ".txt"
-			if exists file posixFilePath then
-				set fileFound to true
-				exit repeat
-			else
-				set fileIndex to fileIndex + 1
-			end if
-		end repeat
+	try
+		-- ==========================================
+		-- 0. 检查是否存在手动停止的触发文件
+		-- ==========================================
+		try
+			do shell script "test -e " & quoted form of stopFilePath
+			-- 如果上一句没报错，说明文件存在，执行停止逻辑
+			do shell script "rm " & quoted form of stopFilePath -- 清理掉这个触发文件
+			display notification "检测到桌面的 stop_scpt.txt，脚本已安全停止。" with title "自动化已手动停止"
+			exit repeat
+		end try
+		delay 0.5
 		
-		if fileFound then
-			set loopCount to 0
-			set maxLoops to 1
-			repeat while loopCount < maxLoops
-				set appleScriptFilePath to POSIX file posixFilePath as alias
-				tell application "TextEdit"
-					open appleScriptFilePath
-					activate
-					delay 0.2
-					-- 模拟全选 Command + A
-					tell application "System Events"
-						key code 0 using command down
-						delay 0.5
-						keystroke "c" using command down
-						delay 0.5
-						-- Command + Q
-						key code 12 using command down
-						delay 0.5
-					end tell
-				end tell
-				
-				-- ==================================================
-				-- 步骤 1: 准备 Prompt
-				-- ==================================================
-				set finalMethodType to "---按照数字标号逐行翻译成精准地道的中文，保持行数不变，只输出翻译内容即可"
-				
-				-- 获取当前剪贴板的内容
-				set clipboardContent to the clipboard
-				
-				-- 在内容前后添加指定的标签 (参考 Doubao 脚本的格式，或者保持原有的 document 格式)
-				-- 这里采用直接拼接的方式，确保 Doubao 能理解
-				set newContent to "<document>" & clipboardContent & "</document>"
-				set finalInput to newContent & finalMethodType
-				set the clipboard to finalInput
-				
-				set successFlag to false -- 1. 设置一个成功标志位
-				
-				-- ==================================================
-				-- 步骤 2: 调用千问进行自动化处理
-				-- ==================================================
-				try
-					-- 2.1 激活千问标签页并发送
-					my qianwen() -- ← 改动1: doubao() → qianwen()
-					
-					do shell script "/opt/homebrew/bin/cliclick m:852,806" -- ← 改动2: 坐标换成千问的
-					
-					-- 2.3 等待生成 (标题通常较短，5-8秒应该足够，根据网络调整)
-					delay 6
-					
-					-- 2.4 运行 Qianwen_auto.py 提取网页上的回答到剪贴板
-					my runPythonScript("Qianwen_auto.py", {"50"}) -- ← 改动3: Doubao_auto.py → Qianwen_auto.py
-					
-					-- ==================================================
-					-- 步骤 3: 处理提取到的结果
-					-- ==================================================
-					
-					-- 只要脚本没报错，就认为成功，重置错误计数
-					set consecutiveErrors to 0
-					
-					-- 运行 Doubao_Title.py 对剪贴板中的翻译结果进行清洗/保存
-					-- 如果发现内容不对也会报错
-					-- 如果 Python 检测到“单行+抱歉”，会报错并输出 "FATAL_REFUSAL"
-					my runPythonScript("Qianwen_Title.py", {}) -- ← 改动4: Doubao_Title.py → Qianwen_Title.py
-					
-					-- 如果能走到这里，说明 Python 脚本都执行成功了
-					set successFlag to true -- 标记成功
-				on error errMsg
-					if errMsg contains "FATAL_REFUSAL" or errMsg contains "没有被正确翻译" then
-						display dialog "⛔️ 程序终止：检测到千问拒绝回答或剪贴内容不正确。" -- ← 改动5: 提示文字更新
-						error number -128
-					end if
-					
-					-- 普通错误处理 (自动化失败、未找到复制按钮等)
-					set consecutiveErrors to consecutiveErrors + 1
-					log "Qianwen 自动化失败 (" & errMsg & ")。当前连续错误次数: " & consecutiveErrors -- ← 改动6: 日志文字更新
-					
-					if consecutiveErrors is greater than or equal to 2 then
-						display dialog "⚠️ 警告：千问自动化已连续报错 2 次，将强制终止" -- ← 改动7: 提示文字更新
-						error "API/自动化连续报错达到上限，程序强制终止。" number -128
-					end if
-					-- 出错后，强制刷新一下网页或者等待更久，为下一次重试做准备
-					delay 2
-				end try
-				
-				delay 0.1
-				
-				
-				-- 逻辑修改：只有在 successFlag 为 true 时，才去检查 diff.txt 决定是否退出
-				if successFlag is true then
-					-- 检查 diff.txt
-					set targetFile to "/tmp/diff.txt"
-					if exists file targetFile then
-						try
-							delete file targetFile
-							set loopCount to loopCount + 1
-							log "行数不匹配 (diff.txt)，重试。循环次数：" & loopCount
-						on error
-							-- 删除失败忽略
-						end try
-					else
-						log "执行成功且无 diff 文件。退出内部循环。"
-						exit repeat -- 只有成功且没有行数差异时，才退出循环，处理下一个文件
-					end if
-				else
-					-- 如果 successFlag 是 false (即 Python 报错了)
-					set loopCount to loopCount + 1
-					log "Python 脚本报错，触发重试。循环次数：" & loopCount
-				end if
-				
-				-- 在每次迭代结束时检查循环计数
-				if loopCount ≥ maxLoops then
-					log "达到最大循环次数。退出内部循环。"
-					exit repeat
-				end if
-			end repeat
-			
-			-- 处理完当前segment文件后，将其重命名为done文件
-			try
-				set oldName to name of file posixFilePath
-				set newName to "done_" & text 9 thru -1 of oldName -- 假设 "segment_" 总是前8个字符
-				set newPath to (container of file posixFilePath as text) & newName
-				
-				tell application "Finder"
-					set name of file posixFilePath to newName
-				end tell
-				log "已处理并重命名文件：" & posixFilePath & " 到 " & newPath
-			on error errMsg
-				log "重命名文件 " & posixFilePath & " 时出错：" & errMsg
-			end try
-		else
-			-- 所有分段文件处理完毕，进行写入
-			my runPythonScript("Selenium_News/Title_Write.py", {})
+		-- ==========================================
+		-- 1. 执行 read.py
+		-- ==========================================
+		# 默认：只扫第一个可用 channel，Drama 取末尾 5 条
+		--python read.py
+		
+		# 想改成末尾 10 条
+		--python read.py --drama-last-n 10
+		
+		# 想让 Drama 也扫全部
+		--python read.py --drama-last-n 0
+		
+		# 扫所有 channel（Drama 依旧每个 channel 只取末尾 N 条）
+		--python read.py --all-channels
+		
+		set pythonScriptPath to "/Users/yanzhang/Coding/python_code/OVideo/read.py"
+		set readResult to do shell script pythonBin & " " & quoted form of pythonScriptPath
+		
+		-- 修改后的代码
+		--set pythonScriptPath to "/Users/yanzhang/Coding/python_code/OVideo/read.py"
+		-- 在路径后面拼接空格和参数
+		--set cmd to pythonBin & " " & quoted form of pythonScriptPath & " --all-channels"
+		--set readResult to do shell script cmd
+		
+		-- 检查 read.py 的输出，如果全部处理完毕，则退出循环
+		if readResult contains "所有视频链接都已处理完毕" then
+			display notification "所有链接已处理完毕，自动化结束。" with title "自动化完成"
 			exit repeat
 		end if
-	end tell
-end repeat
-
--- ==================================================
--- 以下为新增/移植的 Handler 函数
--- ==================================================
-
-on runPythonScript(scriptName, args)
-	set scriptPath to scriptFolder & scriptName
-	set argString to ""
-	repeat with arg in args
-		set argString to argString & " " & quoted form of arg
-	end repeat
-	set pythonResult to do shell script pythonPath & " " & quoted form of scriptPath & argString
-	delay 0.5
-	return pythonResult
-end runPythonScript
-
--- ← 改动8: 整个 doubao() handler 替换为从 a.scpt 移植过来的 qianwen() handler
-on qianwen()
-	set foundMapsTab to false
-	set mapsTabIndex to 0
-	tell application "Google Chrome"
-		delay 0.3
-		activate
-		set windowList to every window
+		delay 0.5
 		
-		-- 遍历每一个窗口
-		repeat with aWindow in windowList
-			set tabList to every tab of aWindow
-			set tabIndex to 0
+		-- ==========================================
+		-- 2. 激活 Downie 4
+		-- ==========================================
+		tell application "/Applications/Downie 4.app"
+			activate
+		end tell
+		
+		tell application "System Events"
+			tell process "Downie 4"
+				set frontmost to true
+			end tell
+		end tell
+		delay 0.5
+		
+		-- ==========================================
+		-- 3. 执行截图点击流程 (screenshot.py)
+		-- ==========================================
+		set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
+		set Opposite to "false"
+		
+		-- 3.0 检查剪贴板：是否包含 xb6v.com
+		set isXb6v to false
+		try
+			set clipContent to (the clipboard as text)
+			if clipContent contains "xb6v.com" then
+				set isXb6v to true
+				log "检测到剪贴板包含 xb6v.com，downie_add 后将直接跳到 downie_more 步骤。"
+			end if
+		on error clipErr
+			log "读取剪贴板失败: " & clipErr
+		end try
+		
+		-- 截图 1: downie_add.png
+		set imageName to "downie_add.png"
+		set clickValue to "true"
+		set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+		if cmdResult contains "TIMEOUT" then exit repeat
+		delay 0.5
+		
+		-- ==========================================
+		-- 3.2 同时扫描 downie_addselect.png 和 downie_404.png
+		-- （xb6v.com 分支整体跳过此检测与 select/none/Tab 流程）
+		-- ==========================================
+		set skipNormalFlow to false  -- 控制 more.png 之后的流程是否执行（仅 404 时置 true）
+		
+		if isXb6v then
+			log "xb6v.com 简化流程：跳过 addselect/404 检测与选择步骤，直接进入 downie_more.png。"
+		else
+			set imageName to "downie_addselect.png,downie_404.png"
+			set clickValue to "false"
+			-- 参数: scroll=false, x_offset=0, y_offset=0, nth_match=1, timeout=3500
+			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " false 0 0 1 3500"
 			
-			-- 遍历每一个标签页
-			repeat with aTab in tabList
-				set tabIndex to tabIndex + 1
-				set tabURL to URL of aTab
+			if cmdResult contains "FOUND_IMAGE:downie_404.png" then
+				-- -------- 404 分支 --------
+				log "检测到 downie_404.png，执行 Cmd+W 并调用 b.py 将当前 URL 拉黑。"
 				
-				if tabURL contains "qianwen.com" then
-					set foundMapsTab to true
-					set mapsTabIndex to tabIndex
-					set index of aWindow to 1
-					set active tab index of aWindow to tabIndex
+				-- 1) 关闭当前的 404 子窗口
+				tell application "System Events"
+					keystroke "w" using command down
+				end tell
+				delay 0.5
+				
+				-- 模拟鼠标移动
+				do shell script "/opt/homebrew/bin/cliclick m:187,504"
+				delay 0.5
+				
+				-- 2) 调用 404_move.py
+				try
+					set bPyPath to "/Users/yanzhang/Coding/python_code/OVideo/404_move.py"
+					set bResult to do shell script pythonBin & " " & quoted form of bPyPath
+					log "404_move.py 输出: " & bResult
+				on error bErr
+					log "404_move.py 执行失败: " & bErr
+				end try
+				
+				-- 跳过后续的 more/savemeta/savejson/write/close
+				set skipNormalFlow to true
+			else
+				-- 15 秒内是否找到了 addselect
+				if cmdResult does not contain "TIMEOUT" then
+					delay 0.5
+					
+					set imageName to "downie_select.png"
+					set clickValue to "true"
+					set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+					if cmdResult contains "TIMEOUT" then exit repeat
+					delay 0.5
+					
+					set imageName to "downie_none.png"
+					set clickValue to "true"
+					set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+					if cmdResult contains "TIMEOUT" then exit repeat
+					delay 0.5
+					
+					tell application "System Events"
+						key code 48 -- Tab
+						delay 0.5
+						key code 125 -- Down Arrow
+						delay 0.5
+						key code 49 -- Space
+						delay 0.5
+					end tell
+					
+					set imageName to "downie_addselect.png"
+					set clickValue to "true"
+					set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+					if cmdResult contains "TIMEOUT" then exit repeat
+					delay 1
+				else
+					log "15秒内未出现 downie_addselect.png，跳过选择步骤。"
+				end if
+			end if
+		end if
+		
+		-- ==========================================
+		-- more.png 及以后的流程（xb6v.com 与 普通无 404 分支 共用）
+		-- ==========================================
+		if not skipNormalFlow then
+			-- 截图 4: downie_more.png
+			set imageName to "downie_more.png"
+			set clickValue to "true"
+			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+			if cmdResult contains "TIMEOUT" then exit repeat
+			delay 0.5
+			
+			-- 截图 5: downie_savemeta.png
+			set imageName to "downie_savemeta.png"
+			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+			if cmdResult contains "TIMEOUT" then exit repeat
+			delay 0.5
+			
+			-- 截图 6: downie_savejson.png
+			set imageName to "downie_savejson.png"
+			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+			if cmdResult contains "TIMEOUT" then exit repeat
+			delay 0.5
+			
+			-- ==========================================
+			-- 4. 执行 write.py
+			-- ==========================================
+			set pythonScriptPath to "/Users/yanzhang/Coding/python_code/OVideo/write.py"
+			do shell script pythonBin & " " & quoted form of pythonScriptPath
+			delay 0.5
+			
+			-- ==========================================
+			-- 5. 关闭操作 (screenshot.py)
+			-- ==========================================
+			set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
+			set imageName to "downie_close.png"
+			set clickValue to "true"
+			
+			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
+			if cmdResult contains "TIMEOUT" then exit repeat
+			delay 1
+			
+			-- 内层循环：清理残留的 close 按钮
+			repeat
+				set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " false 0 0 1 1"
+				if cmdResult contains "TIMEOUT" then
+					log "close 按钮已消失，继续下一轮循环。"
 					exit repeat
 				end if
+				delay 0.5
 			end repeat
-			
-			if foundMapsTab then
-				exit repeat
-			end if
-		end repeat
-	end tell
-	
-	if foundMapsTab then
-		tell application "System Events"
-			key code 37 using command down -- L键: 定位地址栏
-			delay 0.2
-			keystroke "qianwen.com/chat"
-			delay 0.5
-			key code 36 -- Enter
-		end tell
-	else
-		tell application "Google Chrome"
-			activate
-			delay 0.5
-		end tell
-		
-		tell application "System Events"
-			keystroke "t" using command down
-			delay 0.5
-			keystroke "qianwen.com/chat"
-			delay 0.5
-			key code 36
-		end tell
-	end if
-	
-	do shell script "/opt/homebrew/bin/cliclick m:862,839"
-	
-	-- 截图校验逻辑（保留原逻辑，如果你不需要截图校验可以注释掉）
-	set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
-	set imageName to "qianwen_pc.png"
-	set clickValue to "false"
-	set Opposite to "false"
-	
-	set commandString to "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite
-	do shell script commandString
-	delay 0.5
-	
-	-- 截图校验逻辑（保留原逻辑，如果你不需要截图校验可以注释掉）
-	set pythonScriptPath to "/Users/yanzhang/Coding/python_code/screenshot.py"
-	set imageName to "qianwen_launch.png"
-	set clickValue to "true"
-	set Opposite to "false"
-	set x_offset to "0"
-	set y_offset to "-70"
-	
-	set commandString to "/Library/Frameworks/Python.framework/Versions/Current/bin/python3 " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " " & x_offset & " " & y_offset
-	do shell script commandString
-	delay 0.5
-	
-	my Submit()
-end qianwen
-
--- ← 改动9: Submit() 中的 cliclick 坐标换成千问对应的
-on Submit()
-	-- 粘贴 + 回车
-	tell application "System Events"
-		keystroke "v" using {command down}
-		delay 0.1
-		key code 36 -- Enter
-	end tell
-	
-	do shell script "/opt/homebrew/bin/cliclick m:862,839"
-end Submit
+		end if
+	on error errMsg
+		-- 如果任何 shell script 返回非 0 状态（例如 write.py 报错，或者找不到文件等），都会跳到这里
+		display notification "发生异常，自动化已停止: " & errMsg with title "自动化异常"
+		exit repeat
+	end try
+end repeat

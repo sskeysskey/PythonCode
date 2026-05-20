@@ -2,19 +2,23 @@ import json
 import argparse
 import pyperclip
 
+# SKIP_CATEGORIES = {'Movie'} 
+SKIP_CATEGORIES = set()
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
-REGION_FILTER_CATEGORIES = {'Drama'}
-
 # 命中任一关键字就跳过该项目
 # 只写 '大陆' 可避免误伤 "中国香港" / "中国台湾"；
 # 如果想把 "中国"、"中国大陆" 都算上，就加 '中国'
+REGION_FILTER_CATEGORIES = {'Drama'}
 REGION_BLOCK_KEYWORDS = ('大陆', '中国', '内地')
 
 # 评分过滤阈值：豆瓣或 IMDB 任一 >= 此值即通过
 RATING_THRESHOLD = 4.9
 # 参与评分比较的字段（按顺序尝试）
 RATING_FIELDS = ('豆瓣', 'IMDB')
+
+# ===== 新增：特殊 channel 名称 =====
+SPECIAL_CHANNEL_NAME = 'xb6v'
 
 
 def get_scan_episodes(episodes, category, show_last_n):
@@ -119,6 +123,59 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
     return True
 
 
+# ============================================================
+# 新增：从 playlist 中找出 xb6v 特殊 channel（可能没有）
+# ============================================================
+def find_special_channel(playlists, name=SPECIAL_CHANNEL_NAME):
+    for pl in playlists:
+        if pl.get('name') == name:
+            return pl
+    return None
+
+
+# ============================================================
+# 新增：处理 xb6v 特殊 channel
+# 返回值：
+#   'exited'   -> 已找到待处理链接，已复制到剪贴板并写文件，调用方必须直接结束程序
+#   'done'     -> xb6v 的所有链接都已在 mapping 中且值非空，可继续处理普通 channel
+#   'skip_all' -> xb6v 自身有问题（比如所有链接都被黑名单挡住、或者 episodes 为空但又必须处理）
+# ============================================================
+def process_special_xb6v(special_pl, url_mapping, blacklist_url,
+                         mapping_path, item_label):
+    episodes = special_pl.get('episodes', []) or []
+    if not episodes:
+        print(f"  [xb6v] {item_label} 的 xb6v channel episodes 为空，按已完成处理")
+        return 'done'
+
+    for episode_url in episodes:
+        if episode_url in blacklist_url:
+            # xb6v 单条命中黑名单：跳过该条，但继续看下一条
+            print(f"  [xb6v 跳过黑名单] {episode_url}")
+            continue
+
+        if episode_url in url_mapping:
+            if url_mapping[episode_url] == "":
+                # 已存在但未填写映射 -> 复制并退出
+                pyperclip.copy(episode_url)
+                print(f"[xb6v] {item_label} 找到已存在但未填写映射的链接，已复制到剪贴板:\n{episode_url}")
+                return 'exited'
+            else:
+                # 已存在且已填写 -> 继续看下一条
+                continue
+        else:
+            # 新链接 -> 写入 mapping、复制、退出
+            url_mapping[episode_url] = ""
+            pyperclip.copy(episode_url)
+            with open(mapping_path, 'w', encoding='utf-8') as f:
+                json.dump(url_mapping, f, indent=4, ensure_ascii=False)
+            print(f"[xb6v] {item_label} 发现新链接，已添加到 mapping 文件并复制到剪贴板:\n{episode_url}")
+            return 'exited'
+
+    # 全部 episodes 都已在 mapping 中且值非空（或者都被黑名单跳过）
+    print(f"  [xb6v 完成] {item_label} 的 xb6v channel 全部链接已就绪，转入普通 channel 流程")
+    return 'done'
+
+
 def main():
     # ============ 解析命令行参数 ============
     parser = argparse.ArgumentParser(
@@ -189,10 +246,16 @@ def main():
     print(f"[Show 裁剪] 每个 channel 只扫末尾 {SHOW_LAST_N} 条"
           if SHOW_LAST_N > 0 else "[Show 裁剪] 关闭（扫全部）")
     print(f"[评分过滤] 豆瓣或 IMDB 任一 >= {rating_threshold} 才处理")
+    print(f"[特殊 channel] 名为 '{SPECIAL_CHANNEL_NAME}' 的 channel 将优先全部处理")
 
     # 4. 遍历 OVideos.json 提取 episodes 里的 url
     # OVideos.json 的顶层是分类（如 "Movie", "Show"）
     for category, items in ovideos.items():
+        # ===== 新增：配置开关逻辑 =====
+        if category in SKIP_CATEGORIES:
+            print(f"[跳过] 根据配置，临时跳过 {category} 分组")
+            continue
+
         for item in items:
             # 用于日志的项目标识
             item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
@@ -208,18 +271,35 @@ def main():
                 print(f"  [跳过项目] {item_label} 评分不达标"
                       f"（豆瓣={ratings.get('豆瓣', '')!r}, IMDB={ratings.get('IMDB', '')!r}，阈值={rating_threshold}）")
                 continue
-            
-            # 获取 playlist 列表，如果没有则默认为空列表
-            playlists = item.get('playlist', [])
 
-            # 先按规则筛出要扫描的 channel
+            playlists = item.get('playlist', []) or []
+
+            # ============================================================
+            # 1) 先优先处理 xb6v 特殊 channel
+            # ============================================================
+            special_pl = find_special_channel(playlists)
+            if special_pl is not None:
+                status = process_special_xb6v(
+                    special_pl, url_mapping, blacklist_url,
+                    mapping_path, item_label
+                )
+                if status == 'exited':
+                    return  # 已处理掉一个链接，结束整个程序
+
+            # ============================================================
+            # 2) xb6v 已就绪（或本来就没有），继续走普通 channel 旧逻辑
+            #    注意：要把 xb6v 从普通 channel 列表里剔除
+            # ============================================================
+            normal_playlists = [pl for pl in playlists
+                                if pl.get('name') != SPECIAL_CHANNEL_NAME]
+
             playlists_to_scan = pick_playlists_to_scan(
-                playlists, blacklist_url, ONLY_FIRST_CHANNEL,
+                normal_playlists, blacklist_url, ONLY_FIRST_CHANNEL,
                 item_label, category, SHOW_LAST_N
             )
 
             if not playlists_to_scan:
-                print(f"  [放弃项目] {item_label} 所有 channel 均不可用，跳过该项目")
+                print(f"  [放弃项目] {item_label} 所有普通 channel 均不可用，跳过该项目")
                 continue
 
             for playlist, scan_episodes in playlists_to_scan:

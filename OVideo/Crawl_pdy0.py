@@ -420,8 +420,9 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
+    返回 {category: {(name, path): {"info": info, "update": update, "image": image, "has_xb6v": has_xb6v}}},
     用于判断该条目是否已存在、info / update 是否变化,以及图片是否缺失。
+    并增加 is_old_episodes 字段，用来识别旧的 list 格式 episodes。
     """
     idx = {}
     for cat, items in existing.items():
@@ -431,14 +432,20 @@ def build_index(existing: dict) -> dict:
                 name = it.get("name", "")
                 url = it.get("url", "")
                 info = it.get("info", "")
-                update = it.get("update", "")     # ← 新增
+                update = it.get("update", "")
                 image = it.get("image", "")
+                
+                # 【新增】：判断旧数据的 playlist 中是否包含 name 为 xb6v 的源
+                playlist = it.get("playlist", [])
+                has_xb6v = any(p.get("name") == "xb6v" for p in playlist)
+
                 if name and url:
                     path = get_url_path(url)
                     m[(name, path)] = {
                         "info": info,
-                        "update": update,         # ← 新增
+                        "update": update,
                         "image": image,
+                        "has_xb6v": has_xb6v,  # ← 新增字段
                     }
         idx[cat] = m
     return idx
@@ -497,7 +504,7 @@ def _find_span_by_label(info_block, label: str):
 
 
 def parse_detail_page(html: str, name: str, url: str,
-                      info: str = "") -> dict | None: # 修改返回类型注解
+                      info: str = "") -> dict | None:
     soup = BeautifulSoup(html, "html.parser")
 
     # ====== 提取最后更新时间 ======
@@ -520,7 +527,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "name": name,
         "url": url,
         "info": info,
-        "update": update_time,   # ← 新增字段,放在 info 之后、image 之前
+        "update": update_time,
         "image": "",
         "导演": "",
         "编剧": [],
@@ -537,7 +544,7 @@ def parse_detail_page(html: str, name: str, url: str,
         "playlist": [],
     }
 
-    # ====== 封面图 ======   (↓↓↓ 下面这段代码保持原样,不要改 ↓↓↓)
+    # ====== 封面图 ======
     img_url = ""
     pic_img = soup.select_one("div.vod-info .pic img")
     if pic_img:
@@ -587,7 +594,6 @@ def parse_detail_page(html: str, name: str, url: str,
     # 上映 / 又名
     for span in info_block.find_all("span"):
         text = span.get_text(" ", strip=True)
-        
         if text.startswith("上映："):
             # 1. 先清理空白
             cleaned = clean_ws(text)
@@ -597,7 +603,6 @@ def parse_detail_page(html: str, name: str, url: str,
             # 这里的意思是把 "(...网络)" 替换为 "(...)"
             cleaned = re.sub(r"\((.*?)(网络)\)", r"(\1)", cleaned)
             data["date"] = cleaned
-
         elif text.startswith("又名："):
             data["alias"] = clean_ws(text)
 
@@ -626,6 +631,12 @@ def parse_detail_page(html: str, name: str, url: str,
         for a in intro_box.find_all("a"):
             a.decompose()
         intro_text = intro_box.get_text(" ", strip=True)
+        
+        # --- 修改部分开始 ---
+        # 去除开头可能存在的 "剧情介绍：" 或 "剧情介绍:"
+        intro_text = re.sub(r"^剧情介绍[:：]", "", intro_text)
+        # --- 修改部分结束 ---
+
         # 压缩多余空白
         data["intro"] = re.sub(r"\s+", "", intro_text)
 
@@ -678,7 +689,6 @@ def parse_playlist(soup) -> list[dict]:
         # 如果解析到了剧集，则根据黑名单进行分类存放
         if episodes:
             playlist_item = {"name": channel_name, "episodes": episodes}
-            
             if channel_name in EXCLUDED_SOURCES:
                 excluded_playlist.append(playlist_item)
             else:
@@ -713,8 +723,8 @@ def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
             return f"{LIST_BASE_URL}/ms/{cat_id}--score------{page}---.html"
     elif sort_type == "hits":
         return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
-    elif sort_type == "time":  # <--- 新增这一行
-        return f"{LIST_BASE_URL}/ms/{cat_id}--time------{page}---.html" # <--- 确保 URL 格式正确
+    elif sort_type == "time":
+        return f"{LIST_BASE_URL}/ms/{cat_id}--time------{page}---.html"
     else:
         raise ValueError(f"未知的 sort_type: {sort_type}")
 
@@ -745,14 +755,17 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
             if old_data is not None:
                 old_info   = old_data.get("info", "")
-                old_update = old_data.get("update", "")   # ← 新增
+                old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
+                has_xb6v   = old_data.get("has_xb6v", False) # ← 获取是否包含 xb6v
+                
+                # 【修改处】：如果 info 没变，或者虽然变了但已经有 xb6v 源，都认为满足 info 条件
+                info_condition_met = (old_info == item["info"]) or has_xb6v
+
                 # 三个条件全部满足才跳过:
-                #   1) info 未变  2) 已下载封面  3) 已经有 update(老数据可能没有)
-                if (old_info == item["info"]
-                        and old_image
-                        and old_update):
-                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
+                #   1) info条件满足  2) 已下载封面  3) 已经有 update
+                if (info_condition_met and old_image and old_update):
+                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新/已含xb6v] {item['name']}  info={item['info']}")
                     continue
 
             # 判定本次是新增 / 补图 / 补update / 普通更新
@@ -801,11 +814,15 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
-                # 索引同步更新(包括 update)
+                # 【新增】：提取最新的播放列表中是否包含 xb6v
+                new_has_xb6v = any(p.get("name") == "xb6v" for p in detail.get("playlist", []))
+
+                # 索引同步更新
                 index_map[key] = {
                     "info":   item["info"],
-                    "update": detail.get("update", ""),   # ← 新增
+                    "update": detail.get("update", ""),
                     "image":  detail.get("image", ""),
+                    "has_xb6v": new_has_xb6v,  # ← 记录到索引中
                 }
                 save_data(all_data)
                 print(f"     [已实时保存到磁盘]")
