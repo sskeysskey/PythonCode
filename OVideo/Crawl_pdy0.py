@@ -54,14 +54,12 @@ def get_year_config(year: str):
         "categories": {
             "Movie": {"id": 1, "enabled": True,  "pages": 3},
             "Drama": {"id": 2, "enabled": True,  "pages": 1},
-            "Show":  {"id": 3, "enabled": True,  "pages": 1},
+            "Show":  {"id": 3, "enabled": True,  "pages": 0},
             "Anime": {"id": 4, "enabled": True,  "pages": 1},
         }
     }
 
-# 2. 动态生成 2023 到 2014 年的配置列表
-# 使用 range(2023, 2013, -1) 生成 2023, 2022, ..., 2013
-historical_jobs = [get_year_config(str(y)) for y in range(2023, 2013, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(2020, 2000, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
@@ -69,13 +67,18 @@ TASKS = [
         "sort_type": "score",
         "enabled": True,
         "jobs": [
+            # 拼接刚才生成的历史年份
+            *historical_jobs, 
+        ]
+    },
+    {
+        "sort_type": "score",
+        "enabled": False,
+        "jobs": [
             # 这里放入特殊的年份（如 2026, 2025, 2024）
             {"year": "2026", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 2}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
             {"year": "2025", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
             {"year": "2024", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
-            
-            # 拼接刚才生成的历史年份
-            *historical_jobs, 
             
             # 最后的空年份配置
             {
@@ -92,14 +95,14 @@ TASKS = [
     # ... 后续的 hits 和 time 模式保持不变
     {
         "sort_type": "hits",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
         ]
     },
     {
         "sort_type": "time",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
         ]
@@ -506,6 +509,12 @@ def parse_detail_page(html: str, name: str, url: str,
                       info: str = "") -> dict | None:
     soup = BeautifulSoup(html, "html.parser")
 
+    # ====== 提取播放列表并校验（前置逻辑） ======
+    playlist = parse_playlist(soup)
+    if not playlist:
+        log(f"     [警告] 没有有效播放源，跳过该条目: {name}")
+        return None
+
     # ====== 提取最后更新时间 ======
     # HTML 结构: <div class="otherbox">当前为<em>HD</em>资源，最后更新于<em>2026-05-14 13:33:05</em></div>
     update_time = ""
@@ -540,10 +549,10 @@ def parse_detail_page(html: str, name: str, url: str,
             "豆瓣": "",
             "IMDB": ""
         },
-        "playlist": [],
+        "playlist": playlist,  # 直接使用前面解析好的 playlist
     }
 
-    # ====== 封面图 ======
+    # ====== 确认有播放源后，才开始下载封面图 ======
     img_url = ""
     pic_img = soup.select_one("div.vod-info .pic img")
     if pic_img:
@@ -563,7 +572,7 @@ def parse_detail_page(html: str, name: str, url: str,
 
     info_block = soup.select_one("div.vod-info .info") or soup
 
-    # 提取字段
+    # 提取其他字段
     span = _find_span_by_label(info_block, "导演：")
     if span:
         directors = _split_by_slash(span)
@@ -600,10 +609,7 @@ def parse_detail_page(html: str, name: str, url: str,
             cleaned = cleaned.replace("上映：", "", 1)
             # 3. 如果需要去掉 "(美国网络)" 中的 "网络" 二字
             cleaned = re.sub(r"\((.*?)(网络)\)", r"(\1)", cleaned)
-            
-            # --- 【新增修改】调用格式化函数 ---
             data["date"] = format_date_str(cleaned)
-            
         elif text.startswith("又名："):
             data["alias"] = clean_ws(text)
 
@@ -640,14 +646,6 @@ def parse_detail_page(html: str, name: str, url: str,
 
         # 压缩多余空白
         data["intro"] = re.sub(r"\s+", "", intro_text)
-
-    # 播放列表（仅在线观看）
-    data["playlist"] = parse_playlist(soup)
-
-    # 【新增逻辑】：如果播放列表为空，说明没有有效资源，直接返回 None
-    if not data["playlist"]:
-        log(f"     [警告] 没有有效播放源，跳过该条目: {name}")
-        return None
 
     return data
 
