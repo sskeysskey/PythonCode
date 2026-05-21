@@ -29,72 +29,57 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 PROTECTED_SOURCES = {"xb6v"}
 
 # ==========================================
+# 日志配置
+# ==========================================
+# 设置为 False 则屏蔽非关键日志
+VERBOSE_LOG = False 
+
+def log(message: str, force: bool = False):
+    """
+    统一日志输出函数
+    :param message: 日志内容
+    :param force: 是否强制打印（即使 VERBOSE_LOG 为 False）
+    """
+    if force or VERBOSE_LOG:
+        print(message)
+
+# ==========================================
 # 抓取任务总配置
 # ==========================================
-# 顺序就是执行顺序：先跑 score,再跑 hits
-# 每组有独立的 enabled 开关,关闭后整组跳过
+
+# 1. 定义一个通用的配置模板，方便复用
+def get_year_config(year: str):
+    return {
+        "year": year,
+        "categories": {
+            "Movie": {"id": 1, "enabled": True,  "pages": 3},
+            "Drama": {"id": 2, "enabled": True,  "pages": 1},
+            "Show":  {"id": 3, "enabled": True,  "pages": 1},
+            "Anime": {"id": 4, "enabled": True,  "pages": 1},
+        }
+    }
+
+# 2. 动态生成 2023 到 2014 年的配置列表
+# 使用 range(2023, 2013, -1) 生成 2023, 2022, ..., 2013
+historical_jobs = [get_year_config(str(y)) for y in range(2023, 2013, -1)]
+
+# 3. 组装 TASKS
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": True,           # ← score 模式总开关
+        "enabled": True,
         "jobs": [
+            # 这里放入特殊的年份（如 2026, 2025, 2024）
+            {"year": "2026", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 2}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            {"year": "2025", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            {"year": "2024", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            
+            # 拼接刚才生成的历史年份
+            *historical_jobs, 
+            
+            # 最后的空年份配置
             {
-                "year": "2026",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-                    "Show":  {"id": 3, "enabled": True,  "pages": 2},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
-                }
-            },
-            {
-                "year": "2025",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 4},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
-                }
-            },
-            {
-                "year": "2024",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 4},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
-                }
-            },
-            {
-                "year": "2023",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
-                }
-            },
-            {
-                "year": "2022",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
-                }
-            },
-            {
-                "year": "2021",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 3},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 1},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 1},
-                }
-            },
-            # --- 新增：score 模式，不需要年份 ---
-            {
-                "year": "",  # 这里留空
+                "year": "",
                 "categories": {
                     "Movie": {"id": 1, "enabled": True, "pages": 4},
                     "Drama": {"id": 2, "enabled": True, "pages": 3},
@@ -104,35 +89,19 @@ TASKS = [
             },
         ]
     },
+    # ... 后续的 hits 和 time 模式保持不变
     {
         "sort_type": "hits",
-        "enabled": True,           # ← hits 模式总开关
+        "enabled": True,
         "jobs": [
-            {
-                # hits 模式不需要年份,留空字符串即可
-                "year": "",
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
-                }
-            },
+            {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
         ]
     },
     {
         "sort_type": "time",
-        "enabled": True,           # ← time 模式总开关
+        "enabled": True,
         "jobs": [
-            {
-                "year": "",        # time 模式也不需要年份
-                "categories": {
-                    "Movie": {"id": 1, "enabled": True,  "pages": 2},
-                    "Drama": {"id": 2, "enabled": True,  "pages": 2},
-                    "Show":  {"id": 3, "enabled": True, "pages": 1},
-                    "Anime": {"id": 4, "enabled": True,  "pages": 2},
-                }
-            },
+            {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
         ]
     },
 ]
@@ -644,7 +613,7 @@ def parse_detail_page(html: str, name: str, url: str,
         for s in span.find_all("span"):
             t = clean_ws(s.get_text(" ", strip=True))
             if t:
-                # 使用正则提取平台名称和分数，兼容 "豆瓣 7.2" 或 "IMDB --"
+                # 使用正则提取 platform 名称和分数，兼容 "豆瓣 7.2" 或 "IMDB --"
                 match = re.search(r"(豆瓣|IMDB)\s*([0-9.]+|--)", t, re.IGNORECASE)
                 if match:
                     platform = match.group(1)
@@ -677,7 +646,7 @@ def parse_detail_page(html: str, name: str, url: str,
 
     # 【新增逻辑】：如果播放列表为空，说明没有有效资源，直接返回 None
     if not data["playlist"]:
-        print(f"     [警告] 没有有效播放源，跳过该条目: {name}")
+        log(f"     [警告] 没有有效播放源，跳过该条目: {name}")
         return None
 
     return data
@@ -779,14 +748,14 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
     for page in range(1, cat_cfg["pages"] + 1):
         list_url = build_list_url(cat_cfg["id"], page, year, sort_type)
-        print(f"\n[列表页] {list_url}")
+        log(f"\n[列表页] {list_url}", force=True)
         html = fetch(list_url)
         time.sleep(SLEEP_BETWEEN_REQUESTS)
         if not html:
             continue
 
         items = parse_list_page(html)
-        print(f"  -> 共找到 {len(items)} 部")
+        log(f"  -> 共找到 {len(items)} 部", force=True)
 
         for idx_i, item in enumerate(items, 1):
             item_path = get_url_path(item["url"])
@@ -801,7 +770,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # 跳过条件：info 没变、且关键字段齐全
                 # 注意：不再因为存在 xb6v 等受保护源就跳过 info 变化
                 if (old_info == item["info"]) and old_image and old_update:
-                    print(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
+                    log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
                     continue
 
             # 判定本次是新增 / 补图 / 补update / 普通更新
@@ -816,7 +785,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             else:
                 tag = "[新增]"
 
-            print(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}")
+            # 【修改处】：这里不再直接打印进度日志，而是等详情页解析成功后再打印
 
             detail_html = fetch(item["url"])
             time.sleep(SLEEP_BETWEEN_REQUESTS)
@@ -824,12 +793,15 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 continue
 
             try:
-                # 【修改处】：接收返回值
+                # 接收返回值
                 detail = parse_detail_page(detail_html, item["name"], item["url"], info=item["info"])
 
                 # 没抓到任何在线源 → 跳过
                 if detail is None:
                     continue
+
+                # 【修改处】：只有当确认有有效播放源，且不会被跳过时，才打印新增/更新的日志
+                log(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
 
                 # ===== 关键：合并受保护源（如 xb6v）=====
                 # 这些源由其它爬虫维护，本爬虫不应覆盖。
@@ -886,7 +858,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     "image":  detail.get("image", ""),
                 }
                 save_data(all_data)
-                print(f"     [已实时保存到磁盘]")
+                log(f"     [已实时保存到磁盘]", force=True)
             except Exception as e:
                 print(f"     [解析失败] {e}")
 
