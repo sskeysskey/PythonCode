@@ -88,15 +88,16 @@ repeat
 		delay 0.5
 		
 		-- ==========================================
-		-- 3.2 同时扫描 downie_addselect.png 和 downie_404.png
+		-- 3.2 同时扫描 downie_addselect.png, downie_404.png 和 downie_again.png
 		-- （xb6v.com 分支整体跳过此检测与 select/none/Tab 流程）
 		-- ==========================================
-		set skipNormalFlow to false  -- 控制 more.png 之后的流程是否执行（仅 404 时置 true）
+		set skipNormalFlow to false -- 控制 more.png 之后的流程是否执行（仅 404 时置 true）
 		
 		if isXb6v then
 			log "xb6v.com 简化流程：跳过 addselect/404 检测与选择步骤，直接进入 downie_more.png。"
 		else
-			set imageName to "downie_addselect.png,downie_404.png"
+			-- 【修改点1】这里增加了 downie_again.png
+			set imageName to "downie_addselect.png,downie_404.png,downie_again.png"
 			set clickValue to "false"
 			-- 参数: scroll=false, x_offset=0, y_offset=0, nth_match=1, timeout=3500
 			set cmdResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of imageName & " " & clickValue & " " & Opposite & " false 0 0 1 3500"
@@ -126,7 +127,22 @@ repeat
 				
 				-- 跳过后续的 more/savemeta/savejson/write/close
 				set skipNormalFlow to true
+				
+			else if cmdResult contains "FOUND_IMAGE:downie_again.png" then
+				-- -------- 【修改点2】again 分支 --------
+				log "检测到 downie_again.png，执行点击并跳过选择步骤，直接进入 downie_more.png。"
+				
+				-- 调用 screenshot.py 去点击 downie_again.png
+				set clickAgainImage to "downie_again.png"
+				set clickAgainValue to "true"
+				set clickAgainResult to do shell script pythonBin & " " & quoted form of pythonScriptPath & " " & quoted form of clickAgainImage & " " & clickAgainValue & " " & Opposite
+				
+				if clickAgainResult contains "TIMEOUT" then exit repeat
+				delay 0.5
+				-- 注意：这里不设置 skipNormalFlow to true，因此执行完点击后，会自动顺延执行 downie_more.png 的流程
+				
 			else
+				-- -------- addselect 分支或超时 --------
 				-- 15 秒内是否找到了 addselect
 				if cmdResult does not contain "TIMEOUT" then
 					delay 0.5

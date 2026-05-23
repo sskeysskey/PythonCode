@@ -3,7 +3,8 @@ import os
 import time
 import random
 import re
-from datetime import datetime
+import subprocess
+import atexit
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -52,14 +53,14 @@ def get_year_config(year: str):
     return {
         "year": year,
         "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 3},
-            "Drama": {"id": 2, "enabled": True,  "pages": 1},
+            "Movie": {"id": 1, "enabled": True,  "pages": 8},
+            "Drama": {"id": 2, "enabled": True,  "pages": 0},
             "Show":  {"id": 3, "enabled": True,  "pages": 0},
-            "Anime": {"id": 4, "enabled": True,  "pages": 1},
+            "Anime": {"id": 4, "enabled": True,  "pages": 0},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(2020, 2000, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(2022, 1990, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
@@ -76,9 +77,30 @@ TASKS = [
         "enabled": False,
         "jobs": [
             # 这里放入特殊的年份（如 2026, 2025, 2024）
-            {"year": "2026", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 2}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
-            {"year": "2025", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
-            {"year": "2024", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            {"year": "2026",
+             "categories": {
+                 "Movie": {"id": 1, "enabled": True, "pages": 2},
+                 "Drama": {"id": 2, "enabled": True, "pages": 2},
+                 "Show": {"id": 3, "enabled": True, "pages": 2},
+                 "Anime": {"id": 4, "enabled": True, "pages": 2}
+                 }
+            },
+            {"year": "2025",
+             "categories": {
+                 "Movie": {"id": 1, "enabled": True, "pages": 4},
+                 "Drama": {"id": 2, "enabled": True, "pages": 2},
+                 "Show": {"id": 3, "enabled": True, "pages": 1},
+                 "Anime": {"id": 4, "enabled": True, "pages": 2}
+                 }
+            },
+            {"year": "2024",
+             "categories": {
+                 "Movie": {"id": 1, "enabled": True, "pages": 4},
+                 "Drama": {"id": 2, "enabled": True, "pages": 2},
+                 "Show": {"id": 3, "enabled": True, "pages": 1},
+                 "Anime": {"id": 4, "enabled": True, "pages": 2}
+                 }
+            },
             
             # 最后的空年份配置
             {
@@ -92,19 +114,33 @@ TASKS = [
             },
         ]
     },
-    # ... 后续的 hits 和 time 模式保持不变
+    # 按评分和按更新日期抓取
     {
         "sort_type": "hits",
         "enabled": False,
         "jobs": [
-            {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 4}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            {"year": "",
+             "categories": {
+                "Movie": {"id": 1, "enabled": True, "pages": 30},
+                "Drama": {"id": 2, "enabled": True, "pages": 2},
+                "Show": {"id": 3, "enabled": True, "pages": 1},
+                "Anime": {"id": 4, "enabled": True, "pages": 1}
+                }
+            },
         ]
     },
     {
         "sort_type": "time",
         "enabled": False,
         "jobs": [
-            {"year": "", "categories": {"Movie": {"id": 1, "enabled": True, "pages": 2}, "Drama": {"id": 2, "enabled": True, "pages": 2}, "Show": {"id": 3, "enabled": True, "pages": 1}, "Anime": {"id": 4, "enabled": True, "pages": 2}}},
+            {"year": "",
+             "categories": {
+                 "Movie": {"id": 1, "enabled": True, "pages": 2},
+                 "Drama": {"id": 2, "enabled": True, "pages": 2},
+                 "Show": {"id": 3, "enabled": True, "pages": 1},
+                 "Anime": {"id": 4, "enabled": True, "pages": 2}
+                 }
+            },
         ]
     },
 ]
@@ -868,8 +904,38 @@ def clean_existing_data(data: dict):
             # 过滤掉 playlist 为空的条目
             data[cat] = [item for item in data[cat] if item.get("playlist")]
 
+# ==========================================
+# 防止休眠控制
+# ==========================================
+_caffeinate_proc = None
+
+def start_caffeinate():
+    """启动 caffeinate 以防止系统休眠"""
+    global _caffeinate_proc
+    try:
+        # -i: 防止系统进入空闲休眠
+        # -d: 防止显示器进入休眠
+        # -m: 防止磁盘进入空闲休眠
+        # -u: 声明用户处于活动状态
+        _caffeinate_proc = subprocess.Popen(["caffeinate", "-idmu"])
+        print(">>> [系统] 已开启防休眠模式 (caffeinate)")
+    except Exception as e:
+        print(f">>> [系统] 无法启动 caffeinate: {e}")
+
+def stop_caffeinate():
+    """停止 caffeinate"""
+    global _caffeinate_proc
+    if _caffeinate_proc:
+        _caffeinate_proc.terminate()
+        print(">>> [系统] 已关闭防休眠模式")
+
+# 注册程序退出时自动关闭
+atexit.register(stop_caffeinate)
 
 def main():
+    # --- 新增：开启防休眠 ---
+    start_caffeinate()
+
     final = load_existing(OUTPUT_FILE)
     clean_existing_data(final) # <--- 加上这一行即可清理旧的无效数据
     index = build_index(final)

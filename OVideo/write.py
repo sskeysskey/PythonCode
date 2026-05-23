@@ -95,15 +95,20 @@ def write_normal_mapping(lines, empty_line_idx, url, json_name_no_ext):
 
 def main():
     # 1. 查找 Downloads 目录下的 json 文件
-    json_files = glob.glob(os.path.join(DOWNLOADS_DIR, '*.json'))
+    all_json_files = glob.glob(os.path.join(DOWNLOADS_DIR, '*.json'))
+
+    # --- 新增逻辑：过滤掉 kalshi_ 开头的文件 ---
+    # 使用列表推导式，只保留不以 'kalshi_' 开头的文件
+    json_files = [f for f in all_json_files if not os.path.basename(f).startswith('kalshi_')]
 
     if len(json_files) == 0:
-        show_warning("Downloads 目录下没有找到 json 文件！")
+        show_warning("Downloads 目录下没有找到有效的 json 文件（已排除 kalshi_ 相关文件）！")
         sys.exit(1)
 
     if len(json_files) > 1:
+        # 如果过滤后仍然大于1，说明确实存在多个需要处理的文件，报错
         files_list = "\n".join(os.path.basename(f) for f in json_files)
-        show_warning(f"Downloads 目录下发现 {len(json_files)} 个 json 文件，程序终止：\n\n{files_list}")
+        show_warning(f"Downloads 目录下发现 {len(json_files)} 个有效 json 文件，程序终止：\n\n{files_list}")
         sys.exit(1)
 
     json_file = json_files[0]
