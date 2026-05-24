@@ -208,11 +208,11 @@ async function scrapeReuters() {
         String(now.getHours()).padStart(2, '0'),
     ].join('_');
 
-    // ===== 新增：会话级去重，防止 Cloudflare 后二次抓取重复下载 =====
+    // 会话级去重,防止 Cloudflare 后二次抓取重复下载
     const sessionKey = `reuters_downloaded_${currentDatetime}`;
     try {
         if (sessionStorage.getItem(sessionKey) === 'done') {
-            console.log('[Reuters] 本小时窗口已经成功下载过，跳过本次抓取');
+            console.log('[Reuters] 本小时窗口已经成功下载过,跳过本次抓取');
             return;
         }
     } catch (e) { /* ignore */ }
@@ -274,12 +274,11 @@ async function scrapeReuters() {
     const startTime = Date.now();
     const newRows = [];
 
-    // ===== 新增：统计短标题抓取的失败情况 =====
-    let subtopicTotal = 0;       // 需要请求子页的总数
-    let subtopicFailed = 0;      // 请求失败（含 Cloudflare 拦截）
-    const failedHrefs = [];      // 可用于后续重试
+    let subtopicTotal = 0;
+    let subtopicFailed = 0;
+    let subtopicFallback = 0; // 用短标题兜底的条数
+    const failedHrefs = [];
 
-    // 检测 Cloudflare 挑战页的辅助函数
     const isCloudflareHtml = (html) => {
         if (!html) return false;
         const s = html.toLowerCase();
@@ -327,15 +326,17 @@ async function scrapeReuters() {
                 } else if (ogTitle && ogTitle.content.trim()) {
                     titleText = ogTitle.content.trim();
                 } else {
-                    // 没抓到也算失败（内容异常）
+                    // 子页面解析不出标题,用短标题兜底
                     thisFetchOk = false;
                     titleText = cleanText;
+                    subtopicFallback++;
                 }
             } catch (error) {
-                console.warn(`[Reuters] 短标题抓取失败: ${href}`, error.message);
+                console.warn(`[Reuters] 短标题抓取失败,使用短标题兜底: ${href}`, error.message);
                 thisFetchOk = false;
-                titleText = cleanText; // 仍给个兜底值，但标记失败
+                titleText = cleanText; // ★ 用短标题兜底
                 subtopicFailed++;
+                subtopicFallback++;
                 failedHrefs.push(href);
             }
         } else {
@@ -350,7 +351,7 @@ async function scrapeReuters() {
         processedCount++;
         updateProgressUI(
             processedCount, totalLinks, startTime,
-            thisFetchOk ? '处理完成' : '⚠️ 本条失败，已计入'
+            thisFetchOk ? '处理完成' : '⚠️ 使用短标题兜底'
         );
 
         if (!titleText) continue;
@@ -359,38 +360,21 @@ async function scrapeReuters() {
         newRows.push([currentDatetime, titleText, href]);
     }
 
-    // ===== 核心判定：短标题抓取流程是否"完成" =====
-    // 规则：
-    //   a) 没有 SubtopicLink（subtopicTotal == 0)  → 认为"没有短标题"，允许下载
-    //   b) 有 SubtopicLink 且全部成功(subtopicFailed == 0) → 完成，允许下载
-    //   c) 任一失败 → 不下载，等用户/脚本再次触发（下次重新加载页面会重抓）
-    const shortTitleFlowComplete = (subtopicTotal === 0) || (subtopicFailed === 0);
-
-    if (!shortTitleFlowComplete) {
-        console.warn(
-            `[Reuters] 短标题抓取未完成: 失败 ${subtopicFailed}/${subtopicTotal}，不启动下载`
-        );
+    // ===== 不再因为部分失败而拒绝下载 =====
+    // 只要有内容就下载,失败的条目已经用 cleanText(短标题)作为兜底
+    if (newRows.length === 0) {
         const container = document.getElementById('scraper-progress-container');
         if (container) {
             container.innerHTML = `
-                <div style="font-weight:600;color:#ef4444;margin-bottom:6px;">
-                    ⛔ 短标题抓取未完成
-                </div>
-                <div style="font-size:12px;color:#4b5563;">
-                    失败 ${subtopicFailed} / ${subtopicTotal} 条（可能被 Cloudflare 拦截），
-                    <br/>本次<strong>不下载</strong>，等待页面重新加载重试。
+                <div style="font-weight:600;color:#ef4444;">
+                    ⚠️ 未抓取到任何有效内容
                 </div>`;
-            setTimeout(() => container.remove(), 8000);
+            setTimeout(() => container.remove(), 5000);
         }
-        return; // ★ 不发送下载消息
-    }
-
-    if (newRows.length === 0) {
-        removeProgressUI();
         return;
     }
 
-    // ===== 真正下载 =====
+    // 真正下载
     const html = generateHTML(newRows, 'Reuters');
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -412,10 +396,27 @@ async function scrapeReuters() {
         filename: `reuters_${timestamp}.html`
     });
 
-    // ★ 打上会话成功标记，避免 Cloudflare 之后页面重载再次重复下载
+    // 打上会话成功标记,避免重复下载
     try { sessionStorage.setItem(sessionKey, 'done'); } catch (e) { }
 
-    removeProgressUI();
+    // ===== 友好提示:告诉用户哪些用了兜底 =====
+    const container = document.getElementById('scraper-progress-container');
+    if (container) {
+        if (subtopicFailed > 0) {
+            container.innerHTML = `
+                <div style="font-weight:600;color:#f59e0b;margin-bottom:6px;">
+                    ✅ 已下载 (含兜底)
+                </div>
+                <div style="font-size:12px;color:#4b5563;line-height:1.5;">
+                    共 ${newRows.length} 条,其中 <strong>${subtopicFallback}</strong> 条
+                    因 Cloudflare 拦截/解析失败,
+                    <br/>已使用<strong>短标题</strong>作为兜底。
+                </div>`;
+            setTimeout(() => container.remove(), 6000);
+        } else {
+            removeProgressUI();
+        }
+    }
 }
 
 // WSJ 抓取函数

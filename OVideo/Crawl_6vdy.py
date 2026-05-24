@@ -428,7 +428,7 @@ def get_list_by_tab(tab_index):
 
 def find_existing_any_group(data, name, url):
     """在 Drama 和 Movie 两个组里查找 name 和 url 均匹配的记录"""
-    for g in ("Drama", "Movie"):
+    for g in ("Drama", "Movie", "Show", "Anime"):
         for item in data.get(g, []):
             if item.get("url") == url and item.get("name") == name:
                 return g, item
@@ -475,7 +475,7 @@ def process_tab_by_recommend_rules(data, tab_index, tab_name):
                 status, added, total = upsert_playlist(existing, episodes)
                 if status == "updated":
                     old_info = existing.get("info", "")
-                    new_info = f"更新至第{total}集"
+                    new_info = f"更新至{total}集"
                     existing["info"] = new_info
                     print(f"    ✓ 更新({old_group}): 新增 {added} 集")
                     print(f"      [info字段更新] 共有 {total} 集，info由原来的「{old_info}」更新为「{new_info}」")

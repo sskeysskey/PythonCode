@@ -53,20 +53,20 @@ def get_year_config(year: str):
     return {
         "year": year,
         "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 7},
-            "Drama": {"id": 2, "enabled": True,  "pages": 0},
-            "Show":  {"id": 3, "enabled": True,  "pages": 0},
-            "Anime": {"id": 4, "enabled": True,  "pages": 0},
+            "Movie": {"id": 1, "enabled": True,  "pages": 1},
+            "Drama": {"id": 2, "enabled": True,  "pages": 1},
+            "Show":  {"id": 3, "enabled": True,  "pages": 1},
+            "Anime": {"id": 4, "enabled": True,  "pages": 1},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(2025, 2024, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(2026, 2025, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -121,24 +121,24 @@ TASKS = [
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 30},
-                "Drama": {"id": 2, "enabled": True, "pages": 2},
-                "Show": {"id": 3, "enabled": True, "pages": 1},
-                "Anime": {"id": 4, "enabled": True, "pages": 1}
+                "Movie": {"id": 1, "enabled": True, "pages": 1},
+                "Drama": {"id": 2, "enabled": True, "pages": 0},
+                "Show": {"id": 3, "enabled": True, "pages": 0},
+                "Anime": {"id": 4, "enabled": True, "pages": 0}
                 }
             },
         ]
     },
     {
         "sort_type": "time",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 2},
-                 "Drama": {"id": 2, "enabled": True, "pages": 2},
-                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                 "Anime": {"id": 4, "enabled": True, "pages": 2}
+                 "Movie": {"id": 1, "enabled": True, "pages": 1},
+                 "Drama": {"id": 2, "enabled": True, "pages": 0},
+                 "Show": {"id": 3, "enabled": True, "pages": 0},
+                 "Anime": {"id": 4, "enabled": True, "pages": 0}
                  }
             },
         ]
@@ -226,24 +226,43 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
 def format_date_str(date_str: str) -> str:
     """
-    将 '2026年4月3日' 或 '2026年04月03日' 转换为 '2026-04-03'
+    将日期字符串转换为 'YYYY-MM-DD' 格式。
+    支持处理包含分隔符 '/' 的复杂字符串，取最后一个 '/' 后的内容进行解析。
     """
+    if not date_str:
+        return date_str
+
+    # 1. 预处理：如果包含 '/' 或 '／'，取最后一个分隔符后面的内容
+    # 使用正则表达式匹配英文斜杠 / 或中文全角斜杠 ／
+    if '/' in date_str or '／' in date_str:
+        # 使用 re.split 分割，取最后一部分
+        # re.split(r'[/／]', date_str) 会返回一个列表，[-1] 取最后一个元素
+        parts = re.split(r'[/／]', date_str)
+        date_str = parts[-1].strip()
+
     try:
-        # 使用正则提取所有数字
+        # 2. 使用正则提取所有数字
         parts = re.findall(r'\d+', date_str)
+        
         if len(parts) >= 3:
+            # 提取年、月、日
             year, month, day = parts[0], parts[1], parts[2]
             # 使用 zfill 补零，确保月和日是两位数
             return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+        
         elif len(parts) == 2:
             # 处理只有年月的情况，如 '2026年4月'
             return f"{parts[0]}-{parts[1].zfill(2)}"
+        
         elif len(parts) == 1:
             # 处理只有年份的情况
             return parts[0]
+            
     except Exception:
         pass
-    return date_str # 如果解析失败，返回原字符串
+    
+    # 如果解析失败，返回原字符串
+    return date_str
 
 def save_data(data: dict):
     """
@@ -465,7 +484,8 @@ def load_existing(path: str) -> dict:
 def build_index(existing: dict) -> dict:
     """
     返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
-    用于判断该条目是否已存在、info / update 是否变化,以及图片是否缺失。
+    支持扫描 url, url1, url2 ... 等所有 urlX 字段。
+    用于判断该条目是否已存在、update 是否变化,以及图片是否缺失。
     """
     idx = {}
     for cat, items in existing.items():
@@ -473,18 +493,24 @@ def build_index(existing: dict) -> dict:
         if isinstance(items, list):
             for it in items:
                 name = it.get("name", "")
-                url = it.get("url", "")
                 info = it.get("info", "")
                 update = it.get("update", "")
                 image = it.get("image", "")
 
-                if name and url:
-                    path = get_url_path(url)
-                    m[(name, path)] = {
-                        "info": info,
-                        "update": update,
-                        "image": image,
-                    }
+                if name:
+                    # 找出所有以 "url" 开头的键（如 url, url1, url2...）
+                    url_keys = [k for k in it.keys() if k == "url" or (k.startswith("url") and k[3:].isdigit())]
+                    
+                    for key_name in url_keys:
+                        url_val = it.get(key_name, "")
+                        if url_val:
+                            path = get_url_path(url_val)
+                            # 将该 name 与每一个 url 对应的 path 组合，都存入索引中
+                            m[(name, path)] = {
+                                "info": info,
+                                "update": update,
+                                "image": image,
+                            }
         idx[cat] = m
     return idx
 
@@ -505,7 +531,7 @@ def parse_list_page(html: str) -> list[dict]:
             continue
         full_url = urljoin(DETAIL_BASE_URL, href)
 
-        # info：取 .pic span.s1 中的文本（如 "更新至第14集"、"78集全"、"HD" 等）
+        # info：取 .pic span.s1 中的文本（如 "更新至14集"、"78集全"、"HD" 等）
         info = ""
         s1 = li.select_one(".pic span.s1")
         if s1:
@@ -801,10 +827,10 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
 
-                # 跳过条件：info 没变、且关键字段齐全
-                # 注意：不再因为存在 xb6v 等受保护源就跳过 info 变化
-                if (old_info == item["info"]) and old_image and old_update:
-                    log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']}  info={item['info']}")
+                # 核心改动：不再校验 old_info == item["info"]
+                # 只要 image 和 update 都有值，就直接跳过，info 改变不再触发更新
+                if old_image and old_update:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info已忽略对比)")
                     continue
 
             # 判定本次是新增 / 补图 / 补update / 普通更新
@@ -812,7 +838,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             if is_update:
                 if not old_data.get("update"):
                     tag = "[补update]"
-                elif old_data.get("info") == item["info"] and not old_data.get("image"):
+                elif not old_data.get("image"):
                     tag = "[补图]"
                 else:
                     tag = "[更新]"
