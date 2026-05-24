@@ -16,7 +16,7 @@ RATING_THRESHOLD = 4.9
 RATING_FIELDS = ('豆瓣', 'IMDB')
 
 # ===== 新增：特殊 channel 名称 =====
-SPECIAL_CHANNEL_NAME = 'xb6v'
+SPECIAL_CHANNEL_NAME = '6vdy'
 
 
 def get_scan_episodes(episodes, category, show_last_n):
@@ -130,7 +130,7 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
 
 
 # ============================================================
-# 新增：从 playlist 中找出 xb6v 特殊 channel（可能没有）
+# 新增：从 playlist 中找出 6vdy 特殊 channel（可能没有）
 # ============================================================
 def find_special_channel(playlists, name=SPECIAL_CHANNEL_NAME):
     for pl in playlists:
@@ -140,32 +140,32 @@ def find_special_channel(playlists, name=SPECIAL_CHANNEL_NAME):
 
 
 # ============================================================
-# 新增：处理 xb6v 特殊 channel
+# 新增：处理 6vdy 特殊 channel
 # 返回值：
 #   'exited'   -> 已找到待处理链接，已复制到剪贴板并写文件，调用方必须直接结束程序
-#   'done'     -> xb6v 的所有链接都已在 mapping 中且值非空，可继续处理普通 channel
-#   'skip_all' -> xb6v 自身有问题（比如所有链接都被黑名单挡住、或者 episodes 为空但又必须处理）
+#   'done'     -> 6vdy 的所有链接都已在 mapping 中且值非空，可继续处理普通 channel
+#   'skip_all' -> 6vdy 自身有问题（比如所有链接都被黑名单挡住、或者 episodes 为空但又必须处理）
 # ============================================================
-def process_special_xb6v(special_pl, url_mapping, blacklist_url,
+def process_special_6vdy(special_pl, url_mapping, blacklist_url,
                          mapping_path, item_label):
     # 兼容新格式：默认获取字典 {}
     episodes = special_pl.get('episodes', {}) or {}
     if not episodes:
-        print(f"  [xb6v] {item_label} 的 xb6v channel episodes 为空，按已完成处理")
+        print(f"  [6vdy] {item_label} 的 6vdy channel episodes 为空，按已完成处理")
         return 'done'
 
     # 使用 episodes.values() 遍历字典中的 URL
     for episode_url in episodes.values():
         if episode_url in blacklist_url:
-            # xb6v 单条命中黑名单：跳过该条，但继续看下一条
-            print(f"  [xb6v 跳过黑名单] {episode_url}")
+            # 6vdy 单条命中黑名单：跳过该条，但继续看下一条
+            print(f"  [6vdy 跳过黑名单] {episode_url}")
             continue
 
         if episode_url in url_mapping:
             if url_mapping[episode_url] == "":
                 # 已存在但未填写映射 -> 复制并退出
                 pyperclip.copy(episode_url)
-                print(f"[xb6v] {item_label} 找到已存在但未填写映射的链接，已复制到剪贴板:\n{episode_url}")
+                print(f"[6vdy] {item_label} 找到已存在但未填写映射的链接，已复制到剪贴板:\n{episode_url}")
                 return 'exited'
             else:
                 # 已存在且已填写 -> 继续看下一条
@@ -176,11 +176,11 @@ def process_special_xb6v(special_pl, url_mapping, blacklist_url,
             pyperclip.copy(episode_url)
             with open(mapping_path, 'w', encoding='utf-8') as f:
                 json.dump(url_mapping, f, indent=4, ensure_ascii=False)
-            print(f"[xb6v] {item_label} 发现新链接，已添加到 mapping 文件并复制到剪贴板:\n{episode_url}")
+            print(f"[6vdy] {item_label} 发现新链接，已添加到 mapping 文件并复制到剪贴板:\n{episode_url}")
             return 'exited'
 
     # 全部 episodes 都已在 mapping 中且值非空（或者都被黑名单跳过）
-    print(f"  [xb6v 完成] {item_label} 的 xb6v channel 全部链接已就绪，转入普通 channel 流程")
+    print(f"  [6vdy 完成] {item_label} 的 6vdy channel 全部链接已就绪，转入普通 channel 流程")
     return 'done'
 
 
@@ -283,11 +283,11 @@ def main():
             playlists = item.get('playlist', []) or []
 
             # ============================================================
-            # 1) 先优先处理 xb6v 特殊 channel
+            # 1) 先优先处理 6vdy 特殊 channel
             # ============================================================
             special_pl = find_special_channel(playlists)
             if special_pl is not None:
-                status = process_special_xb6v(
+                status = process_special_6vdy(
                     special_pl, url_mapping, blacklist_url,
                     mapping_path, item_label
                 )
@@ -295,8 +295,8 @@ def main():
                     return  # 已处理掉一个链接，结束整个程序
 
             # ============================================================
-            # 2) xb6v 已就绪（或本来就没有），继续走普通 channel 旧逻辑
-            #    注意：要把 xb6v 从普通 channel 列表里剔除
+            # 2) 6vdy 已就绪（或本来就没有），继续走普通 channel 旧逻辑
+            #    注意：要把 6vdy 从普通 channel 列表里剔除
             # ============================================================
             normal_playlists = [pl for pl in playlists
                                 if pl.get('name') != SPECIAL_CHANNEL_NAME]

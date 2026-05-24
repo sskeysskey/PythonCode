@@ -53,14 +53,14 @@ def get_year_config(year: str):
     return {
         "year": year,
         "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 8},
+            "Movie": {"id": 1, "enabled": True,  "pages": 7},
             "Drama": {"id": 2, "enabled": True,  "pages": 0},
             "Show":  {"id": 3, "enabled": True,  "pages": 0},
             "Anime": {"id": 4, "enabled": True,  "pages": 0},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(2022, 1990, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(2025, 2024, -1)]
 
 # 3. 组装 TASKS
 TASKS = [

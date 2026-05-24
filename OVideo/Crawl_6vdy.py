@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-xb6v.com 最新剧集、最新电影、小编推荐爬取脚本
+6vdy.org 最新剧集、最新电影、小编推荐爬取脚本
 - 抓取首页 "最新电影" (Tab 0)、"最新剧集" (Tab 1)、"小编推荐" (Tab 2)
 - 进入子页面解析详细信息
 - 校验播放列表不为空后，再下载封面图到 cover_image 目录
@@ -21,11 +21,11 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # ============== 配置 ==============
-BASE_URL    = "https://www.xb6v.com/qian50m.html"
+BASE_URL    = "https://www.6vdy.org/qian50m.html"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 GROUP_KEY   = "Drama"          # 默认写入的分组（针对最新剧集栏目）
-PLAYLIST_NAME = "xb6v"         # playlist 里的 name
+PLAYLIST_NAME = "6vdy"         # playlist 里的 name
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0           # 每抓一个子页面之间的休眠秒数
 BLACKLIST_NAMES = ["乘风2026"] 
@@ -46,7 +46,7 @@ def fetch(url, is_binary=False):
     resp.raise_for_status()
     if is_binary:
         return resp.content
-    # xb6v 站点是 gb2312/gbk 编码，明确指定一下
+    # 6vdy 站点是 gb2312/gbk 编码，明确指定一下
     if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
         resp.encoding = resp.apparent_encoding or "utf-8"
     return resp.text
@@ -475,7 +475,7 @@ def process_tab_by_recommend_rules(data, tab_index, tab_name):
                 status, added, total = upsert_playlist(existing, episodes)
                 if status == "updated":
                     old_info = existing.get("info", "")
-                    new_info = f"更新至{total}集"
+                    new_info = f"更新至第{total}集"
                     existing["info"] = new_info
                     print(f"    ✓ 更新({old_group}): 新增 {added} 集")
                     print(f"      [info字段更新] 共有 {total} 集，info由原来的「{old_info}」更新为「{new_info}」")
@@ -551,7 +551,7 @@ def upsert_playlist(existing, new_episodes):
     if not new_episodes:
         return "no_new", 0, 0
 
-    # 查找已有的 xb6v 播放列表
+    # 查找已有的 6vdy 播放列表
     old_episodes = {}
     for pl in existing.get("playlist", []):
         if pl.get("name") == PLAYLIST_NAME:
