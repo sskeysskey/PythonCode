@@ -20,8 +20,8 @@ BASE_DOMAIN = "https://gg8.ukuzy0.com"
 # id -> 写入 JSON 的分组键
 CATEGORIES = [
     # {"id": 1,  "group": "Movie", "label": "电影"},
-    {"id": 2,  "group": "Drama", "label": "剧集"},
-    # {"id": 3,  "group": "Show",  "label": "综艺"},
+    # {"id": 2,  "group": "Drama", "label": "剧集"},
+    {"id": 3,  "group": "Show",  "label": "综艺"},
     # {"id": 4,  "group": "Anime", "label": "动漫"},
     # {"id": 24, "group": "Movie", "label": "纪录片"},  # 纪录片也并入 Movie
 ]
@@ -337,19 +337,40 @@ def parse_detail(html):
             a = li.find("a")
             if not a:
                 continue
-            # 优先取 title 属性，如果为空则取文本
-            title = (a.get("title") or a.get_text(" ", strip=True)).strip()
-    
-            # 如果文本中包含 '$'，取 '$' 前面的部分
-            if '$' in title:
-                title = title.split('$')[0].strip()
-            href = (a.get("href") or "").strip()
-            if not title:
-                # 兜底：从文本中拆 "第01集 $http..."
-                txt = a.get_text(" ", strip=True)
-                title = re.split(r"[\$\s]", txt, maxsplit=1)[0]
-            if title and href:
-                episodes.append((title, href))
+            
+            # 1. 获取原始文本 (优先取 title 属性，没有则取文本)
+            raw_text = (a.get("title") or a.get_text(" ", strip=True)).strip()
+            # 2. 获取 href (如果 href 看起来像个链接，也作为备选)
+            href_attr = (a.get("href") or "").strip()
+
+            # --- 核心修改：智能提取名称与链接 ---
+            
+            # 使用正则寻找 http/https 开头的起始位置
+            # 匹配 http 或 https，后面跟着 ://
+            m = re.search(r'(https?://[^\s]+)', raw_text)
+            
+            if m:
+                # 找到了链接，截取链接部分
+                url = m.group(1)
+                # 链接之前的部分作为名称，并清理掉可能存在的 '$'
+                name = raw_text[:m.start()].replace('$', '').strip()
+            else:
+                # 如果文本里没找到链接，尝试从 href 属性里拿
+                # 有时候 href 里面就是链接，有时候 href 也是乱码，需要判断
+                if href_attr.startswith("http"):
+                    url = href_attr
+                    name = raw_text.replace('$', '').strip()
+                else:
+                    # 实在解析不出链接，跳过
+                    continue
+
+            # 兜底：如果名称为空，给个默认值
+            if not name:
+                name = "第1集"
+            
+            if url:
+                episodes.append((name, url))
+                
         data["playlist_episodes"] = episodes
 
     return data

@@ -27,7 +27,8 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 # 受保护的播放源（由其他爬虫维护，本爬虫不覆盖这些源）
 # 当条目重新抓取时，这些源会从旧数据中保留下来，
 # 只更新这个集合之外的源。后续要新增其它外部源，直接加进来即可。
-PROTECTED_SOURCES = {"xb6v"}
+# 【修改】：将 "6vdy" 也加入受保护源，防止在更新时被覆盖或删除
+PROTECTED_SOURCES = {"xb6v", "6vdy"}
 
 # ==========================================
 # 日志配置
@@ -117,7 +118,7 @@ TASKS = [
     # 按评分和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
@@ -131,14 +132,14 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
                  "Movie": {"id": 1, "enabled": True, "pages": 1},
-                 "Drama": {"id": 2, "enabled": True, "pages": 0},
-                 "Show": {"id": 3, "enabled": True, "pages": 0},
-                 "Anime": {"id": 4, "enabled": True, "pages": 0}
+                 "Drama": {"id": 2, "enabled": True, "pages": 1},
+                 "Show": {"id": 3, "enabled": True, "pages": 1},
+                 "Anime": {"id": 4, "enabled": True, "pages": 1}
                  }
             },
         ]
@@ -410,25 +411,8 @@ def download_cover(img_url: str, video_id: str) -> str:
                 print(f"     [封面已下载|requests] {filename}")
                 return filename
         except Exception as e:
-            print(f"     [requests 失败] {str(e)[:120]}")
+            pass
 
-    # 3c) curl_cffi 轮换指纹 + 短退避(最后挣扎)
-    for attempt in range(RETRY_TIMES):
-        impersonate = _IMPERSONATE_POOL[attempt % len(_IMPERSONATE_POOL)]
-        for url in url_candidates:
-            try:
-                resp = c_requests.get(url, headers=headers,
-                                      timeout=REQUEST_TIMEOUT,
-                                      impersonate=impersonate, verify=False)
-                if resp.status_code == 200 and _save(resp.content):
-                    print(f"     [封面已下载|curl_cffi/{impersonate}] {filename}")
-                    return filename
-            except Exception as e:
-                short = str(e).split("See https")[0].strip()
-                print(f"     [curl_cffi 失败 {attempt+1}/{RETRY_TIMES} impersonate={impersonate}] {short}")
-        time.sleep(random.uniform(2, 4))
-
-    print(f"     [❌ 最终失败] {img_url}")
     return ""
 
 
@@ -486,6 +470,7 @@ def build_index(existing: dict) -> dict:
     返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
     支持扫描 url, url1, url2 ... 等所有 urlX 字段。
     用于判断该条目是否已存在、update 是否变化,以及图片是否缺失。
+    同时建立一个辅助索引，用于通过 path 快速反查其对应的真实 key (name, path)。
     """
     idx = {}
     for cat, items in existing.items():
@@ -500,7 +485,6 @@ def build_index(existing: dict) -> dict:
                 if name:
                     # 找出所有以 "url" 开头的键（如 url, url1, url2...）
                     url_keys = [k for k in it.keys() if k == "url" or (k.startswith("url") and k[3:].isdigit())]
-                    
                     for key_name in url_keys:
                         url_val = it.get(key_name, "")
                         if url_val:
@@ -510,6 +494,8 @@ def build_index(existing: dict) -> dict:
                                 "info": info,
                                 "update": update,
                                 "image": image,
+                                "real_name": name, # 记录在库中的真实名字
+                                "real_path": path  # 记录在库中的真实 path
                             }
         idx[cat] = m
     return idx
@@ -819,24 +805,40 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
         for idx_i, item in enumerate(items, 1):
             item_path = get_url_path(item["url"])
+            
+            # 【核心修改 1】：多维度去重判定
+            # 1. 首先尝试用 (name, path) 查找
             key = (item["name"], item_path)
             old_data = index_map.get(key)
+            matched_by_path_only = False
+
+            # 2. 如果没找到，再通过 path 唯一性查找（解决名字微调问题，如 "木乃伊2026" 变 "木乃伊"）
+            if old_data is None:
+                for idx_key, idx_val in index_map.items():
+                    if idx_val.get("real_path") == item_path:
+                        old_data = idx_val
+                        key = idx_key # 锁定旧的索引 key
+                        matched_by_path_only = True
+                        break
 
             if old_data is not None:
                 old_info   = old_data.get("info", "")
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
 
-                # 核心改动：不再校验 old_info == item["info"]
-                # 只要 image 和 update 都有值，就直接跳过，info 改变不再触发更新
-                if old_image and old_update:
-                    log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info已忽略对比)")
+                # 【核心修改 2】：恢复对 info 的比对。只有当 image, update 都有值，且 info 未发生改变时，才跳过
+                if old_image and old_update and (old_info == item["info"]):
+                    log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info一致)")
                     continue
 
             # 判定本次是新增 / 补图 / 补update / 普通更新
             is_update = old_data is not None
             if is_update:
-                if not old_data.get("update"):
+                if matched_by_path_only:
+                    tag = "[更名更新]"
+                elif old_data.get("info") != item["info"]:
+                    tag = "[Info更新]"
+                elif not old_data.get("update"):
                     tag = "[补update]"
                 elif not old_data.get("image"):
                     tag = "[补图]"
@@ -863,33 +865,90 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # 【修改处】：只有当确认有有效播放源，且不会被跳过时，才打印新增/更新的日志
                 log(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
 
-                # ===== 关键：合并受保护源（如 xb6v）=====
-                # 这些源由其它爬虫维护，本爬虫不应覆盖。
-                # 做法：先在旧数据中找到这条目，把受保护源摘出来；
-                #       再把新 playlist 中可能同名的源剔掉，把旧的受保护源追加回去。
+                # ===== 【核心修改 1：任何更新名字 name 不要改】 =====
+                if is_update:
+                    # 强制还原为库中的旧名字（如 "木乃伊2026"），防止更名同步时覆盖
+                    detail["name"] = key[0]
+
+                # ===== 【核心修改 3：合并受保护源，并控制 6vdy 置顶】 =====
                 old_entry = None
                 if is_update:
+                    # 寻找旧数据项
                     for old in existing_list:
-                        if old.get("name") == item["name"] and \
-                           get_url_path(old.get("url", "")) == item_path:
+                        old_path = get_url_path(old.get("url", ""))
+                        # 兼容：名字相同且 path 相同，或者仅 path 相同（更名情况）
+                        if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
                             old_entry = old
                             break
 
                 if old_entry:
                     old_playlist = old_entry.get("playlist", [])
+                    # 提取旧数据中属于 PROTECTED_SOURCES (xb6v, 6vdy) 的源
                     protected_in_old = [
                         p for p in old_playlist
                         if p.get("name") in PROTECTED_SOURCES
                     ]
                     if protected_in_old:
+                        # 过滤掉新抓取数据中同名的受保护源
                         new_playlist = [
                             p for p in detail.get("playlist", [])
                             if p.get("name") not in PROTECTED_SOURCES
                         ]
-                        new_playlist.extend(protected_in_old)
-                        detail["playlist"] = new_playlist
+                        
+                        # 重新组装 playlist，确保 6vdy 始终放在第一位
+                        final_playlist = []
+                        
+                        # 1. 先把 6vdy 找出来放最前面
+                        vdy_source = next((p for p in protected_in_old if p.get("name") == "6vdy"), None)
+                        if vdy_source:
+                            final_playlist.append(vdy_source)
+                            
+                        # 2. 放入 xb6v 等其他可能存在的受保护源
+                        for p in protected_in_old:
+                            if p.get("name") != "6vdy":
+                                final_playlist.append(p)
+                                
+                        # 3. 放入新抓取的其他源
+                        final_playlist.extend(new_playlist)
+                        
+                        detail["playlist"] = final_playlist
                         kept_names = [p.get("name") for p in protected_in_old]
-                        print(f"     [保留受保护源] {kept_names}")
+                        print(f"     [保留受保护源] {kept_names} (已置顶 6vdy)")
+
+                    # 【新增逻辑插入点】
+                    if is_update and old_entry:
+                        old_info = old_entry.get("info", "")
+                        new_info = item["info"]
+                        old_pl = old_entry.get("playlist", [])
+                        new_pl = detail.get("playlist", [])
+                        
+                        if old_info != new_info and old_pl != new_pl:
+                            print(f"     [Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
+
+                    # 如果发生了更名，更新新数据中的字段，但保留其他历史字段
+                    if matched_by_path_only:
+                        print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
+
+                # ===== 【核心修改 2：url1 要紧挨着 url 放置】 =====
+                # 重新构建 detail 字典，确保 urlX 字段紧随 url 后面
+                ordered_detail = {}
+                # 1. 放入 name 和 url
+                ordered_detail["name"] = detail["name"]
+                ordered_detail["url"] = detail["url"]
+                
+                # 2. 紧接着放入旧条目中的所有 urlX 字段
+                if old_entry:
+                    for k, v in old_entry.items():
+                        if k.startswith("url") and k != "url":
+                            ordered_detail[k] = v
+                
+                # 3. 放入剩余的所有其他字段
+                for k, v in detail.items():
+                    if k not in ordered_detail:
+                        ordered_detail[k] = v
+                
+                # 用重新排序后的字典替换原 detail
+                detail = ordered_detail
 
                 # update 变化提示
                 if is_update and old_data.get("update") and \
@@ -900,7 +959,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     replaced = False
                     for i, old in enumerate(existing_list):
                         old_path = get_url_path(old.get("url", ""))
-                        if old.get("name") == item["name"] and old_path == item_path:
+                        if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
                             existing_list[i] = detail
                             replaced = True
                             break
@@ -911,16 +970,25 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     existing_list.append(detail)
                     new_count += 1
 
-                # 索引同步更新（不再保存 has_xb6v / is_old_episodes）
-                index_map[key] = {
+                # 索引同步更新
+                # 如果发生了更名，我们需要清理旧的索引 key，写入新的
+                if matched_by_path_only and key in index_map:
+                    del index_map[key]
+                
+                new_key = (item["name"], item_path)
+                index_map[new_key] = {
                     "info":   item["info"],
                     "update": detail.get("update", ""),
                     "image":  detail.get("image", ""),
+                    "real_name": item["name"],
+                    "real_path": item_path
                 }
                 save_data(all_data)
                 log(f"     [已实时保存到磁盘]", force=True)
             except Exception as e:
+                import traceback
                 print(f"     [解析失败] {e}")
+                traceback.print_exc()
 
     return new_count, updated_count
 
@@ -939,10 +1007,6 @@ def start_caffeinate():
     """启动 caffeinate 以防止系统休眠"""
     global _caffeinate_proc
     try:
-        # -i: 防止系统进入空闲休眠
-        # -d: 防止显示器进入休眠
-        # -m: 防止磁盘进入空闲休眠
-        # -u: 声明用户处于活动状态
         _caffeinate_proc = subprocess.Popen(["caffeinate", "-idmu"])
         print(">>> [系统] 已开启防休眠模式 (caffeinate)")
     except Exception as e:
@@ -963,7 +1027,7 @@ def main():
     start_caffeinate()
 
     final = load_existing(OUTPUT_FILE)
-    clean_existing_data(final) # <--- 加上这一行即可清理旧的无效数据
+    clean_existing_data(final) # <--- 加上这一行即可清理旧 of 无效数据
     index = build_index(final)
     print(f"已有数据分类数: {len(final)}；"
           f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")
