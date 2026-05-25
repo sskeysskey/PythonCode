@@ -76,33 +76,7 @@ TASKS = [
     {
         "sort_type": "score",
         "enabled": False,
-        "jobs": [
-            # 这里放入特殊的年份（如 2026, 2025, 2024）
-            {"year": "2026",
-             "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 2},
-                 "Drama": {"id": 2, "enabled": True, "pages": 2},
-                 "Show": {"id": 3, "enabled": True, "pages": 2},
-                 "Anime": {"id": 4, "enabled": True, "pages": 2}
-                 }
-            },
-            {"year": "2025",
-             "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 4},
-                 "Drama": {"id": 2, "enabled": True, "pages": 2},
-                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                 "Anime": {"id": 4, "enabled": True, "pages": 2}
-                 }
-            },
-            {"year": "2024",
-             "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 4},
-                 "Drama": {"id": 2, "enabled": True, "pages": 2},
-                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                 "Anime": {"id": 4, "enabled": True, "pages": 2}
-                 }
-            },
-            
+        "jobs": [            
             # 最后的空年份配置
             {
                 "year": "",
@@ -115,16 +89,16 @@ TASKS = [
             },
         ]
     },
-    # 按评分和按更新日期抓取
+    # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
         "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 1},
+                "Movie": {"id": 1, "enabled": True, "pages": 0},
                 "Drama": {"id": 2, "enabled": True, "pages": 0},
-                "Show": {"id": 3, "enabled": True, "pages": 0},
+                "Show": {"id": 3, "enabled": True, "pages": 1},
                 "Anime": {"id": 4, "enabled": True, "pages": 0}
                 }
             },
@@ -421,7 +395,7 @@ def extract_video_id(url: str, name: str) -> str:
     m = re.search(r"/(?:mv|vod|detail)/(\d+)", url)
     if m:
         return m.group(1)
-    # 兜底：用 name 清洗成安全文件名
+    # 兜底：用 name 清洗成 safe 文件名
     safe = re.sub(r"[^\w\u4e00-\u9fa5]+", "_", name).strip("_")
     return safe or "unknown"
 
@@ -579,11 +553,13 @@ def parse_detail_page(html: str, name: str, url: str,
                 # 兜底:取倒数第一个 em 的文本
                 update_time = clean_ws(ems[-1].get_text(strip=True))
 
+    # 【修改】：如果是新增项目，初始化时在 update 下方添加 update_pk，且初始值与 update 相同
     data = {
         "name": name,
         "url": url,
         "info": info,
         "update": update_time,
+        "update_pk": update_time,  # 新增项目：初始时 update_pk 与 update 保持一致
         "image": "",
         "导演": "",
         "编剧": [],
@@ -929,8 +905,17 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     if matched_by_path_only:
                         print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
 
-                # ===== 【核心修改 2：url1 要紧挨着 url 放置】 =====
-                # 重新构建 detail 字典，确保 urlX 字段紧随 url 后面
+                # ===== 【核心修改：更新项目的 update/update_pk 处理逻辑】 =====
+                if is_update and old_entry:
+                    # 1. 强制保留旧的 update 字段值不被覆盖
+                    detail["update"] = old_entry.get("update", "")
+                    # 2. 将新抓取到的最新时间写入 update_pk 字段
+                    # 这里的 detail["update_pk"] 已经在 parse_detail_page 里被提取并初始化为最新抓取的时间了
+                    # 所以无需额外赋值，直接在下面重构字典时写入即可。
+                    pass
+
+                # ===== 【核心修改 2：字段排序重构（确保 url1 挨着 url，且 update_pk 挨着 update） =====
+                # 重新构建 detail 字典，确保字段顺序符合规范
                 ordered_detail = {}
                 # 1. 放入 name 和 url
                 ordered_detail["name"] = detail["name"]
@@ -942,7 +927,17 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                         if k.startswith("url") and k != "url":
                             ordered_detail[k] = v
                 
-                # 3. 放入剩余的所有其他字段
+                # 3. 放入 info 字段
+                if "info" in detail:
+                    ordered_detail["info"] = detail["info"]
+
+                # 4. 依次放入 update 和 update_pk，确保 update_pk 紧挨在 update 下面
+                if "update" in detail:
+                    ordered_detail["update"] = detail["update"]
+                # 无论是新增（本来就有）还是更新（如果老数据没有就自动补上），都写入最新抓取的时间
+                ordered_detail["update_pk"] = detail.get("update_pk", "")
+
+                # 5. 放入剩余的所有其他字段
                 for k, v in detail.items():
                     if k not in ordered_detail:
                         ordered_detail[k] = v
@@ -950,10 +945,15 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # 用重新排序后的字典替换原 detail
                 detail = ordered_detail
 
-                # update 变化提示
-                if is_update and old_data.get("update") and \
-                   old_data.get("update") != detail.get("update", ""):
-                    print(f"     [update 变化] {old_data.get('update')} → {detail.get('update')}")
+                # update_pk 变化提示
+                if is_update and old_entry:
+                    old_upk = old_entry.get("update_pk", "")
+                    new_upk = detail.get("update_pk", "")
+                    if old_upk != new_upk:
+                        if not old_upk:
+                            print(f"     [新增 update_pk 并更新] -> {new_upk}")
+                        else:
+                            print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
                 if is_update:
                     replaced = False
