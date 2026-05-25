@@ -92,7 +92,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
@@ -110,10 +110,10 @@ TASKS = [
         "jobs": [
             {"year": "",
              "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 0},
+                 "Movie": {"id": 1, "enabled": True, "pages": 1},
                  "Drama": {"id": 2, "enabled": True, "pages": 1},
-                 "Show": {"id": 3, "enabled": True, "pages": 0},
-                 "Anime": {"id": 4, "enabled": True, "pages": 0}
+                 "Show": {"id": 3, "enabled": True, "pages": 1},
+                 "Anime": {"id": 4, "enabled": True, "pages": 1}
                  }
             },
         ]
@@ -835,6 +835,14 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info一致)")
                     continue
 
+                # 【新增需求】：如果 info 发生了变化，但新 info 包含抢先版关键字，则不更新（跳过）
+                if old_image and old_update and (old_info != item["info"]):
+                    block_keywords = ['TC', 'TS', '抢先', 'HC']
+                    new_info_upper = item["info"].upper()
+                    if any(kw.upper() in new_info_upper for kw in block_keywords):
+                        log(f"  ({idx_i}/{len(items)}) [跳过-抢先版拦截] {item['name']} (新info '{item['info']}' 包含抢先关键字)")
+                        continue
+
             # 判定本次是新增 / 补图 / 补update / 普通更新 / 6vdy特殊更新
             is_update = (old_data is not None) or is_special_6vdy_update
             if is_update:
@@ -931,17 +939,50 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     if matched_by_path_only:
                         print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
 
-                # ===== 【核心修改：更新项目的 update/update_pk 处理逻辑】 =====
+                # ==========================================
+                # 【新增规则核心】：细粒度字段合并与更新
+                # ==========================================
                 if is_update and old_entry:
                     # 1. 强制保留旧的 update 字段值不被覆盖
                     detail["update"] = old_entry.get("update", "")
-                    # 2. 将新抓取到的最新时间写入 update_pk 字段
-                    # 这里的 detail["update_pk"] 已经在 parse_detail_page 里被提取并初始化为最新抓取的时间了
-                    # 所以无需额外赋值，直接在下面重构字典时写入即可。
-                    pass
 
-                # ===== 【核心修改 2：字段排序重构（确保 url1 挨着 url，且 update_pk 挨着 update） =====
-                # 重新构建 detail 字典，确保字段顺序符合规范
+                    # 2. 针对 导演/编剧/主演/类型/地区/alias/intro 字段：
+                    # 如果旧数据为空，而新抓取的数据不为空，则更新写入
+                    for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
+                        old_val = old_entry.get(field)
+                        new_val = detail.get(field)
+                        if not old_val and new_val:
+                            print(f"     [补全字段] {field}: (空) -> {new_val}")
+                        else:
+                            # 否则保留旧值
+                            detail[field] = old_val
+
+                    # 3. 针对 date：如果旧数据为空，或者新抓取的内容长度大于旧内容，则更新写入
+                    old_date = old_entry.get("date", "")
+                    new_date = detail.get("date", "")
+                    if new_date and (not old_date or len(new_date) > len(old_date)):
+                        print(f"     [更新日期] date: {old_date or '(空)'} -> {new_date}")
+                    else:
+                        detail["date"] = old_date
+
+                    # 4. 针对 评分（豆瓣/IMDB）：如果旧数据为空，新抓取的不为空，则更新写入
+                    old_rating = old_entry.get("评分", {})
+                    if not isinstance(old_rating, dict):
+                        old_rating = {"豆瓣": "", "IMDB": ""}
+                    new_rating = detail.get("评分", {})
+                    
+                    final_rating = {}
+                    for platform in ["豆瓣", "IMDB"]:
+                        old_score = old_rating.get(platform, "")
+                        new_score = new_rating.get(platform, "")
+                        if not old_score and new_score:
+                            final_rating[platform] = new_score
+                            print(f"     [补全评分] {platform}: (空) -> {new_score}")
+                        else:
+                            final_rating[platform] = old_score
+                    detail["评分"] = final_rating
+
+                # ===== 字段排序重构 =====
                 ordered_detail = {}
                 # 1. 放入 name
                 ordered_detail["name"] = detail["name"]
@@ -992,7 +1033,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                             print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
                 if is_update:
-                    # 💡 核心修复：直接通过记录的 target_list_idx 索引，精准替换，绝不 append 新增！
+                    # 💡 核心修复：直接通过记录 of target_list_idx 索引，精准替换，绝不 append 新增！
                     if target_list_idx is not None and target_list_idx < len(existing_list):
                         existing_list[target_list_idx] = detail
                     else:
@@ -1108,7 +1149,7 @@ def main():
                     final[cat_name], index[cat_name],
                     final, year, sort_type
                 )
-                print(f"  → [{sort_type}] year={year or '无'} 分类 {cat_name} "
+                print(f"  -> [{sort_type}] year={year or '无'} 分类 {cat_name} "
                       f"新增 {new_n} 条,更新 {upd_n} 条")
 
     print(f"\n✅ 全部抓取任务结束。")

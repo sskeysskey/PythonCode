@@ -2,7 +2,7 @@
 """
 6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版）
 - 支持 OVideos.json 多 URL 格式 (url, url1, url2...)
-- 跨分类全局 Name 唯一性校验
+- 跨分类全局 Name 唯一性校验 + URL 存在性双重校验
 - 智能 6vdy 渠道插入与更新机制
 - 智能 info 字段集数对比更新（不更新 update 字段）
 - 升级版分类判定规则（支持自动分流至 Anime）
@@ -23,7 +23,7 @@ JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "6vdy"         # 6vdy 专有播放列表名称
 REQUEST_TIMEOUT = 15
-SLEEP_BETWEEN  = 1.0           # 每次抓取子页面的休眠时间（秒）
+SLEEP_BETWEEN  = 1.0           # 每次抓取子页面后的休眠时间（秒）
 BLACKLIST_NAMES = ["乘风2026"] 
 
 HEADERS = {
@@ -56,16 +56,92 @@ def normalize_text(s):
     s = s.strip(":：·•")
     return s
 
+def num_to_chinese(num_str):
+    """将 1-99 的阿拉伯数字字符串转换为中文数字"""
+    try:
+        num = int(num_str)
+    except ValueError:
+        return num_str
+    
+    chinese_digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+    if num < 10:
+        return chinese_digits[num]
+    elif num == 10:
+        return "十"
+    elif num < 20:
+        return f"十{chinese_digits[num % 10]}"
+    elif num < 100:
+        tens = num // 10
+        ones = num % 10
+        return f"{chinese_digits[tens]}十" + (chinese_digits[ones] if ones != 0 else "")
+    return num_str  # 超过99则返回原样
 
 def split_name_info(raw_title):
     raw_title = raw_title.strip()
-    m = re.search(r"[[\［\s]", raw_title)
-    if not m:
-        return raw_title, ""
-    idx = m.start()
-    name = raw_title[:idx].strip()
-    info = raw_title[idx:].strip()
-    return name, info
+    
+    base_name = raw_title
+    base_info = ""
+    has_bracket = False
+
+    # 1. 尝试匹配中括号（兼容半角 [ ] 和全角 ［ ］）
+    # 匹配格式如： 浪漫的绝对值［全集］ 或 纸钞屋：柏林［第1-2季全］
+    bracket_match = re.search(r"^(.*?)[[［](.*?)[\］]]$", raw_title)
+    if bracket_match:
+        base_name = bracket_match.group(1).strip()
+        base_info = bracket_match.group(2).strip()
+        has_bracket = True
+    else:
+        # 2. 如果没有中括号，尝试匹配空格后跟着“第X季”或“第X季全”的后缀
+        # 例如："达顿牧场 第一季" 或 "驱车向前 第一季全"
+        season_match = re.search(r"^(.*?)\s+((?:第[0-9一二三四五六七八九十百\-]+季)(?:全)?)$", raw_title)
+        if season_match:
+            base_name = season_match.group(1).strip()
+            base_info = season_match.group(2).strip()
+
+    # ==================== 新增：阿拉伯数字季数转中文数字逻辑 ====================
+    # 无论是 base_name 还是 base_info，只要包含“第[0-9]+季”，就将其转换为中文数字
+    def replace_season(match):
+        prefix = match.group(1)  # "第"
+        num = match.group(2)     # 阿拉伯数字，如 "5"
+        suffix = match.group(3)  # "季"
+        return f"{prefix}{num_to_chinese(num)}{suffix}"
+
+    # 替换 base_name 中的阿拉伯数字季（例如："斗破苍穹 第5季" -> "斗破苍穹 第五季"）
+    base_name = re.sub(r"(第)(\d+)(季)", replace_season, base_name)
+    # 替换 base_info 中的阿拉伯数字季（例如："第5季全" -> "第五季全"）
+    base_info = re.sub(r"(第)(\d+)(季)", replace_season, base_info)
+    # ====================================================================
+
+    # 如果既没有中括号，也不符合季数后缀规则，则直接返回原标题作为 name，info 为空
+    if not base_info:
+        return base_name, ""  # 注意：这里原代码是 raw_title，改成 base_name 可以应用上面的替换
+
+    # 3. 根据提取出的 base_name 和 base_info 进行精细化转换
+    
+    # 情况 A: 括号内/后缀是 "全集"
+    if base_info == "全集":
+        return base_name, "全集"
+        
+    # 情况 C: 括号内/后缀以 "季全" 结尾 (例如 "第五季全", "第1-2季全")
+    elif base_info.endswith("季全"):
+        # 判断是否包含范围符号（如 1-2季、1至3季等）
+        if re.search(r"[\-\d~至]", base_info):
+            # 如果是多季范围（如 "第1-2季全"），不拼接，直接返回原 base_name
+            return base_name, base_info
+        else:
+            # 如果是单季（如 "第五季全"），则拼接成 "黑袍纠察队 第五季"
+            season_clean = base_info[:-1] # 去掉末尾的 "全"
+            name = f"{base_name} {season_clean}"
+            return name, base_info
+        
+    # 情况 B: 括号内/后缀以 "季" 结尾 (例如 "第五季", "第一季")
+    elif base_info.endswith("季"):
+        name = f"{base_name} {base_info}"
+        info = ""
+        return name, info
+
+    # 其他未覆盖的括号内容情况，保留原样拆分
+    return base_name, base_info
 
 
 def safe_filename(url):
@@ -312,15 +388,29 @@ def save_json(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-def find_existing_by_name_global(data, name):
+def find_existing_global(data, name, sub_url):
     """
-    全局跨分类查找：只要 name 一致就算重复
+    全局跨分类查找：
+    1. 优先通过 name 进行匹配。
+    2. 如果 name 不匹配，但新抓取的 sub_url 在已有记录的任何 url 字段 (url, url1, url2...) 中存在，也视为重复。
     返回: (分类名, 匹配到的记录字典)
     """
+    # 1. 第一轮：通过 Name 匹配
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             if item.get("name") == name:
                 return group, item
+
+    # 2. 第二轮：通过 URL 匹配（解决 name 略有差别但 URL 完全一致的情况）
+    if sub_url:
+        for group in ["Movie", "Drama", "Show", "Anime"]:
+            for item in data.get(group, []):
+                # 收集该条记录所有的 url 字段值
+                existing_urls = {item.get(k) for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)}
+                if sub_url in existing_urls:
+                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (已有:「{item.get('name')}」, 抓取:「{name}」)")
+                    return group, item
+
     return None, None
 
 
@@ -382,12 +472,15 @@ def update_info_field_if_needed(existing, new_playlist):
             new_info = f"更新至第{Y}集"
             existing["info"] = new_info
             print(f"      [info字段更新] 共有 {Y} 集，info由原来的「{old_info}」更新为「{new_info}」")
+            return True  # 新增：成功更新了 info 字段，返回 True
         else:
             # 如果没有“集”字（比如电影），我们可以选择不更新 info，或者只更新为纯数字
             # 这里保持原样，避免把“HD”之类的标签覆盖掉
             print(f"      [info字段跳过] 资源无集数概念，保持原 info「{old_info}」")
+            return False  # 新增：未更新，返回 False
     else:
         print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+        return False  # 新增：未更新，返回 False
 
 
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
@@ -395,8 +488,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     处理已存在记录的更新逻辑：
     - 补充/更新空字段（编剧、导演、主演、类型、地区、alias、intro、评分）
     - 依据特殊规则更新 date 字段（新抓取的长度更长则更新）
-    - 检查 url, url1, url2... 中是否有包含 '6vdy' 的 URL
-    - 如果有：针对 name='6vdy' 的播放列表进行长度对比更新
+    - 检查 url, url1, url2... 中是否有包含 '6vdy' 的 URL 或者当前子页面的 sub_url
+    - 如果有：针对 name='6vdy' 的播放列表进行长度对比更新，不新增 urlX 字段
     - 如果没有：将 6vdy 作为新渠道插入到 playlist 的第一位，并新增 urlX 字段（紧挨着原有 url 字段下方放置）
     """
     # ==================== 新增：字段合并与更新逻辑 ====================
@@ -441,26 +534,25 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     if not new_6vdy_episodes:
         return "updated" if fields_updated else "no_new"
 
-    # 1. 搜集该记录所有的 url 字段
-    # 过滤出所有符合 url 或 url\d+ 的键，并按字母/数字排序（确保 url, url1, url2 的顺序）
+    # 4. 搜集该记录所有的 url 字段
     url_keys = sorted(
         [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
     )
     
-    # 2. 检查 6vdy 是否已存在于已有 url 中
+    # 5. 检查 6vdy 是否已存在于已有 url 中，或者 sub_url 是否已经存在于已有 url 中
     has_6vdy_url = False
     for k in url_keys:
         val = existing.get(k, "")
-        if "6vdy" in val:
+        # 如果已有 URL 包含 '6vdy' 或者完全等于当前的 sub_url，都判定为“渠道已存在”
+        if "6vdy" in val or val == sub_url:
             has_6vdy_url = True
             break
 
     playlist = existing.setdefault("playlist", [])
 
     if has_6vdy_url:
-        # --- 6vdy 渠道已存在：执行 6vdy 播放列表长度对比更新 ---
-        # 寻找已有的 6vdy 播放源
+        # --- 6vdy 渠道已存在：直接执行 6vdy 播放列表长度对比更新，不新增 urlX 键 ---
         old_6vdy_eps = {}
         old_6vdy_idx = -1
         for idx, pl in enumerate(playlist):
@@ -482,8 +574,13 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         else:
             playlist.insert(0, new_pl)
 
-        # 智能更新 info
-        update_info_field_if_needed(existing, playlist)
+        # 智能更新 info，并捕获是否进行了更新
+        info_updated = update_info_field_if_needed(existing, playlist)
+        if info_updated:
+            existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fields_updated = True
+            print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
+
         return "updated"
 
     else:
@@ -525,8 +622,13 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         
         print(f"      [新增渠道] 已将 6vdy 写入 {new_url_key}，并将播放源插入至第一位")
 
-        # 智能更新 info
-        update_info_field_if_needed(existing, playlist)
+        # 智能更新 info，并捕获是否进行了更新
+        info_updated = update_info_field_if_needed(existing, playlist)
+        if info_updated:
+            existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fields_updated = True
+            print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
+
         return "channel_added"
 
 
@@ -623,8 +725,8 @@ def process_tab_unified(data, tab_index, tab_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # 2. 全局跨分类查重
-            matched_group, existing = find_existing_by_name_global(data, real_name)
+            # 升级版去重：传入 real_name 和当前子页面的 url
+            matched_group, existing = find_existing_global(data, real_name, url)
 
             if existing:
                 # 已存在：执行更新/插入渠道逻辑
@@ -654,6 +756,18 @@ def process_tab_unified(data, tab_index, tab_name):
                 # 智能分类判定
                 group = detect_group(new_6vdy_eps, rec.get("主演", []), rec.get("类型", []))
                 
+                # ==================== 新增：全新剧集自动写入 info 字段逻辑 ====================
+                # 判断条件：
+                # 1. 分类属于 Drama (剧集) 或 Anime (动漫)
+                # 2. 且抓取到的 6vdy 播放列表不为空
+                # 3. 且播放列表中存在含有“集”字的单集（避免把一些单集电影或特殊SP也格式化为“更新至第X集”）
+                if group in ["Drama", "Anime"] and new_6vdy_eps:
+                    has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
+                    if has_episode_keyword:
+                        episode_count = len(new_6vdy_eps)
+                        rec["info"] = f"更新至第{episode_count}集"
+                        print(f"      [新增剧集info初始化] 自动写入 info: 「更新至第{episode_count}集」")
+
                 # 写入 JSON
                 data.setdefault(group, []).append(rec)
                 print(f"    ✓ 新增 -> {group} (共 {len(new_6vdy_eps)} 集) [真实名称: {real_name}]")
@@ -674,17 +788,17 @@ def main():
     data = load_json()
 
     # 1. 抓取最新电影 (Tab 0)
-    m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
+    # m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
 
     # 2. 抓取最新剧集 (Tab 1)
-    d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
+    # d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
 
     # 3. 抓取小编推荐 (Tab 2)
     r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
     
     print("\n====================================")
     print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
-    print(f"统计: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {d_ok}/失败 {d_fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
+    # print(f"统计: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {d_ok}/失败 {d_fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
 
 
 if __name__ == "__main__":
