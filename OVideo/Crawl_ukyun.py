@@ -541,7 +541,7 @@ def merge_item(group_list, new_data, group_name):
             before_count = len(existing_pl[idx_ukyun]["episodes"])
             existing_pl[idx_ukyun]["episodes"].update(ukyun_channel["episodes"])
             after_count = len(existing_pl[idx_ukyun]["episodes"])
-            print(f"     [播放源] 合并 '{CHANNEL_NAME}' 渠道集数：从 {before_count} 集更新至 {after_count} 集。")
+            print(f"     [播放源] 合并 '{CHANNEL_NAME}' 渠道集数：从 {before_count} 集更新至第 {after_count} 集。")
         existing["playlist"] = existing_pl
 
     # 在此处对 merged 条目进行原地重排键顺序，确保 url1, url2 紧随 url 之后

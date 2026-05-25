@@ -92,28 +92,28 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 0},
-                "Drama": {"id": 2, "enabled": True, "pages": 0},
+                "Movie": {"id": 1, "enabled": True, "pages": 1},
+                "Drama": {"id": 2, "enabled": True, "pages": 1},
                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                "Anime": {"id": 4, "enabled": True, "pages": 0}
+                "Anime": {"id": 4, "enabled": True, "pages": 1}
                 }
             },
         ]
     },
     {
         "sort_type": "time",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 1},
+                 "Movie": {"id": 1, "enabled": True, "pages": 0},
                  "Drama": {"id": 2, "enabled": True, "pages": 1},
-                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                 "Anime": {"id": 4, "enabled": True, "pages": 1}
+                 "Show": {"id": 3, "enabled": True, "pages": 0},
+                 "Anime": {"id": 4, "enabled": True, "pages": 0}
                  }
             },
         ]
@@ -788,6 +788,7 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             key = (item["name"], item_path)
             old_data = index_map.get(key)
             matched_by_path_only = False
+            is_special_6vdy_update = False  # 是否触发 6vdy 特殊更新逻辑
 
             # 2. 如果没找到，再通过 path 唯一性查找（解决名字微调问题，如 "木乃伊2026" 变 "木乃伊"）
             if old_data is None:
@@ -798,7 +799,33 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                         matched_by_path_only = True
                         break
 
-            if old_data is not None:
+            # 3. 【新增】：如果仍然没找到，但发现库中存在同名的 name，进行 6vdy 规则判定
+            if old_data is None:
+                # 遍历 existing_list 查找同名项目
+                for list_idx, existing_item in enumerate(existing_list):
+                    if existing_item.get("name") == item["name"]:
+                        # 找出该项目的所有 url 字段
+                        all_urls = {k: v for k, v in existing_item.items() if k == "url" or (k.startswith("url") and k[3:].isdigit())}
+                        # 规则：有且仅有一个 url，且该 url 包含 "6vdy.org"
+                        if len(all_urls) == 1 and "url" in all_urls:
+                            old_url_val = all_urls["url"]
+                            if "6vdy.org" in old_url_val:
+                                # 锁定该旧条目，将其判定为更新而非新增
+                                is_special_6vdy_update = True
+                                target_list_idx = list_idx
+                                # 伪造一个 index_map 结构供后续逻辑读取
+                                old_data = {
+                                    "info": existing_item.get("info", ""),
+                                    "update": existing_item.get("update", ""),
+                                    "image": existing_item.get("image", ""),
+                                    "real_name": existing_item.get("name"),
+                                    "real_path": get_url_path(old_url_val),
+                                    "list_idx": list_idx
+                                }
+                                key = (existing_item.get("name"), get_url_path(old_url_val))
+                                break
+
+            if old_data is not None and not is_special_6vdy_update:
                 old_info   = old_data.get("info", "")
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
@@ -808,10 +835,12 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info一致)")
                     continue
 
-            # 判定本次是新增 / 补图 / 补update / 普通更新
-            is_update = old_data is not None
+            # 判定本次是新增 / 补图 / 补update / 普通更新 / 6vdy特殊更新
+            is_update = (old_data is not None) or is_special_6vdy_update
             if is_update:
-                if matched_by_path_only:
+                if is_special_6vdy_update:
+                    tag = "[6vdy特殊更新]"
+                elif matched_by_path_only:
                     tag = "[更名更新]"
                 elif old_data.get("info") != item["info"]:
                     tag = "[Info更新]"
@@ -923,8 +952,13 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 else:
                     ordered_detail["url"] = detail["url"]
                 
-                # 3. 紧接着放入旧条目中的所有 urlX 字段 (url1, url2 等)
-                if old_entry:
+                # 处理 urlX 字段
+                if is_special_6vdy_update and old_entry:
+                    # 【核心修改】：将新抓取的 URL 作为 url1 插入，紧挨在 url 下方
+                    ordered_detail["url1"] = detail["url"]
+                    print(f"     [6vdy特殊合并] 已将新抓取的 URL 写入为 url1: {detail['url']}")
+                elif old_entry:
+                    # 普通更新：依次保留旧条目中的所有 urlX 字段 (url1, url2 等)
                     for k, v in old_entry.items():
                         if k.startswith("url") and k != "url":
                             ordered_detail[k] = v
