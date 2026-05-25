@@ -441,7 +441,7 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, path): {"info": info, "update": update, "image": image}}},
+    返回 {category: {(name, path): {"info": info, "update": update, "image": image, "list_idx": idx}}},
     支持扫描 url, url1, url2 ... 等所有 urlX 字段。
     用于判断该条目是否已存在、update 是否变化,以及图片是否缺失。
     同时建立一个辅助索引，用于通过 path 快速反查其对应的真实 key (name, path)。
@@ -450,7 +450,7 @@ def build_index(existing: dict) -> dict:
     for cat, items in existing.items():
         m = {}
         if isinstance(items, list):
-            for it in items:
+            for list_idx, it in enumerate(items):
                 name = it.get("name", "")
                 info = it.get("info", "")
                 update = it.get("update", "")
@@ -469,7 +469,8 @@ def build_index(existing: dict) -> dict:
                                 "update": update,
                                 "image": image,
                                 "real_name": name, # 记录在库中的真实名字
-                                "real_path": path  # 记录在库中的真实 path
+                                "real_path": path,  # 记录在库中的真实 path
+                                "list_idx": list_idx # 【关键修改】：记录该条目在 existing_list 中的绝对位置
                             }
         idx[cat] = m
     return idx
@@ -823,8 +824,6 @@ def crawl_category(cat_name: str, cat_cfg: dict,
             else:
                 tag = "[新增]"
 
-            # 【修改处】：这里不再直接打印进度日志，而是等详情页解析成功后再打印
-
             detail_html = fetch(item["url"])
             time.sleep(SLEEP_BETWEEN_REQUESTS)
             if not detail_html:
@@ -848,14 +847,12 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
                 # ===== 【核心修改 3：合并受保护源，并控制 6vdy 置顶】 =====
                 old_entry = None
+                target_list_idx = None # 💡 记录在 existing_list 中的绝对位置
                 if is_update:
-                    # 寻找旧数据项
-                    for old in existing_list:
-                        old_path = get_url_path(old.get("url", ""))
-                        # 兼容：名字相同且 path 相同，或者仅 path 相同（更名情况）
-                        if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
-                            old_entry = old
-                            break
+                    # 💡 核心修复：直接利用 index_map 中记录 of list_idx 索引位置，精准找到旧数据字典
+                    target_list_idx = old_data.get("list_idx")
+                    if target_list_idx is not None and target_list_idx < len(existing_list):
+                        old_entry = existing_list[target_list_idx]
 
                 if old_entry:
                     old_playlist = old_entry.get("playlist", [])
@@ -917,27 +914,32 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # ===== 【核心修改 2：字段排序重构（确保 url1 挨着 url，且 update_pk 挨着 update） =====
                 # 重新构建 detail 字典，确保字段顺序符合规范
                 ordered_detail = {}
-                # 1. 放入 name 和 url
+                # 1. 放入 name
                 ordered_detail["name"] = detail["name"]
-                ordered_detail["url"] = detail["url"]
                 
-                # 2. 紧接着放入旧条目中的所有 urlX 字段
+                # 2. 放入主 url (如果是更新，强制使用老数据中的主 url，绝不覆盖！)
+                if is_update and old_entry:
+                    ordered_detail["url"] = old_entry.get("url", "")
+                else:
+                    ordered_detail["url"] = detail["url"]
+                
+                # 3. 紧接着放入旧条目中的所有 urlX 字段 (url1, url2 等)
                 if old_entry:
                     for k, v in old_entry.items():
                         if k.startswith("url") and k != "url":
                             ordered_detail[k] = v
                 
-                # 3. 放入 info 字段
+                # 4. 放入 info 字段
                 if "info" in detail:
                     ordered_detail["info"] = detail["info"]
 
-                # 4. 依次放入 update 和 update_pk，确保 update_pk 紧挨在 update 下面
+                # 5. 依次放入 update 和 update_pk，确保 update_pk 紧挨在 update 下面
                 if "update" in detail:
                     ordered_detail["update"] = detail["update"]
                 # 无论是新增（本来就有）还是更新（如果老数据没有就自动补上），都写入最新抓取的时间
                 ordered_detail["update_pk"] = detail.get("update_pk", "")
 
-                # 5. 放入剩余的所有其他字段
+                # 6. 放入剩余的所有其他字段
                 for k, v in detail.items():
                     if k not in ordered_detail:
                         ordered_detail[k] = v
@@ -956,18 +958,26 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                             print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
                 if is_update:
-                    replaced = False
-                    for i, old in enumerate(existing_list):
-                        old_path = get_url_path(old.get("url", ""))
-                        if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
-                            existing_list[i] = detail
-                            replaced = True
-                            break
-                    if not replaced:
-                        existing_list.append(detail)
+                    # 💡 核心修复：直接通过记录的 target_list_idx 索引，精准替换，绝不 append 新增！
+                    if target_list_idx is not None and target_list_idx < len(existing_list):
+                        existing_list[target_list_idx] = detail
+                    else:
+                        # 兜底（极少发生，防止索引越界）
+                        replaced = False
+                        for i, old in enumerate(existing_list):
+                            old_path = get_url_path(old.get("url", ""))
+                            if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
+                                existing_list[i] = detail
+                                target_list_idx = i
+                                replaced = True
+                                break
+                        if not replaced:
+                            existing_list.append(detail)
+                            target_list_idx = len(existing_list) - 1
                     updated_count += 1
                 else:
                     existing_list.append(detail)
+                    target_list_idx = len(existing_list) - 1
                     new_count += 1
 
                 # 索引同步更新
@@ -981,7 +991,8 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     "update": detail.get("update", ""),
                     "image":  detail.get("image", ""),
                     "real_name": item["name"],
-                    "real_path": item_path
+                    "real_path": item_path,
+                    "list_idx": target_list_idx # 💡 记录或更新当前的索引位置
                 }
                 save_data(all_data)
                 log(f"     [已实时保存到磁盘]", force=True)
