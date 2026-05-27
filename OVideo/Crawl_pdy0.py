@@ -1,7 +1,6 @@
 import json
 import os
 import time
-import random
 import re
 import subprocess
 import atexit
@@ -55,19 +54,19 @@ def get_year_config(year: str):
         "year": year,
         "categories": {
             "Movie": {"id": 1, "enabled": True,  "pages": 1},
-            "Drama": {"id": 2, "enabled": True,  "pages": 1},
-            "Show":  {"id": 3, "enabled": True,  "pages": 1},
-            "Anime": {"id": 4, "enabled": True,  "pages": 1},
+            "Drama": {"id": 2, "enabled": True,  "pages": 0},
+            "Show":  {"id": 3, "enabled": True,  "pages": 0},
+            "Anime": {"id": 4, "enabled": True,  "pages": 0},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(2026, 2025, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(1980, 1965, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -92,7 +91,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -106,7 +105,7 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {

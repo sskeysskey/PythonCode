@@ -46,6 +46,42 @@ def fetch(url, is_binary=False):
     return resp.text
 
 
+def update_movie_quality_info_if_needed(existing, new_6vdy_episodes):
+    """
+    针对无集数概念的电影项目：
+    如果原 info 包含 'TC', 'TS', '抢先', 'HC' 之一，
+    且新写入的播放源 episodes 的 key 中包含 'HD'，
+    则将 info 更新为 episodes 中第一个包含 'HD' 的 key。
+    """
+    if not new_6vdy_episodes:
+        return False
+
+    old_info = existing.get("info", "")
+    
+    # 1. 检查原 info 是否含有抢先版关键字（忽略大小写）
+    lowered_old_info = old_info.upper()
+    keywords = ['TC', 'TS', '抢先', 'HC']
+    has_low_quality_keyword = any(kw in lowered_old_info for kw in keywords)
+    
+    if not has_low_quality_keyword:
+        return False
+
+    # 2. 寻找新播放源中第一个包含 "HD" 的 key（忽略大小写）
+    target_hd_key = None
+    for ep_name in new_6vdy_episodes.keys():
+        if "HD" in ep_name.upper():
+            target_hd_key = ep_name
+            break
+
+    # 3. 如果找到了 HD 播放源，执行更新
+    if target_hd_key:
+        existing["info"] = target_hd_key
+        print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
+              f"新源包含高清格式，info 已更新为「{target_hd_key}」")
+        return True
+
+    return False
+
 def normalize_text(s):
     if not s:
         return ""
@@ -408,7 +444,8 @@ def find_existing_global(data, name, sub_url):
                 # 收集该条记录所有的 url 字段值
                 existing_urls = {item.get(k) for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)}
                 if sub_url in existing_urls:
-                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (已有:「{item.get('name')}」, 抓取:「{name}」)")
+                    # 在这里添加了 sub_url 的打印
+                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
                     return group, item
 
     return None, None
@@ -492,10 +529,10 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     - 如果有：针对 name='6vdy' 的播放列表进行长度对比更新，不新增 urlX 字段
     - 如果没有：将 6vdy 作为新渠道插入到 playlist 的第一位，并新增 urlX 字段（紧挨着原有 url 字段下方放置）
     """
-    # ==================== 新增：字段合并与更新逻辑 ====================
+    # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
 
-    # 1. 普通字段更新 (若原有为空，新抓取不为空，则更新)
+    # 普通字段更新 (若原有为空，新抓取不为空，则更新)
     normal_fields = ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]
     for field in normal_fields:
         old_val = existing.get(field)
@@ -530,11 +567,11 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
                 fields_updated = True
                 print(f"      [字段更新] 补充评分「{rate_key}」: {new_rate_val}")
 
-    # ==================== 原有：播放源与URL更新逻辑 ====================
+    # ==================== 2. 播放源与URL更新逻辑 ====================
     if not new_6vdy_episodes:
         return "updated" if fields_updated else "no_new"
 
-    # 4. 搜集该记录所有的 url 字段
+    # 搜集该记录所有的 url 字段
     url_keys = sorted(
         [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
@@ -562,6 +599,11 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
                 break
 
         if new_6vdy_episodes == old_6vdy_eps:
+            # 即使播放列表完全一致，也尝试进行一次电影画质 info 更新
+            movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
+            if movie_info_updated:
+                existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                return "updated"
             return "updated" if fields_updated else "no_change"
 
         if len(new_6vdy_episodes) < len(old_6vdy_eps):
@@ -576,7 +618,12 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
 
         # 智能更新 info，并捕获是否进行了更新
         info_updated = update_info_field_if_needed(existing, playlist)
-        if info_updated:
+        # 【新增逻辑】：如果常规集数 info 未更新，则尝试进行电影画质 info 更新
+        movie_info_updated = False
+        if not info_updated:
+            movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
+
+        if info_updated or movie_info_updated:
             existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             fields_updated = True
             print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
@@ -624,7 +671,12 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
 
         # 智能更新 info，并捕获是否进行了更新
         info_updated = update_info_field_if_needed(existing, playlist)
-        if info_updated:
+        # 【新增逻辑】：如果常规集数 info 未更新，则尝试进行电影画质 info 更新
+        movie_info_updated = False
+        if not info_updated:
+            movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
+
+        if info_updated or movie_info_updated:
             existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             fields_updated = True
             print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
@@ -767,6 +819,17 @@ def process_tab_unified(data, tab_index, tab_name):
                         episode_count = len(new_6vdy_eps)
                         rec["info"] = f"更新至第{episode_count}集"
                         print(f"      [新增剧集info初始化] 自动写入 info: 「更新至第{episode_count}集」")
+                    else:
+                        # 虽是 Drama/Anime 分类但无“集”字，写入第一个播放源名称
+                        first_ep_name = list(new_6vdy_eps.keys())[0]
+                        rec["info"] = first_ep_name
+                        print(f"      [新增无集数剧集info初始化] 自动写入 info: 「{first_ep_name}」")
+                else:
+                    # 针对 Movie (电影) 或其他无“集”字概念的新增资源
+                    if new_6vdy_eps:
+                        first_ep_name = list(new_6vdy_eps.keys())[0]
+                        rec["info"] = first_ep_name
+                        print(f"      [新增电影info初始化] 自动写入 info: 「{first_ep_name}」")
 
                 # 写入 JSON
                 data.setdefault(group, []).append(rec)
@@ -788,10 +851,10 @@ def main():
     data = load_json()
 
     # 1. 抓取最新电影 (Tab 0)
-    # m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
+    m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
 
     # 2. 抓取最新剧集 (Tab 1)
-    # d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
+    d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
 
     # 3. 抓取小编推荐 (Tab 2)
     r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
