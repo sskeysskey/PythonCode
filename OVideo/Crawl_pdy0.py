@@ -66,7 +66,7 @@ historical_jobs = [get_year_config(str(y)) for y in range(1980, 1965, -1)]
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -91,7 +91,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
@@ -237,6 +237,34 @@ def format_date_str(date_str: str) -> str:
     
     # 如果解析失败，返回原字符串
     return date_str
+
+
+def should_skip_info_update(old_info: str, new_info: str) -> bool:
+    """
+    判断是否应该跳过 info 的更新。
+    如果新旧 info 均包含“第X集”或“X集”，且新集数 <= 旧集数，则返回 True（跳过更新，维持原样）。
+    """
+    if not old_info or not new_info:
+        return False
+        
+    # 正则匹配“第X集”或“X集”或“更新至X”中的数字
+    pattern = r'(?:更新至|第)?(\d+)(?:集|期)?'
+    
+    old_match = re.search(pattern, old_info)
+    new_match = re.search(pattern, new_info)
+    
+    if old_match and new_match:
+        try:
+            old_num = int(old_match.group(1))
+            new_num = int(new_match.group(1))
+            # 如果新集数小于或等于旧集数，说明是倒退或未变，跳过更新
+            if new_num <= old_num:
+                return True
+        except ValueError:
+            pass
+            
+    return False
+
 
 def save_data(data: dict):
     """
@@ -635,7 +663,9 @@ def parse_detail_page(html: str, name: str, url: str,
             cleaned = re.sub(r"\((.*?)(网络)\)", r"(\1)", cleaned)
             data["date"] = format_date_str(cleaned)
         elif text.startswith("又名："):
-            data["alias"] = clean_ws(text)
+            # 修改点：先去除前缀 "又名："，然后再进行清理
+            cleaned = text.replace("又名：", "", 1)
+            data["alias"] = clean_ws(cleaned)
 
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
@@ -829,17 +859,23 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 old_update = old_data.get("update", "")
                 old_image  = old_data.get("image", "")
 
-                # 【核心修改 2】：恢复对 info 的比对。只有当 image, update 都有值，且 info 未发生改变时，才跳过
+                # 1. 只有当 image, update 都有值，且 info 未发生改变时，才跳过
                 if old_image and old_update and (old_info == item["info"]):
                     log(f"  ({idx_i}/{len(items)}) [跳过-未更新] {item['name']} (info一致)")
                     continue
 
-                # 【新增需求】：如果 info 发生了变化，但新 info 包含抢先版关键字，则不更新（跳过）
+                # 2. 如果 info 发生了变化，但新 info 包含抢先版关键字，则不更新（跳过）
                 if old_image and old_update and (old_info != item["info"]):
+                    # 2a. 抢先版拦截
                     block_keywords = ['TC', 'TS', '抢先', 'HC']
                     new_info_upper = item["info"].upper()
                     if any(kw.upper() in new_info_upper for kw in block_keywords):
                         log(f"  ({idx_i}/{len(items)}) [跳过-抢先版拦截] {item['name']} (新info '{item['info']}' 包含抢先关键字)")
+                        continue
+                    
+                    # 2b. 集数倒退/未增加拦截
+                    if should_skip_info_update(old_info, item["info"]):
+                        log(f"  ({idx_i}/{len(items)}) [跳过-集数未增加] {item['name']} (旧info '{old_info}' -> 新info '{item['info']}'，集数未增加)")
                         continue
 
             # 判定本次是新增 / 补图 / 补update / 普通更新 / 6vdy特殊更新

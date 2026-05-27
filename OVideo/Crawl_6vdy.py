@@ -833,7 +833,7 @@ def process_tab_unified(data, tab_index, tab_name):
 
                 # 写入 JSON
                 data.setdefault(group, []).append(rec)
-                print(f"    ✓ 新增 -> {group} (共 {len(new_6vdy_eps)} 集) [真实名称: {real_name}]")
+                print(f"    ✓ 新增 -> {group} (共 {len(new_6vdy_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
 

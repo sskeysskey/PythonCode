@@ -119,7 +119,7 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
     全部为空或低于阈值 -> 跳过（返回 True）。
     """
     # --- 新增：暂时屏蔽评分过滤 ---
-    # return False 
+    return False 
 
     ratings = item.get('评分', {}) or {}
     for field in rating_fields:
@@ -269,9 +269,9 @@ def main():
             item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
 
             # ====== 地区过滤（仅对配置中的分类生效）======
-            if should_skip_by_region(item, category):
-                print(f"  [跳过项目] {item_label} 地区为「{item.get('地区')}」，按 {category} 过滤规则跳过")
-                continue
+            # if should_skip_by_region(item, category):
+            #     print(f"  [跳过项目] {item_label} 地区为「{item.get('地区')}」，按 {category} 过滤规则跳过")
+            #     continue
 
             # ====== 评分过滤：豆瓣或 IMDB 任一 >= 阈值才处理 ======
             if should_skip_by_rating(item, threshold=rating_threshold):
