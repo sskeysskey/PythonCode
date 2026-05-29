@@ -444,7 +444,6 @@ def find_existing_global(data, name, sub_url):
                 # 收集该条记录所有的 url 字段值
                 existing_urls = {item.get(k) for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)}
                 if sub_url in existing_urls:
-                    # 在这里添加了 sub_url 的打印
                     print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
                     return group, item
 
@@ -476,6 +475,35 @@ def calculate_max_episodes_from_playlist(playlist):
     return max_eps
 
 
+# ==================== 新增/修改：集数概念判定辅助函数 ====================
+def has_episode_concept(episodes):
+    """
+    判定播放列表是否符合“集”的概念：
+    1. 键名中包含“集”
+    2. 键名中同时包含“S”和“E”且不相邻（例如 S01E01）
+    3. 播放项目总数大于等于 3
+    三者符合任意一个即返回 True，否则返回 False。
+    """
+    if not episodes:
+        return False
+    
+    # 条件 3：项目总数 >= 3
+    if len(episodes) >= 3:
+        return True
+
+    # 遍历键名检查条件 1 和条件 2
+    for key in episodes.keys():
+        key_str = str(key)
+        # 条件 1：包含“集”字
+        if "集" in key_str:
+            return True
+        # 条件 2：包含不相邻的 S 和 E (不区分大小写)
+        if re.search(r"S.+E", key_str, re.IGNORECASE):
+            return True
+            
+    return False
+
+
 def update_info_field_if_needed(existing, new_playlist):
     """
     智能更新 info 字段：
@@ -492,32 +520,27 @@ def update_info_field_if_needed(existing, new_playlist):
     
     # 2. 判断是否需要更新
     if Y > X:
-        # 3. 核心改进：检查播放列表的剧集名称中是否包含“集”字
-        # 如果 playlist 中没有任何一个剧集名称包含“集”，则不将其格式化为“更新至第X集”
-        has_episode_keyword = False
+        # 3. 核心改进：检查播放列表是否满足“集”的概念
+        has_ep_concept = False
         for pl in new_playlist:
             eps = pl.get("episodes", {})
-            for ep_name in eps.keys():
-                if "集" in ep_name:
-                    has_episode_keyword = True
-                    break
-            if has_episode_keyword: break
+            if has_episode_concept(eps):
+                has_ep_concept = True
+                break
         
-        # 如果是电影（没有“集”字），通常保持原样或仅更新数字（如果需要），
-        # 这里我们只在有“集”字时才改为“更新至第Y集”
-        if has_episode_keyword:
+        # 如果符合集数概念，则更新为“更新至第Y集”
+        if has_ep_concept:
             new_info = f"更新至第{Y}集"
             existing["info"] = new_info
             print(f"      [info字段更新] 共有 {Y} 集，info由原来的「{old_info}」更新为「{new_info}」")
-            return True  # 新增：成功更新了 info 字段，返回 True
+            return True
         else:
-            # 如果没有“集”字（比如电影），我们可以选择不更新 info，或者只更新为纯数字
-            # 这里保持原样，避免把“HD”之类的标签覆盖掉
+            # 如果没有集数概念（比如电影），通常保持原样，避免把“HD”之类的标签覆盖掉
             print(f"      [info字段跳过] 资源无集数概念，保持原 info「{old_info}」")
-            return False  # 新增：未更新，返回 False
+            return False
     else:
         print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
-        return False  # 新增：未更新，返回 False
+        return False
 
 
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
@@ -645,9 +668,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
                     max_num = max(max_num, int(m.group(1)))
             new_url_key = f"url{max_num + 1}"
 
-        # 2. 核心逻辑：重构字典以实现“紧挨着原有的下面放置”
+        # 核心逻辑：重构字典以实现“紧挨着原有的下面放置”
         new_ordered_dict = {}
-        last_url_key = url_keys[-1] if url_keys else None # 最后一个已有的 url 键
+        last_url_key = url_keys[-1] if url_keys else None
         
         for k, v in existing.items():
             new_ordered_dict[k] = v
@@ -684,23 +707,25 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         return "channel_added"
 
 
+# ==================== 修改：智能分类判定 ====================
 def detect_group(episodes, actors, types):
     """
     智能分类判定：
-    - 出现 '集' 字：
+    - 第一步：检查是否有“集”的概念（调用 has_episode_concept）
+        - 如果没有 -> Movie (电影)
+        - 如果有 -> 进入第二步判定（区分是动漫还是剧集）
+    - 第二步：
         - 如果 '演员/主演' 字段为空，或者 '类型' 包含 '动漫'、'动画' -> Anime
         - 否则 -> Drama
-    - 否则：
-        - 默认 -> Movie
     """
     if not episodes:
         return "Movie"
     
-    keys = list(episodes.keys())
-    has_ji = any("集" in k for k in keys)
+    # 第一步：检查是否有“集”的概念（包含“集”字、S.*E、或项目数>=3）
+    has_ep_concept = has_episode_concept(episodes)
 
-    if has_ji:
-        # 判断是否为动漫
+    if has_ep_concept:
+        # 第二步：判断是否为动漫
         is_anime = False
         if not actors: # 主演为空
             is_anime = True

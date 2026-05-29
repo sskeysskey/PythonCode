@@ -105,7 +105,7 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
@@ -172,6 +172,10 @@ DETAIL_BASE_URL = "https://www.pys2.com"
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 # 封面图片保存目录
 COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
+
+# 【新增】：最低评分过滤配置
+# 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
+MIN_SCORE_LIMIT = 6.5
 
 # ==========================================
 # 黑名单播放源配置，遇到这些源将直接跳过不抓取
@@ -450,7 +454,7 @@ def ensure_dir(path: str):
 
 
 # =============================================================
-# 已有数据读取 / 去重索引
+# 已有数据读取 / 去重索引 (【已修改】：升级为跨分类全局索引)
 # =============================================================
 def load_existing(path: str) -> dict:
     """读取已有 JSON。若不存在或损坏，返回空 dict。"""
@@ -529,10 +533,23 @@ def parse_list_page(html: str) -> list[dict]:
                 i.decompose()
             info = clean_ws(tmp.get_text(" ", strip=True))
 
+        # 【新增】：提取评分 <span class="s2">
+        score_val = 0.0
+        s2 = li.select_one(".pic span.s2")
+        if s2:
+            score_text = clean_ws(s2.get_text(strip=True))
+            # 如果评分是 "--" 或者为空，则视为 0.0 分
+            if score_text and score_text != "--":
+                try:
+                    score_val = float(score_text)
+                except ValueError:
+                    score_val = 0.0
+
         items.append({
             "name": name,
             "url": full_url,
-            "info": info
+            "info": info,
+            "score": score_val  # 【新增】
         })
     return items
 
@@ -670,6 +687,11 @@ def parse_detail_page(html: str, name: str, url: str,
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
     if span:
+        # 1. 先获取整段文本，用于处理没有明确写“豆瓣/IMDB”但有数字评分的情况
+        full_span_text = clean_ws(span.get_text(" ", strip=True))
+        
+        # 尝试匹配具体的平台（原逻辑）
+        has_platform_match = False
         for s in span.find_all("span"):
             t = clean_ws(s.get_text(" ", strip=True))
             if t:
@@ -684,6 +706,15 @@ def parse_detail_page(html: str, name: str, url: str,
                     # 只有当分数不是 "--" 时，才写入字典
                     if score != "--":
                         data["评分"][platform] = score
+                        has_platform_match = True
+
+        # 2. 【新增兼容】：如果上面没有匹配到明确的平台（比如你碰到的 “评分：6.6” 这种情况）
+        if not has_platform_match and full_span_text:
+            # 提取“评分：”后面的纯数字（支持整数和小数）
+            num_match = re.search(r"评分：\s*([0-9.]+)", full_span_text)
+            if num_match:
+                score = num_match.group(1)
+                data["评分"]["豆瓣"] = score  # 按照你的要求，默认写入到 "豆瓣" 中
 
     # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
@@ -790,6 +821,9 @@ def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
         raise ValueError(f"未知的 sort_type: {sort_type}")
 
 
+# =============================================================
+# 【修改】：抓取分类，增加评分过滤
+# =============================================================
 def crawl_category(cat_name: str, cat_cfg: dict,
                    existing_list: list, index_map: dict,
                    all_data: dict, year: str, sort_type: str) -> tuple[int, int]:
@@ -810,6 +844,11 @@ def crawl_category(cat_name: str, cat_cfg: dict,
         log(f"  -> 共找到 {len(items)} 部", force=True)
 
         for idx_i, item in enumerate(items, 1):
+            # 【新增】：评分过滤逻辑
+            if item["score"] < MIN_SCORE_LIMIT:
+                log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                continue
+
             item_path = get_url_path(item["url"])
             
             # 【核心修改 1】：多维度去重判定

@@ -1,62 +1,105 @@
 import json
 import os
-from collections import defaultdict
 
-# JSON 文件路径
-json_file_path = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
+# 定义文件路径
+json_path = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
+log_path = "/Users/yanzhang/Downloads/a.txt"
 
-def detect_duplicate_urls(file_path):
-    if not os.path.exists(file_path):
-        print(f"错误：找不到文件 {file_path}")
-        return
+# 确保日志目录存在
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"解析 JSON 文件失败: {e}")
-        return
+# 读取 JSON 数据
+try:
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"读取 JSON 文件失败: {e}")
+    exit(1)
 
-    # 用于记录每个 URL 关联的项目
-    # 格式：{ url_string: [ {"category": 分类, "name": 项目名}, ... ] }
-    url_to_projects = defaultdict(list)
+# 初始化分类列表（防止 key 不存在）
+if "Movie" not in data: data["Movie"] = []
+if "Drama" not in data: data["Drama"] = []
+if "Anime" not in data: data["Anime"] = []
 
-    # 遍历 JSON 中的所有分类和项目
-    for category, items in data.items():
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            project_name = item.get("name", "未命名项目")
+movies_to_keep = []
+moved_logs = []
+
+# 遍历 Movie 列表
+for movie in data["Movie"]:
+    movie_name = movie.get("name", "未知名称")
+    playlist = movie.get("playlist", [])
+    
+    # 1. 获取前两个渠道
+    channels_to_check = playlist[:2]
+    
+    # 找出前两个渠道中，剧集数量最多的那个渠道及其数量
+    max_ep_count = 0
+    max_channel_name = "无渠道"
+    
+    for channel in channels_to_check:
+        channel_name = channel.get("name", "未知渠道")
+        episodes = channel.get("episodes", {})
+        ep_count = len(episodes)
+        if ep_count > max_ep_count:
+            max_ep_count = ep_count
+            max_channel_name = channel_name
             
-            # 提取该项目所有以 "url" 开头的键的值
-            project_urls = []
-            for key, value in item.items():
-                if key.startswith("url") and isinstance(value, str) and value.strip():
-                    project_urls.append(value.strip())
+    # 2. 判断最大剧集数是否大于等于 4
+    if max_ep_count >= 4:
+        # 3. 决定移动到 Anime 还是 Drama
+        genres = movie.get("类型", [])
+        actors = movie.get("主演", [])
+        
+        # 判断类型是否包含“动画”或“动漫”
+        has_anime_genre = any("动画" in g or "动漫" in g for g in genres)
+        # 判断主演是否为空
+        is_actors_empty = not actors  # 列表为空即为 True
+        
+        target_category = ""
+        reason = ""
+        
+        if has_anime_genre or is_actors_empty:
+            target_category = "Anime"
+            reason_details = []
+            if has_anime_genre: reason_details.append("类型包含动画/动漫")
+            if is_actors_empty: reason_details.append("主演字段为空")
+            reason = " & ".join(reason_details)
+        else:
+            target_category = "Drama"
+            reason = f"最大渠道剧集数({max_ep_count}集)>=4，且不满足Anime条件（类型无动画/动漫且主演不为空）"
             
-            # 记录该项目拥有的所有 URL
-            for url in project_urls:
-                # 避免同一个项目内部重复记录（例如项目内 url 和 url1 相同，不属于跨项目重复）
-                if not any(p["name"] == project_name and p["category"] == category for p in url_to_projects[url]):
-                    url_to_projects[url].append({
-                        "category": category,
-                        "name": project_name
-                    })
-
-    # 筛选出在多个不同项目中出现的 URL
-    duplicates = {url: projects for url, projects in url_to_projects.items() if len(projects) > 1}
-
-    # 输出结果
-    if not duplicates:
-        print("恭喜！未检测到任何跨项目的重复 URL。")
+        # 执行移动
+        data[target_category].append(movie)
+        
+        # 记录日志
+        log_msg = (f"【移动成功】项目: 《{movie_name}》 | "
+                   f"原分类: Movie -> 新分类: {target_category} | "
+                   f"触发条件: 前两个渠道中剧集数最多的是【{max_channel_name}】共 {max_ep_count} 集 (>=4) | "
+                   f"归入原因: [{reason}]")
+        moved_logs.append(log_msg)
     else:
-        print(f"检测到 {len(duplicates)} 个重复的 URL，详情如下：\n" + "="*50)
-        for idx, (url, projects) in enumerate(duplicates.items(), 1):
-            print(f"【重复 {idx}】URL: {url}")
-            print("关联的项目：")
-            for p in projects:
-                print(f"  - 分类: [{p['category']}] | 项目名: {p['name']}")
-            print("-" * 50)
+        # 最大剧集数不足 4，保留在 Movie 中
+        movies_to_keep.append(movie)
 
-if __name__ == "__main__":
-    detect_duplicate_urls(json_file_path)
+# 更新 Movie 列表
+data["Movie"] = movies_to_keep
+
+# 将更新后的数据写回 JSON 文件
+try:
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    print("JSON 数据更新成功！")
+except Exception as e:
+    print(f"写入 JSON 文件失败: {e}")
+
+# 写入日志文件
+try:
+    with open(log_path, 'w', encoding='utf-8') as f:
+        if moved_logs:
+            f.write("\n".join(moved_logs) + "\n")
+            print(f"已成功移动 {len(moved_logs)} 个项目，日志已输出至: {log_path}")
+        else:
+            f.write("本次运行未发现符合移动条件的项目。\n")
+            print("未发现符合移动条件的项目。")
+except Exception as e:
+    print(f"写入日志文件失败: {e}")

@@ -2,8 +2,8 @@ import json
 import argparse
 import pyperclip
 
-# SKIP_CATEGORIES = {'Movie'} 
-SKIP_CATEGORIES = set()
+SKIP_CATEGORIES = {'Movie', 'Drama', 'Show'} 
+# SKIP_CATEGORIES = set()
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
 # 属于模糊匹配，命中任一关键字就跳过该项目
