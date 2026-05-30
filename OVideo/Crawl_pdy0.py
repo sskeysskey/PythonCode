@@ -472,14 +472,14 @@ def load_existing(path: str) -> dict:
 
 def build_index(existing: dict) -> dict:
     """
-    返回 {category: {(name, path): {"info": info, "update": update, "image": image, "list_idx": idx}}},
+    【核心修改】：构建跨分类全局索引。
+    返回结构: {(name, path): {"info": info, "update": update, "image": image, "real_name": name, "real_path": path, "category": cat, "list_idx": idx}}
     支持扫描 url, url1, url2 ... 等所有 urlX 字段。
     用于判断该条目是否已存在、update 是否变化,以及图片是否缺失。
     同时建立一个辅助索引，用于通过 path 快速反查其对应的真实 key (name, path)。
     """
     idx = {}
     for cat, items in existing.items():
-        m = {}
         if isinstance(items, list):
             for list_idx, it in enumerate(items):
                 name = it.get("name", "")
@@ -494,16 +494,16 @@ def build_index(existing: dict) -> dict:
                         url_val = it.get(key_name, "")
                         if url_val:
                             path = get_url_path(url_val)
-                            # 将该 name 与每一个 url 对应的 path 组合，都存入索引中
-                            m[(name, path)] = {
+                            # 全局扁平化索引，记录其所属分类 category
+                            idx[(name, path)] = {
                                 "info": info,
                                 "update": update,
                                 "image": image,
-                                "real_name": name, # 记录在库中的真实名字
-                                "real_path": path,  # 记录在库中的真实 path
-                                "list_idx": list_idx # 【关键修改】：记录该条目在 existing_list 中的绝对位置
+                                "real_name": name,
+                                "real_path": path,
+                                "category": cat,       # 记录所属分类
+                                "list_idx": list_idx   # 记录在该分类列表中的绝对位置
                             }
-        idx[cat] = m
     return idx
 
 
@@ -549,7 +549,7 @@ def parse_list_page(html: str) -> list[dict]:
             "name": name,
             "url": full_url,
             "info": info,
-            "score": score_val  # 【新增】
+            "score": score_val
         })
     return items
 
@@ -822,11 +822,11 @@ def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
 
 
 # =============================================================
-# 【修改】：抓取分类，增加评分过滤
+# 【已修改】：抓取分类，支持跨分类全局去重与移动
 # =============================================================
 def crawl_category(cat_name: str, cat_cfg: dict,
-                   existing_list: list, index_map: dict,
-                   all_data: dict, year: str, sort_type: str) -> tuple[int, int]:
+                   all_data: dict, global_index: dict,
+                   year: str, sort_type: str) -> tuple[int, int]:
     print(f"\n=== 开始抓取分类: {cat_name} "
           f"(sort={sort_type}, id={cat_cfg['id']}, pages={cat_cfg['pages']}, year={year or '无'}) ===")
     new_count = 0
@@ -851,48 +851,50 @@ def crawl_category(cat_name: str, cat_cfg: dict,
 
             item_path = get_url_path(item["url"])
             
-            # 【核心修改 1】：多维度去重判定
-            # 1. 首先尝试用 (name, path) 查找
+            # =============================================================
+            # 【核心修改】：跨分类多维度去重判定
+            # =============================================================
             key = (item["name"], item_path)
-            old_data = index_map.get(key)
+            old_data = global_index.get(key)
             matched_by_path_only = False
-            is_special_6vdy_update = False  # 是否触发 6vdy 特殊更新逻辑
+            is_special_6vdy_update = False
 
-            # 2. 如果没找到，再通过 path 唯一性查找（解决名字微调问题，如 "木乃伊2026" 变 "木乃伊"）
+            # 1. 如果通过 (name, path) 没找到，进行跨分类全局 path 查找
             if old_data is None:
-                for idx_key, idx_val in index_map.items():
+                for idx_key, idx_val in global_index.items():
                     if idx_val.get("real_path") == item_path:
                         old_data = idx_val
-                        key = idx_key # 锁定旧的索引 key
+                        key = idx_key
                         matched_by_path_only = True
                         break
 
-            # 3. 【新增】：如果仍然没找到，但发现库中存在同名的 name，进行 6vdy 规则判定
+            # 2. 如果仍然没找到，进行跨分类全局同名 6vdy 规则判定
             if old_data is None:
-                # 遍历 existing_list 查找同名项目
-                for list_idx, existing_item in enumerate(existing_list):
-                    if existing_item.get("name") == item["name"]:
-                        # 找出该项目的所有 url 字段
-                        all_urls = {k: v for k, v in existing_item.items() if k == "url" or (k.startswith("url") and k[3:].isdigit())}
-                        # 规则：有且仅有一个 url，且该 url 包含 "6vdy.org"
-                        if len(all_urls) == 1 and "url" in all_urls:
-                            old_url_val = all_urls["url"]
-                            if "6vdy.org" in old_url_val:
-                                # 锁定该旧条目，将其判定为更新而非新增
-                                is_special_6vdy_update = True
-                                target_list_idx = list_idx
-                                # 伪造一个 index_map 结构供后续逻辑读取
-                                old_data = {
-                                    "info": existing_item.get("info", ""),
-                                    "update": existing_item.get("update", ""),
-                                    "image": existing_item.get("image", ""),
-                                    "real_name": existing_item.get("name"),
-                                    "real_path": get_url_path(old_url_val),
-                                    "list_idx": list_idx
-                                }
-                                key = (existing_item.get("name"), get_url_path(old_url_val))
-                                break
+                for cat, existing_list in all_data.items():
+                    if not isinstance(existing_list, list):
+                        continue
+                    for list_idx, existing_item in enumerate(existing_list):
+                        if existing_item.get("name") == item["name"]:
+                            all_urls = {k: v for k, v in existing_item.items() if k == "url" or (k.startswith("url") and k[3:].isdigit())}
+                            if len(all_urls) == 1 and "url" in all_urls:
+                                old_url_val = all_urls["url"]
+                                if "6vdy.org" in old_url_val:
+                                    is_special_6vdy_update = True
+                                    old_data = {
+                                        "info": existing_item.get("info", ""),
+                                        "update": existing_item.get("update", ""),
+                                        "image": existing_item.get("image", ""),
+                                        "real_name": existing_item.get("name"),
+                                        "real_path": get_url_path(old_url_val),
+                                        "category": cat,       # 记录当时所在的分类
+                                        "list_idx": list_idx
+                                    }
+                                    key = (existing_item.get("name"), get_url_path(old_url_val))
+                                    break
+                    if is_special_6vdy_update:
+                        break
 
+            # 3. 拦截未更新、抢先版、集数未增加
             if old_data is not None and not is_special_6vdy_update:
                 old_info   = old_data.get("info", "")
                 old_update = old_data.get("update", "")
@@ -956,15 +958,20 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                     # 强制还原为库中的旧名字（如 "木乃伊2026"），防止更名同步时覆盖
                     detail["name"] = key[0]
 
-                # ===== 【核心修改 3：合并受保护源，并控制 6vdy 置顶】 =====
+                # 获取旧分类和旧条目
                 old_entry = None
-                target_list_idx = None # 💡 记录在 existing_list 中的绝对位置
+                old_category = None
+                target_list_idx = None
+                
                 if is_update:
-                    # 💡 核心修复：直接利用 index_map 中记录 of list_idx 索引位置，精准找到旧数据字典
+                    old_category = old_data.get("category")
                     target_list_idx = old_data.get("list_idx")
-                    if target_list_idx is not None and target_list_idx < len(existing_list):
-                        old_entry = existing_list[target_list_idx]
+                    if old_category and old_category in all_data:
+                        existing_list = all_data[old_category]
+                        if target_list_idx is not None and target_list_idx < len(existing_list):
+                            old_entry = existing_list[target_list_idx]
 
+                # 合并受保护源
                 if old_entry:
                     old_playlist = old_entry.get("playlist", [])
                     # 提取旧数据中属于 PROTECTED_SOURCES (xb6v, 6vdy) 的源
@@ -994,7 +1001,6 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                                 
                         # 3. 放入新抓取的其他源
                         final_playlist.extend(new_playlist)
-                        
                         detail["playlist"] = final_playlist
                         kept_names = [p.get("name") for p in protected_in_old]
                         print(f"     [保留受保护源] {kept_names} (已置顶 6vdy)")
@@ -1005,7 +1011,6 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                         new_info = item["info"]
                         old_pl = old_entry.get("playlist", [])
                         new_pl = detail.get("playlist", [])
-                        
                         if old_info != new_info and old_pl != new_pl:
                             print(f"     [Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
 
@@ -1106,43 +1111,56 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                         else:
                             print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
+                # =============================================================
+                # 【核心修改】：跨分类数据写入与索引重构
+                # =============================================================
                 if is_update:
-                    # 💡 核心修复：直接通过记录 of target_list_idx 索引，精准替换，绝不 append 新增！
-                    if target_list_idx is not None and target_list_idx < len(existing_list):
-                        existing_list[target_list_idx] = detail
+                    # 判断是否发生了跨分类漂移
+                    if old_category != cat_name:
+                        print(f"     [跨分类移动] 检测到分类漂移: {old_category} ➔ {cat_name}")
+                        # 1. 从旧分类列表中移除
+                        if old_category in all_data and target_list_idx is not None:
+                            if target_list_idx < len(all_data[old_category]):
+                                all_data[old_category].pop(target_list_idx)
+                        # 2. 追加到当前新分类中
+                        if cat_name not in all_data:
+                            all_data[cat_name] = []
+                        all_data[cat_name].append(detail)
+                        
+                        # 3. 跨分类移动后，原有的 list_idx 全部失效，必须重新构建全局索引
+                        global_index.clear()
+                        global_index.update(build_index(all_data))
                     else:
-                        # 兜底（极少发生，防止索引越界）
-                        replaced = False
-                        for i, old in enumerate(existing_list):
-                            old_path = get_url_path(old.get("url", ""))
-                            if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
-                                existing_list[i] = detail
-                                target_list_idx = i
-                                replaced = True
-                                break
-                        if not replaced:
-                            existing_list.append(detail)
-                            target_list_idx = len(existing_list) - 1
+                        # 同分类更新：直接利用 list_idx 精准替换
+                        if target_list_idx is not None and target_list_idx < len(all_data[cat_name]):
+                            all_data[cat_name][target_list_idx] = detail
+                        else:
+                            # 兜底
+                            replaced = False
+                            for i, old in enumerate(all_data[cat_name]):
+                                old_path = get_url_path(old.get("url", ""))
+                                if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
+                                    all_data[cat_name][i] = detail
+                                    replaced = True
+                                    break
+                            if not replaced:
+                                all_data[cat_name].append(detail)
                     updated_count += 1
                 else:
-                    existing_list.append(detail)
-                    target_list_idx = len(existing_list) - 1
+                    # 全新新增
+                    if cat_name not in all_data:
+                        all_data[cat_name] = []
+                    all_data[cat_name].append(detail)
                     new_count += 1
 
-                # 索引同步更新
-                # 如果发生了更名，我们需要清理旧的索引 key，写入新的
-                if matched_by_path_only and key in index_map:
-                    del index_map[key]
+                # 4. 重新构建/刷新全局索引（保证下一次循环时 list_idx 100% 准确）
+                if matched_by_path_only and key in global_index:
+                    del global_index[key]
                 
-                new_key = (item["name"], item_path)
-                index_map[new_key] = {
-                    "info":   item["info"],
-                    "update": detail.get("update", ""),
-                    "image":  detail.get("image", ""),
-                    "real_name": item["name"],
-                    "real_path": item_path,
-                    "list_idx": target_list_idx # 💡 记录或更新当前的索引位置
-                }
+                # 重新生成索引以确保所有分类的 list_idx 保持最新
+                global_index.clear()
+                global_index.update(build_index(all_data))
+
                 save_data(all_data)
                 log(f"     [已实时保存到磁盘]", force=True)
             except Exception as e:
@@ -1183,12 +1201,13 @@ def stop_caffeinate():
 atexit.register(stop_caffeinate)
 
 def main():
-    # --- 新增：开启防休眠 ---
     start_caffeinate()
 
     final = load_existing(OUTPUT_FILE)
-    clean_existing_data(final) # <--- 加上这一行即可清理旧 of 无效数据
-    index = build_index(final)
+    clean_existing_data(final) 
+    
+    # 【已修改】：构建全局去重索引
+    global_index = build_index(final)
     print(f"已有数据分类数: {len(final)}；"
           f"总条目数: {sum(len(v) for v in final.values() if isinstance(v, list))}")
 
@@ -1212,16 +1231,16 @@ def main():
 
             for cat_name, cat_cfg in categories_cfg.items():
                 if cat_name not in final: final[cat_name] = []
-                if cat_name not in index: index[cat_name] = {}
 
                 if not cat_cfg.get("enabled"):
                     print(f"跳过分类: {cat_name}(在 [{sort_type}/{year or '无'}] 配置中未启用)")
                     continue
 
+                # 【已修改】：传入全局 final 和全局 global_index
                 new_n, upd_n = crawl_category(
                     cat_name, cat_cfg,
-                    final[cat_name], index[cat_name],
-                    final, year, sort_type
+                    final, global_index,
+                    year, sort_type
                 )
                 print(f"  -> [{sort_type}] year={year or '无'} 分类 {cat_name} "
                       f"新增 {new_n} 条,更新 {upd_n} 条")

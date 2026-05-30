@@ -1391,284 +1391,213 @@ function extractAndCopy() {
 
   // 处理 economist.com
   else if (window.location.hostname.includes("economist.com")) {
-    // ===== 新结构优先：Next.js 模板 (你给的示例) =====
-    // 识别：<article data-test-id="Article" id="new-article-template"> 下
-    // 正文段落：p[data-component="paragraph"]
-    // 图片：figure.css-3mn275 > img （caption: figcaption > span.css-1st60ou）
-    (function handleEconomistNewTemplate() {
-      try {
-        const newArticle = document.querySelector('article#new-article-template[data-test-id="Article"]') ||
-          document.querySelector('article[data-test-id="Article"]');
-        const mainContainer = document.querySelector('main#content') || document.querySelector('main[role="main"]') || document;
 
-        if (!newArticle) {
-          return; // 不命中新模板，交给旧逻辑
+    // ===== [新增/优化分支] 专门适配 Economist 1843 杂志等 Svelte 架构页面 =====
+    const handleEconomistSvelteOr1843 = (() => {
+      try {
+        // 1843 页面常有 .body-1843 容器，或含有 svelte- 标识的 class
+        const isSveltePage = document.querySelector('.body-1843') || document.querySelector('[class*="svelte-"]');
+        if (!isSveltePage) return false;
+
+        // 1) 提取正文（兼容 body-text 标签和普通段落）
+        const bodyTextNodes = Array.from(document.querySelectorAll('body-text, .article-text body-text, p[data-component="paragraph"]'));
+        let extractedText = '';
+        if (bodyTextNodes.length > 0) {
+          extractedText = bodyTextNodes.map(node => {
+            return node.textContent
+              .replace(/\s+/g, ' ')
+              .replace(/[•∞@]/g, '')
+              .trim();
+          })
+            .filter(t => t && t.length > 5 && !/^[.\s]*$/.test(t))
+            .join('\n\n');
         }
 
-        // 1) 提取正文
-        const paragraphNodes = Array.from(newArticle.querySelectorAll('p[data-component="paragraph"]'));
-        const joinNormalizedSpaces = (s) => s.replace(/\s+/g, ' ').replace(/&nbsp;/g, ' ').trim();
+        // 2) 提取图片（兼容头图 div.image 和正文 figure.media）
+        // 选取所有包含 img 的图片容器
+        const imageContainers = Array.from(document.querySelectorAll('div.image, figure.media, figure[class*="svelte-"], div.wrapper[class*="svelte-"]'));
+        const validImages = [];
 
-        const getParagraphText = (p) => {
-          // 合并首字 + small + 其余文本
-          // 示例结构：
-          // <p>
-          //   <span data-caps="initial">D</span>
-          //   <small>ONALD TRUMP'S</small>
-          //   后续文本节点/元素...
-          // </p>
-          let head = '';
-          const firstCap = p.querySelector('span[data-caps="initial"]');
-          const small = firstCap ? firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL' ? firstCap.nextElementSibling : null : null;
+        imageContainers.forEach(container => {
+          // 【关键修改点】：排除推荐/相关内容区域的图片
+          if (
+            container.closest('.related-content') ||
+            container.closest('.related-articles') ||
+            container.closest('aside') ||
+            container.closest('[data-testid="related-content"]')
+          ) {
+            return; // 跳过，不处理推荐区域的图片
+          }
 
-          if (firstCap) head += firstCap.textContent || '';
-          if (small) head += small.textContent || '';
+          const img = container.querySelector('img');
+          if (!img) return;
 
-          // 收集剩余文本：从 p 的所有子节点顺序遍历，跳过 firstCap 与 small，各种元素递归取文本
-          const textFromNode = (node) => {
-            if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              if (node === firstCap || node === small) return '';
-              // 对于 span/i/small/a 等，都递归
-              let acc = '';
-              node.childNodes.forEach(ch => acc += textFromNode(ch));
-              return acc;
-            }
-            return '';
-          };
+          // 提取最高分辨率 URL
+          let bestUrl = '';
+          if (img.srcset) {
+            const entries = img.srcset
+              .split(',')
+              .map(e => e.trim())
+              .filter(Boolean)
+              .map(e => {
+                const parts = e.split(/\s+/);
+                const url = parts[0];
+                const wStr = parts[1] || '';
+                const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
+                return { url, w };
+              })
+              .sort((a, b) => b.w - a.w);
+            if (entries.length > 0) bestUrl = entries[0].url;
+          }
+          if (!bestUrl && img.src) bestUrl = img.src;
+          if (!bestUrl) return;
 
-          let tail = '';
-          p.childNodes.forEach(node => {
-            if (node === firstCap || node === small) return;
-            tail += textFromNode(node);
-          });
+          // 修复 OCR 识别出的 "Linteractive" 或相对路径
+          if (bestUrl.startsWith('Linteractive')) {
+            bestUrl = '/' + bestUrl.substring(1);
+          }
+          // 补全相对路径为完整绝对路径
+          try {
+            bestUrl = new URL(bestUrl, window.location.href).href;
+          } catch (e) {
+            console.warn("URL resolve failed:", bestUrl);
+          }
 
-          let full = (head + ' ' + tail);
-          full = joinNormalizedSpaces(full)
-            .replace(/[•∞@]/g, '')
-            .trim();
+          // 提取描述 (Caption)
+          let caption = '';
+          const figcaption = container.querySelector('figcaption');
+          if (figcaption) {
+            caption = figcaption.textContent
+              .replace(/\s+/g, ' ')
+              .replace(/“|”|‘|’/g, '"')
+              .trim();
+          } else if (img.alt) {
+            caption = img.alt.trim();
+          }
 
-          return full;
-        };
-
-        let extractedParas = paragraphNodes.map(getParagraphText).filter(t => {
-          if (!t) return false;
-          if (t.length < 5) return false;
-          if (/^(Advertisement|Sponsored)$/i.test(t)) return false;
-          if (/^[.\s•@∞]+$/.test(t)) return false;
-          return true;
+          validImages.push({ url: bestUrl, caption });
         });
 
-        const newTextContent = extractedParas.join('\n\n');
+        // 如果找到了正文或图片，则执行处理
+        if (extractedText || validImages.length > 0) {
+          textContent = extractedText;
 
-        // 2) 如果正文抓到了，再抓图片
-        if (newTextContent) {
-          // 找图片 figure
-          const figures = Array.from(newArticle.querySelectorAll('figure.css-3mn275, figure[class*="css-3mn275"]'));
-          const processedUrls = new Set();
-
-          if (figures.length === 0) {
-            // 没有图片，仍然复制正文
+          if (validImages.length === 0) {
+            chrome.runtime.sendMessage({ action: 'noImages' });
           } else {
-            figures.forEach((figure, idx) => {
-              const img = figure.querySelector('img');
-              if (!img) return;
+            imagesFoundForDownload = true;
+            const processedUrls = new Set();
+            const processedNames = new Set();
 
-              // 选 srcset 最大宽度
-              let bestUrl = '';
-              if (img.srcset) {
-                const entries = img.srcset
-                  .replace(/\s+/g, ' ')
-                  .split(',')
-                  .map(e => e.trim())
-                  .filter(Boolean)
-                  .map(e => {
-                    const parts = e.split(' ');
-                    const url = parts[0];
-                    const wStr = parts[1] || '';
-                    const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
-                    return { url, w };
-                  })
-                  .sort((a, b) => b.w - a.w);
-                if (entries.length > 0) bestUrl = entries[0].url;
-              }
-              if (!bestUrl && img.src) bestUrl = img.src;
+            validImages.forEach((imgData, idx) => {
+              if (processedUrls.has(imgData.url)) return;
+              processedUrls.add(imgData.url);
 
-              if (!bestUrl) return;
-
-              // 规范化到高分辨率 Cloudflare cdn-cgi/image URL
-              // 如果已经是 cdn-cgi/image，就替换参数；否则保持原样（或后面可加更多兜底逻辑）
-              try {
-                const u = new URL(bestUrl, window.location.href);
-
-                if (u.pathname.startsWith('/cdn-cgi/image')) {
-                  // 形式: /cdn-cgi/image/width=...,quality=...,format=auto/content-assets/...
-                  // 我们把 width 固定到 1424，quality=80，format=auto
-                  // 把 "/cdn-cgi/image/xxx/content-assets/..." 拆分并重组
-                  // 直接用字符串处理更稳妥
-                  const rebuilt = u.origin + '/cdn-cgi/image/width=1424,quality=80,format=auto' +
-                    u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
-                  bestUrl = rebuilt + (u.search || '');
-                } else {
-                  // 如果不是 cdn-cgi，保持 bestUrl 不变
-                  bestUrl = u.href;
-                }
-              } catch (e) {
-                // 如果 URL 解析失败，保持原字符串
-              }
-
-              if (processedUrls.has(bestUrl)) return;
-              processedUrls.add(bestUrl);
-
-              // 取 caption
-              let caption = '';
-              const capSpan = figure.querySelector('figcaption span.css-1st60ou, figcaption span[class*="css-1st60ou"]');
-              if (capSpan && capSpan.textContent) {
-                caption = capSpan.textContent.trim();
-              } else if (img.alt) {
-                caption = img.alt.trim();
-              }
-
-              // 文件扩展名
+              // 文件后缀
               let ext = 'jpg';
               try {
-                const pathname = new URL(bestUrl, window.location.href).pathname;
+                const pathname = new URL(imgData.url).pathname;
                 const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
                 if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
               } catch (_) { }
 
-              // 生成文件名
+              // 清洗文件名
               const clean = (s) => (s || '')
-                .replace(/&nbsp;/g, ' ')
                 .replace(/[/\\?%*:|"<>+]/g, '-')
                 .replace(/\s+/g, ' ')
                 .trim();
-              let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
-              if (baseName.length > 180) baseName = baseName.slice(0, 180);
-              const filename = `${baseName}.${ext}`;
+
+              let baseName = clean(imgData.caption);
+              // 如果描述过长，截断
+              if (baseName.length > 150) baseName = baseName.slice(0, 150);
+              if (!baseName) baseName = `economist-1843-image-${Date.now()}-${idx}`;
+
+              let filename = `${baseName}.${ext}`;
+              let counter = 1;
+              while (processedNames.has(filename)) {
+                filename = `${baseName}(${counter++}).${ext}`;
+              }
+              processedNames.add(filename);
 
               chrome.runtime.sendMessage({
                 action: 'downloadImage',
-                url: bestUrl,
-                filename
+                url: imgData.url,
+                filename: filename
               });
             });
           }
 
-          // 复制正文
-          const ta = document.createElement('textarea');
-          ta.style.position = 'fixed';
-          ta.style.opacity = '0';
-          ta.value = newTextContent;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand('copy');
-          document.body.removeChild(ta);
-
-          // 覆盖外层变量 textContent，使上层返回 true
-          textContent = newTextContent;
+          // 复制文本到剪贴板
+          if (textContent) {
+            const ta = document.createElement('textarea');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            ta.value = textContent;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+          return true; // 成功匹配并处理
         }
-
-        // 若 newTextContent 为空，交给旧逻辑继续尝试
-      } catch (e) {
-        // 新模板分支出错也不要影响旧逻辑
-        console.warn('[Economist New Template] parsing failed:', e);
+        return false;
+      } catch (err) {
+        console.warn('[Economist Svelte/1843 Branch] failed:', err);
+        return false;
       }
     })();
 
-    // ===== 兼容补丁分支：适配 data-testid + 混入引号文本的新变体（不影响上面的新模板与旧逻辑） =====
-    (function handleEconomistPatchedVariant() {
-      try {
-        if (textContent) return; // 上面的新模板已成功提取则跳过
+    // 如果 1843 分支成功处理，则直接跳出
+    if (handleEconomistSvelteOr1843) {
+      // 已经处理完毕，直接进入收尾
+    } else {
+      // ===== 新结构优先：Next.js 模板 =====
+      (function handleEconomistNewTemplate() {
+        try {
+          const newArticle = document.querySelector('article#new-article-template[data-test-id="Article"]') ||
+            document.querySelector('article[data-test-id="Article"]');
 
-        // 命中更宽松的 Article 选择器：兼容 data-testid 与 data-test-id
-        const articleNode =
-          document.querySelector('article#new-article-template[data-testid="Article"]') ||
-          document.querySelector('article[data-testid="Article"]') ||
-          document.querySelector('article#new-article-template[data-test-id="Article"]') ||
-          document.querySelector('article[data-test-id="Article"]');
-
-        if (!articleNode) return;
-
-        // 抓取正文段落：仍以 p[data-component="paragraph"] 为主
-        const pList = Array.from(articleNode.querySelectorAll('p[data-component="paragraph"]'));
-        if (pList.length === 0) return;
-
-        const normalizeSpaces = (s) =>
-          (s || '')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        const getTextDeep = (node, skipSet) => {
-          // 深度收集文本，保留 a/small/i/span 中内容，跳过 skipSet 指定的节点
-          if (!node) return '';
-          if (skipSet && skipSet.has(node)) return '';
-          if (node.nodeType === Node.TEXT_NODE) {
-            return node.textContent || '';
+          if (!newArticle) {
+            return;
           }
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            let acc = '';
-            node.childNodes.forEach(ch => {
-              acc += getTextDeep(ch, skipSet);
+
+          const paragraphNodes = Array.from(newArticle.querySelectorAll('p[data-component="paragraph"]'));
+          const joinNormalizedSpaces = (s) => s.replace(/\s+/g, ' ').replace(/&nbsp;/g, ' ').trim();
+
+          const getParagraphText = (p) => {
+            let head = '';
+            const firstCap = p.querySelector('span[data-caps="initial"]');
+            const small = firstCap ? firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL' ? firstCap.nextElementSibling : null : null;
+
+            if (firstCap) head += firstCap.textContent || '';
+            if (small) head += small.textContent || '';
+
+            const textFromNode = (node) => {
+              if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+              if (node.nodeType === Node.ELEMENT_NODE) {
+                if (node === firstCap || node === small) return '';
+                let acc = '';
+                node.childNodes.forEach(ch => acc += textFromNode(ch));
+                return acc;
+              }
+              return '';
+            };
+
+            let tail = '';
+            p.childNodes.forEach(node => {
+              if (node === firstCap || node === small) return;
+              tail += textFromNode(node);
             });
-            return acc;
-          }
-          return '';
-        };
 
-        const extractParagraph = (p) => {
-          // 合并首字与 small，然后把其余文本节点也拼进去，兼容被引号包裹的裸文本
-          const firstCap = p.querySelector('span[data-caps="initial"]');
-          const smallAfter =
-            firstCap && firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL'
-              ? firstCap.nextElementSibling
-              : null;
+            let full = (head + ' ' + tail);
+            full = joinNormalizedSpaces(full)
+              .replace(/[•∞@]/g, '')
+              .trim();
 
-          let head = '';
-          if (firstCap && firstCap.textContent) head += firstCap.textContent;
-          if (smallAfter && smallAfter.textContent) head += smallAfter.textContent;
+            return full;
+          };
 
-          const skip = new Set();
-          if (firstCap) skip.add(firstCap);
-          if (smallAfter) skip.add(smallAfter);
-
-          // tail 包含 p 中剩余所有文本（包括被 " 包起来的裸文本）
-          let tail = getTextDeep(p, skip);
-
-          // 某些页面把英文引号当作文本节点保留：剔除成对的左右引号中的多余空格与孤立引号
-          // 先合并 head 与 tail
-          let full = `${head} ${tail}`;
-
-          // 清理奇怪符号（你原先的规则保留）
-          full = full
-            .replace(/[•∞@]/g, ' ')
-            .replace(/“|”|‘|’/g, '"') // 将弯引号转直引号，便于统一处理
-            .replace(/\s*"\s*/g, '"'); // 引号两侧空白归一
-
-          // 处理被引号包裹且被拆开的片段（例如 " 1942 "）：
-          // 1) 把连续的 "word" 合并为 word；2) 保留句内必要的引号
-          // 简单启发式：去掉落单的引号；保留成对引号内部的文本
-          // 先收敛多余空格
-          full = normalizeSpaces(full);
-
-          // 去除多数“孤立引号”：比如以空格分隔的独立 " 直接去掉
-          full = full.replace(/\s"\s/g, ' ');
-
-          // 常见模式：" 1942 " => 1942
-          full = full.replace(/"\s*([^\"]+?)\s*"/g, '$1');
-
-          // 再做总体空白与杂质清理
-          full = normalizeSpaces(full)
-            .replace(/[•∞@]/g, '')
-            .trim();
-
-          return full;
-        };
-
-        let paras = pList
-          .map(extractParagraph)
-          .filter(t => {
+          let extractedParas = paragraphNodes.map(getParagraphText).filter(t => {
             if (!t) return false;
             if (t.length < 5) return false;
             if (/^(Advertisement|Sponsored)$/i.test(t)) return false;
@@ -1676,235 +1605,417 @@ function extractAndCopy() {
             return true;
           });
 
-        const patchedText = paras.join('\n\n');
+          const newTextContent = extractedParas.join('\n\n');
 
-        // 若取到正文，再处理图片
-        if (patchedText) {
-          // 更宽松的 figure 选择器（class 名后缀可能变动）
-          const figures = Array.from(
-            articleNode.querySelectorAll(
-              'figure.css-3mn275, figure[class*="css-3mn275"], figure[class*="e1197rjj0"]'
-            )
-          );
+          if (newTextContent) {
+            const figures = Array.from(newArticle.querySelectorAll('figure.css-3mn275, figure[class*="css-3mn275"]'));
+            const processedUrls = new Set();
 
-          const processed = new Set();
-
-          figures.forEach((figure, idx) => {
-            const img = figure.querySelector('img');
-            if (!img) return;
-
-            // 选 srcset 中最大宽度，或回退到 src
-            let bestUrl = '';
-            const rawSrcset = (img.getAttribute('srcset') || '').replace(/\s+/g, ' ').trim();
-
-            if (rawSrcset) {
-              const entries = rawSrcset
-                .split(',')
-                .map(s => s.trim())
-                .filter(Boolean)
-                .map(e => {
-                  const parts = e.split(' ');
-                  const url = parts[0];
-                  const wStr = parts[1] || '';
-                  const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
-                  return { url, w };
-                })
-                .sort((a, b) => b.w - a.w);
-              if (entries.length > 0) bestUrl = entries[0].url;
-            }
-            if (!bestUrl && img.src) bestUrl = img.src;
-
-            if (!bestUrl) return;
-
-            // 规范化 Cloudflare cdn-cgi/image 到高分辨率
-            try {
-              const u = new URL(bestUrl, window.location.href);
-              if (u.pathname.startsWith('/cdn-cgi/image')) {
-                const rebuilt =
-                  u.origin +
-                  '/cdn-cgi/image/width=1424,quality=80,format=auto' +
-                  u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
-                bestUrl = rebuilt + (u.search || '');
-              } else {
-                bestUrl = u.href;
-              }
-            } catch (_) {
-              // 保持原样
-            }
-
-            if (processed.has(bestUrl)) return;
-            processed.add(bestUrl);
-
-            // 取 caption：兼容 class 变体
-            let caption = '';
-            const capSpan =
-              figure.querySelector('figcaption span.css-1st60ou') ||
-              figure.querySelector('figcaption span[class*="css-1st60ou"]') ||
-              figure.querySelector('figcaption') ||
-              null;
-            if (capSpan && capSpan.textContent) {
-              caption = capSpan.textContent.trim();
-            } else if (img.alt) {
-              caption = img.alt.trim();
-            }
-
-            // 文件扩展名推断
-            let ext = 'jpg';
-            try {
-              const pathname = new URL(bestUrl, window.location.href).pathname;
-              const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
-              if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
-            } catch (_) { /* ignore */ }
-
-            // 生成文件名
-            const clean = (s) =>
-              (s || '')
-                .replace(/&nbsp;/g, ' ')
-                .replace(/[/\\?%*:|"<>+]/g, '-')
-                .replace(/\s+/g, ' ')
-                .trim();
-
-            let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
-            if (baseName.length > 180) baseName = baseName.slice(0, 180);
-            const filename = `${baseName}.${ext}`;
-
-            chrome.runtime.sendMessage({
-              action: 'downloadImage',
-              url: bestUrl,
-              filename
-            });
-          });
-
-          // 复制正文到剪贴板，并设置 textContent 以便上层判断
-          const ta = document.createElement('textarea');
-          ta.style.position = 'fixed';
-          ta.style.opacity = '0';
-          ta.value = patchedText;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand('copy');
-          document.body.removeChild(ta);
-
-          textContent = patchedText;
-        }
-      } catch (err) {
-        console.warn('[Economist Patched Variant] parsing failed:', err);
-      }
-    })();
-
-    // ===== 旧结构逻辑（你现有的逻辑）放在下面，保持不动 =====
-    // 首先尝试获取原有的文章结构
-    let article = document.querySelector('[data-test-id="Article"]');
-    let paragraphs;
-
-    if (article) {
-      // 原有网页结构的处理
-      paragraphs = article.querySelectorAll('p[data-component="paragraph"]');
-    } else {
-      // 新网页结构的处理 - 修改这部分以匹配新结构
-      article = document.querySelector('.article-text') || document.body; // 如果找不到.article-text则使用body
-      if (article) {
-        paragraphs = document.querySelectorAll('.article-text body-text, body-text.svelte-16dgy1v');
-      }
-    }
-
-    if (paragraphs && paragraphs.length > 0 && !textContent) {
-      textContent = Array.from(paragraphs)
-        .map(p => {
-          function getAllText(node) {
-            let text = '';
-            Array.from(node.childNodes).forEach(child => {
-              if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
-              else if (child.nodeType === Node.ELEMENT_NODE) {
-                if (child.tagName === 'SPAN' && child.getAttribute('data-caps') === 'initial') text += child.textContent;
-                else if (child.tagName === 'SMALL') text += child.textContent;
-                else if (child.tagName === 'I') text += child.textContent;
-                else if (child.tagName === 'A' || child.children.length > 0) text += getAllText(child);
-                else text += child.textContent;
-              }
-            });
-            return text;
-          }
-          let text = getAllText(p)
-            .replace(/\s+/g, ' ')
-            .replace(/[•∞@]/g, '')
-            .replace(/&nbsp;/g, ' ')
-            .trim();
-          return text;
-        })
-        .filter(text => {
-          return text &&
-            text.length > 5 &&
-            !['@', '•', '∞', 'flex'].includes(text) &&
-            !/^\s*$/.test(text) &&
-            !/^[.\s]*$/.test(text) &&
-            !/^By\s/.test(text);
-        })
-        .join('\n\n');
-
-      if (textContent) {
-        const figures = Array.from(article.querySelectorAll('figure.css-3mn275'))
-          .filter(figure => {
-            return !figure.closest('[data-optimizely="onward-articles-component"]') &&
-              !figure.closest('[data-optimizely="related-articles-section"]') &&
-              !figure.closest('[data-tracking-id="content-well-chapter-list"]') &&
-              !figure.closest('.css-1qaigru') &&
-              !figure.closest('.css-12lyffs') &&
-              !figure.closest('.css-1xfkcl4');
-          });
-
-        if (figures.length === 0) {
-          chrome.runtime.sendMessage({ action: 'noImages' });
-        } else {
-          figures.forEach(figure => {
-            const img = figure.querySelector('img');
-            if (img) {
-              let fileExtension = 'jpg';
-              const srcUrl = img.src || '';
-              if (srcUrl.includes('format=auto')) {
-                const originalPath = srcUrl.split('/').pop().split('_')[1];
-                if (originalPath) {
-                  const match = originalPath.match(/\.(jpg|jpeg|png|webp)$/i);
-                  if (match) fileExtension = match[1].toLowerCase();
+            if (figures.length === 0) {
+              // No images
+            } else {
+              imagesFoundForDownload = true;
+              figures.forEach((figure, idx) => {
+                // 【额外安全过滤】：排除可能存在于 Next.js 模板下方的推荐区域
+                if (figure.closest('.related-content') || figure.closest('.related-articles') || figure.closest('aside')) {
+                  return;
                 }
-              }
-              const baseUrl = srcUrl.split('/content-assets/')[0] + '/content-assets/';
-              const imagePath = srcUrl.split('/content-assets/')[1].split('?')[0];
-              const highResUrl = `${baseUrl}${imagePath}?width=1424&quality=80&format=auto`;
 
-              let imageDescription = '';
-              const figcaptionSpan = figure.querySelector('figcaption span.css-1st60ou');
-              if (figcaptionSpan && figcaptionSpan.textContent.trim()) {
-                imageDescription = figcaptionSpan.textContent.trim();
-              } else if (img.alt && img.alt.trim()) {
-                imageDescription = img.alt.trim();
-              }
+                const img = figure.querySelector('img');
+                if (!img) return;
 
-              let filename;
-              const now = new Date();
-              const timestamp = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}`;
-              if (imageDescription) {
-                filename = `${imageDescription.replace(/[/\\?%*:|"<>+]/g, '-')}.${fileExtension}`;
-                if (filename.startsWith('Photograph- ') || filename.startsWith('Chart- ')) {
-                  const seconds = now.getSeconds();
-                  const namePart = filename.substring(0, filename.lastIndexOf('.'));
-                  const extensionPart = filename.substring(filename.lastIndexOf('.'));
-                  filename = `${namePart}-${seconds}${extensionPart}`;
+                let bestUrl = '';
+                if (img.srcset) {
+                  const entries = img.srcset
+                    .replace(/\s+/g, ' ')
+                    .split(',')
+                    .map(e => e.trim())
+                    .filter(Boolean)
+                    .map(e => {
+                      const parts = e.split(' ');
+                      const url = parts[0];
+                      const wStr = parts[1] || '';
+                      const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
+                      return { url, w };
+                    })
+                    .sort((a, b) => b.w - a.w);
+                  if (entries.length > 0) bestUrl = entries[0].url;
                 }
-              } else {
-                filename = `economist-image-${timestamp}.${fileExtension}`;
-              }
-              if (filename.length > 200) {
-                filename = filename.substring(0, 196) + '.' + fileExtension;
-              }
+                if (!bestUrl && img.src) bestUrl = img.src;
 
-              chrome.runtime.sendMessage({
-                action: 'downloadImage',
-                url: highResUrl,
-                filename: filename
+                if (!bestUrl) return;
+
+                try {
+                  const u = new URL(bestUrl, window.location.href);
+                  if (u.pathname.startsWith('/cdn-cgi/image')) {
+                    const rebuilt = u.origin + '/cdn-cgi/image/width=1424,quality=80,format=auto' +
+                      u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
+                    bestUrl = rebuilt + (u.search || '');
+                  } else {
+                    bestUrl = u.href;
+                  }
+                } catch (e) { }
+
+                if (processedUrls.has(bestUrl)) return;
+                processedUrls.add(bestUrl);
+
+                let caption = '';
+                const capSpan = figure.querySelector('figcaption span.css-1st60ou, figcaption span[class*="css-1st60ou"]');
+                if (capSpan && capSpan.textContent) {
+                  caption = capSpan.textContent.trim();
+                } else if (img.alt) {
+                  caption = img.alt.trim();
+                }
+
+                let ext = 'jpg';
+                try {
+                  const pathname = new URL(bestUrl, window.location.href).pathname;
+                  const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
+                  if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+                } catch (_) { }
+
+                const clean = (s) => (s || '')
+                  .replace(/&nbsp;/g, ' ')
+                  .replace(/[/\\?%*:|"<>+]/g, '-')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
+                if (baseName.length > 180) baseName = baseName.slice(0, 180);
+                const filename = `${baseName}.${ext}`;
+
+                chrome.runtime.sendMessage({
+                  action: 'downloadImage',
+                  url: bestUrl,
+                  filename
+                });
               });
             }
-          });
+
+            const ta = document.createElement('textarea');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            ta.value = newTextContent;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+
+            textContent = newTextContent;
+          }
+        } catch (e) {
+          console.warn('[Economist New Template] parsing failed:', e);
+        }
+      })();
+
+      // ===== 兼容补丁分支 =====
+      (function handleEconomistPatchedVariant() {
+        try {
+          if (textContent) return;
+
+          const articleNode =
+            document.querySelector('article#new-article-template[data-testid="Article"]') ||
+            document.querySelector('article[data-testid="Article"]') ||
+            document.querySelector('article#new-article-template[data-test-id="Article"]') ||
+            document.querySelector('article[data-test-id="Article"]');
+
+          if (!articleNode) return;
+
+          const pList = Array.from(articleNode.querySelectorAll('p[data-component="paragraph"]'));
+          if (pList.length === 0) return;
+
+          const normalizeSpaces = (s) =>
+            (s || '')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const getTextDeep = (node, skipSet) => {
+            if (!node) return '';
+            if (skipSet && skipSet.has(node)) return '';
+            if (node.nodeType === Node.TEXT_NODE) {
+              return node.textContent || '';
+            }
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              let acc = '';
+              node.childNodes.forEach(ch => {
+                acc += getTextDeep(ch, skipSet);
+              });
+              return acc;
+            }
+            return '';
+          };
+
+          const extractParagraph = (p) => {
+            const firstCap = p.querySelector('span[data-caps="initial"]');
+            const smallAfter =
+              firstCap && firstCap.nextElementSibling && firstCap.nextElementSibling.tagName === 'SMALL'
+                ? firstCap.nextElementSibling
+                : null;
+
+            let head = '';
+            if (firstCap && firstCap.textContent) head += firstCap.textContent;
+            if (smallAfter && smallAfter.textContent) head += smallAfter.textContent;
+
+            const skip = new Set();
+            if (firstCap) skip.add(firstCap);
+            if (smallAfter) skip.add(smallAfter);
+
+            let tail = getTextDeep(p, skip);
+            let full = `${head} ${tail}`;
+
+            full = full
+              .replace(/[•∞@]/g, ' ')
+              .replace(/“|”|‘|’/g, '"')
+              .replace(/\s*"\s*/g, '"');
+
+            full = normalizeSpaces(full);
+            full = full.replace(/\s"\s/g, ' ');
+            full = full.replace(/"\s*([^\"]+?)\s*"/g, '$1');
+            full = normalizeSpaces(full)
+              .replace(/[•∞@]/g, '')
+              .trim();
+
+            return full;
+          };
+
+          let paras = pList
+            .map(extractParagraph)
+            .filter(t => {
+              if (!t) return false;
+              if (t.length < 5) return false;
+              if (/^(Advertisement|Sponsored)$/i.test(t)) return false;
+              if (/^[.\s•@∞]+$/.test(t)) return false;
+              return true;
+            });
+
+          const patchedText = paras.join('\n\n');
+
+          if (patchedText) {
+            const figures = Array.from(
+              articleNode.querySelectorAll(
+                'figure.css-3mn275, figure[class*="css-3mn275"], figure[class*="e1197rjj0"]'
+              )
+            );
+
+            const processed = new Set();
+
+            if (figures.length > 0) {
+              imagesFoundForDownload = true;
+              figures.forEach((figure, idx) => {
+                // 【额外安全过滤】：排除推荐区域
+                if (figure.closest('.related-content') || figure.closest('.related-articles') || figure.closest('aside')) {
+                  return;
+                }
+
+                const img = figure.querySelector('img');
+                if (!img) return;
+
+                let bestUrl = '';
+                const rawSrcset = (img.getAttribute('srcset') || '').replace(/\s+/g, ' ').trim();
+
+                if (rawSrcset) {
+                  const entries = rawSrcset
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(Boolean)
+                    .map(e => {
+                      const parts = e.split(' ');
+                      const url = parts[0];
+                      const wStr = parts[1] || '';
+                      const w = parseInt(wStr.replace(/[^\d]/g, ''), 10) || 0;
+                      return { url, w };
+                    })
+                    .sort((a, b) => b.w - a.w);
+                  if (entries.length > 0) bestUrl = entries[0].url;
+                }
+                if (!bestUrl && img.src) bestUrl = img.src;
+
+                if (!bestUrl) return;
+
+                try {
+                  const u = new URL(bestUrl, window.location.href);
+                  if (u.pathname.startsWith('/cdn-cgi/image')) {
+                    const rebuilt =
+                      u.origin +
+                      '/cdn-cgi/image/width=1424,quality=80,format=auto' +
+                      u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
+                    bestUrl = rebuilt + (u.search || '');
+                  } else {
+                    bestUrl = u.href;
+                  }
+                } catch (_) { }
+
+                if (processed.has(bestUrl)) return;
+                processed.add(bestUrl);
+
+                let caption = '';
+                const capSpan =
+                  figure.querySelector('figcaption span.css-1st60ou') ||
+                  figure.querySelector('figcaption span[class*="css-1st60ou"]') ||
+                  figure.querySelector('figcaption') ||
+                  null;
+                if (capSpan && capSpan.textContent) {
+                  caption = capSpan.textContent.trim();
+                } else if (img.alt) {
+                  caption = img.alt.trim();
+                }
+
+                let ext = 'jpg';
+                try {
+                  const pathname = new URL(bestUrl, window.location.href).pathname;
+                  const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
+                  if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+                } catch (_) { }
+
+                const clean = (s) =>
+                  (s || '')
+                    .replace(/&nbsp;/g, ' ')
+                    .replace(/[/\\?%*:|"<>+]/g, '-')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+
+                let baseName = clean(caption) || `economist-image-${Date.now()}-${idx}`;
+                if (baseName.length > 180) baseName = baseName.slice(0, 180);
+                const filename = `${baseName}.${ext}`;
+
+                chrome.runtime.sendMessage({
+                  action: 'downloadImage',
+                  url: bestUrl,
+                  filename
+                });
+              });
+            }
+
+            const ta = document.createElement('textarea');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            ta.value = patchedText;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+
+            textContent = patchedText;
+          }
+        } catch (err) {
+          console.warn('[Economist Patched Variant] parsing failed:', err);
+        }
+      })();
+
+      // ===== 旧结构逻辑 =====
+      let article = document.querySelector('[data-test-id="Article"]');
+      let paragraphs;
+
+      if (article) {
+        paragraphs = article.querySelectorAll('p[data-component="paragraph"]');
+      } else {
+        article = document.querySelector('.article-text') || document.body;
+        if (article) {
+          paragraphs = document.querySelectorAll('.article-text body-text, body-text.svelte-16dgy1v');
+        }
+      }
+
+      if (paragraphs && paragraphs.length > 0 && !textContent) {
+        textContent = Array.from(paragraphs)
+          .map(p => {
+            function getAllText(node) {
+              let text = '';
+              Array.from(node.childNodes).forEach(child => {
+                if (child.nodeType === Node.TEXT_NODE) text += child.textContent;
+                else if (child.nodeType === Node.ELEMENT_NODE) {
+                  if (child.tagName === 'SPAN' && child.getAttribute('data-caps') === 'initial') text += child.textContent;
+                  else if (child.tagName === 'SMALL') text += child.textContent;
+                  else if (child.tagName === 'I') text += child.textContent;
+                  else if (child.tagName === 'A' || child.children.length > 0) text += getAllText(child);
+                  else text += child.textContent;
+                }
+              });
+              return text;
+            }
+            let text = getAllText(p)
+              .replace(/\s+/g, ' ')
+              .replace(/[•∞@]/g, '')
+              .replace(/&nbsp;/g, ' ')
+              .trim();
+            return text;
+          })
+          .filter(text => {
+            return text &&
+              text.length > 5 &&
+              !['@', '•', '∞', 'flex'].includes(text) &&
+              !/^\s*$/.test(text) &&
+              !/^[.\s]*$/.test(text) &&
+              !/^By\s/.test(text);
+          })
+          .join('\n\n');
+
+        if (textContent) {
+          const figures = Array.from(article.querySelectorAll('figure.css-3mn275'))
+            .filter(figure => {
+              return !figure.closest('[data-optimizely="onward-articles-component"]') &&
+                !figure.closest('[data-optimizely="related-articles-section"]') &&
+                !figure.closest('[data-tracking-id="content-well-chapter-list"]') &&
+                !figure.closest('.css-1qaigru') &&
+                !figure.closest('.css-12lyffs') &&
+                !figure.closest('.css-1xfkcl4') &&
+                !figure.closest('.related-content') && // 额外安全过滤
+                !figure.closest('.related-articles');
+            });
+
+          if (figures.length === 0) {
+            chrome.runtime.sendMessage({ action: 'noImages' });
+          } else {
+            imagesFoundForDownload = true;
+            figures.forEach(figure => {
+              const img = figure.querySelector('img');
+              if (img) {
+                let fileExtension = 'jpg';
+                const srcUrl = img.src || '';
+                if (srcUrl.includes('format=auto')) {
+                  const originalPath = srcUrl.split('/').pop().split('_')[1];
+                  if (originalPath) {
+                    const match = originalPath.match(/\.(jpg|jpeg|png|webp)$/i);
+                    if (match) fileExtension = match[1].toLowerCase();
+                  }
+                }
+                const baseUrl = srcUrl.split('/content-assets/')[0] + '/content-assets/';
+                const imagePath = srcUrl.split('/content-assets/')[1].split('?')[0];
+                const highResUrl = `${baseUrl}${imagePath}?width=1424&quality=80&format=auto`;
+
+                let imageDescription = '';
+                const figcaptionSpan = figure.querySelector('figcaption span.css-1st60ou');
+                if (figcaptionSpan && figcaptionSpan.textContent.trim()) {
+                  imageDescription = figcaptionSpan.textContent.trim();
+                } else if (img.alt && img.alt.trim()) {
+                  imageDescription = img.alt.trim();
+                }
+
+                let filename;
+                const now = new Date();
+                const timestamp = `${now.getHours()}${now.getMinutes()}${now.getSeconds()}`;
+                if (imageDescription) {
+                  filename = `${imageDescription.replace(/[/\\?%*:|"<>+]/g, '-')}.${fileExtension}`;
+                  if (filename.startsWith('Photograph- ') || filename.startsWith('Chart- ')) {
+                    const seconds = now.getSeconds();
+                    const namePart = filename.substring(0, filename.lastIndexOf('.'));
+                    const extensionPart = filename.substring(filename.lastIndexOf('.'));
+                    filename = `${namePart}-${seconds}${extensionPart}`;
+                  }
+                } else {
+                  filename = `economist-image-${timestamp}.${fileExtension}`;
+                }
+                if (filename.length > 200) {
+                  filename = filename.substring(0, 196) + '.' + fileExtension;
+                }
+
+                chrome.runtime.sendMessage({
+                  action: 'downloadImage',
+                  url: highResUrl,
+                  filename: filename
+                });
+              }
+            });
+          }
         }
       }
     }

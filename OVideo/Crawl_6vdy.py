@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版）
+6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版 + 防休眠）
 - 支持 OVideos.json 多 URL 格式 (url, url1, url2...)
 - 跨分类全局 Name 唯一性校验 + URL 存在性双重校验
 - 智能 6vdy 渠道插入与更新机制
@@ -13,9 +13,39 @@ import re
 import json
 import time
 import requests
+import platform        # 新增
+import subprocess      # 新增
+import atexit          # 新增
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime
+
+# ================= 防止系统休眠控制 =================
+_caffeinate_proc = None
+
+def start_caffeinate():
+    """启动 caffeinate 以防止系统休眠 (仅限 macOS)"""
+    global _caffeinate_proc
+    if platform.system() == 'Darwin':
+        try:
+            # -i: 防止系统空闲休眠, -d: 防止显示器休眠, -m: 防止磁盘休眠, -u: 声明用户活动
+            _caffeinate_proc = subprocess.Popen(["caffeinate", "-idmu"])
+            print(">>> [系统] 已开启防休眠模式 (caffeinate)")
+        except Exception as e:
+            print(f">>> [系统] 无法启动 caffeinate: {e}")
+
+def stop_caffeinate():
+    """停止 caffeinate"""
+    global _caffeinate_proc
+    if _caffeinate_proc:
+        try:
+            _caffeinate_proc.terminate()
+            print(">>> [系统] 已关闭防休眠模式")
+        except Exception as e:
+            print(f">>> [系统] 关闭 caffeinate 时出错: {e}")
+
+# 注册程序退出时自动关闭，确保不会留下僵尸进程
+atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
 BASE_URL    = "https://www.6vdy.org/qian50m.html"
@@ -872,6 +902,9 @@ def process_tab_unified(data, tab_index, tab_name):
 
 # ============== 主流程 ==============
 def main():
+    # 在程序开始时开启防休眠
+    start_caffeinate()
+    
     os.makedirs(IMG_DIR, exist_ok=True)
     data = load_json()
 
