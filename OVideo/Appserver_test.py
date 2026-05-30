@@ -479,8 +479,6 @@ def onews_status():
 def onews_redeem(): return handle_redeem_invite('ONews')
 
 
-
-
 # ==========================================
 # OVideo 视频模块 API
 # ==========================================
@@ -1002,7 +1000,522 @@ def admin_page():
     return ADMIN_HTML  # 见下方
 
 ADMIN_HTML = r'''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ONews 行为监控</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  .login-box{max-width:380px;margin:120px auto;background:#1e293b;padding:40px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .login-box h1{margin-bottom:24px;font-size:22px;text-align:center}
+  input,button{width:100%;padding:12px 14px;border-radius:10px;border:none;font-size:15px}
+  input{background:#0f172a;color:#e2e8f0;border:1px solid #334155;margin-bottom:14px}
+  button{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;cursor:pointer;font-weight:600}
+  button:hover{opacity:.9}
+  .container{max-width:1400px;margin:0 auto;padding:24px;display:none}
+  .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+  .header h1{font-size:22px;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  
+  .module-switch{display:flex;gap:8px;background:#1e293b;padding:6px;border-radius:12px;border:1px solid #334155}
+  .module-tab{padding:8px 18px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;color:#94a3b8;transition:all .2s}
+  .module-tab.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white}
+  
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+  .stat-card{background:#1e293b;padding:20px;border-radius:14px;border:1px solid #334155}
+  .stat-card .label{font-size:12px;color:#94a3b8;margin-bottom:8px}
+  .stat-card .value{font-size:28px;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+  .row-full{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:24px}
+  @media(max-width:900px){.row{grid-template-columns:1fr}}
+  .panel{background:#1e293b;padding:20px;border-radius:14px;border:1px solid #334155}
+  .panel h3{margin-bottom:16px;font-size:15px;color:#cbd5e1;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+  .tabs{display:flex;gap:6px}
+  .tab{padding:6px 12px;background:#0f172a;border-radius:8px;font-size:12px;cursor:pointer;border:1px solid #334155}
+  .tab.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-color:transparent}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #334155}
+  th{color:#94a3b8;font-weight:500;font-size:12px}
+  tr:hover td{background:#0f172a}
+  .pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px}
+  .pill-green{background:rgba(34,197,94,.2);color:#86efac}
+  .pill-blue{background:rgba(59,130,246,.2);color:#93c5fd}
+  .pill-purple{background:rgba(167,139,250,.2);color:#c4b5fd}
+  .pill-orange{background:rgba(251,146,60,.2);color:#fdba74}
+  .err{color:#f87171;text-align:center;margin-top:10px;font-size:13px}
+  .clickable{cursor:pointer;color:#60a5fa}
+  .clickable:hover{text-decoration:underline}
+  canvas{max-height:280px}
+  .module-section{display:none}
+  .module-section.active{display:block}
+  
+  .danger-zone{border:1px solid #ef4444;background:rgba(239,68,68,.05)}
+  .danger-zone h3{color:#f87171 !important}
+  .btn-group{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+  .btn-danger{background:#dc2626;width:auto;padding:10px 20px;font-size:13px;border-radius:8px}
+  .btn-danger:hover{background:#b91c1c}
+  
+  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:1000}
+  .modal{background:#1e293b;border:1px solid #ef4444;border-radius:14px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
+  .modal h4{color:#f87171;font-size:18px;margin-bottom:12px}
+  .modal p{font-size:14px;color:#cbd5e1;line-height:1.6;margin-bottom:20px}
+  .modal-btns{display:flex;justify-content:flex-end;gap:12px}
+  .modal-btn{padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;border:none;font-weight:600}
+  .btn-cancel{background:#475569;color:#e2e8f0}
+  .btn-confirm-final{background:#dc2626;color:white}
+</style>
+</head>
+<body>
 
+<div class="login-box" id="loginBox">
+  <h1>🎬 ONews 后台</h1>
+  <input type="password" id="pwdInput" placeholder="管理员密码" />
+  <button onclick="login()">登录</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<div class="container" id="dashboard">
+  <div class="header">
+    <h1>📊 ONews 用户行为监控</h1>
+    <div class="module-switch">
+      <div class="module-tab active" id="tabVideo" onclick="switchModule('video')">🎬 视频模块</div>
+      <div class="module-tab" id="tabNews" onclick="switchModule('news')">📰 新闻模块</div>
+    </div>
+    <div>
+      <span style="color:#94a3b8;font-size:13px;margin-right:12px" id="updateTime"></span>
+      <button onclick="loadCurrentModule()" style="width:auto;padding:8px 16px;font-size:13px">🔄 刷新</button>
+    </div>
+  </div>
+
+  <!-- ============ 视频模块 ============ -->
+  <div class="module-section active" id="moduleVideo">
+    <div class="stats" id="statsBox"></div>
+    <div class="row-full">
+      <div class="panel">
+        <h3>📈 视频 - 最近 30 天趋势</h3>
+        <canvas id="trendChart"></canvas>
+      </div>
+    </div>
+    <div class="row">
+      <div class="panel">
+        <h3>
+          🔥 视频播放榜
+          <span class="tabs">
+            <span class="tab active" onclick="switchPlayPeriod(this,'today')">今日</span>
+            <span class="tab" onclick="switchPlayPeriod(this,'7d')">7天</span>
+            <span class="tab" onclick="switchPlayPeriod(this,'all')">总计</span>
+          </span>
+        </h3>
+        <table>
+          <thead><tr><th>#</th><th>视频</th><th>用户数</th><th>次数</th></tr></thead>
+          <tbody id="topPlayBody"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>
+          📥 视频下载榜
+          <span class="tabs">
+            <span class="tab active" onclick="switchDlPeriod(this,'today')">今日</span>
+            <span class="tab" onclick="switchDlPeriod(this,'7d')">7天</span>
+            <span class="tab" onclick="switchDlPeriod(this,'all')">总计</span>
+          </span>
+        </h3>
+        <table>
+          <thead><tr><th>#</th><th>视频</th><th>用户数</th><th>次数</th></tr></thead>
+          <tbody id="topDlBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:24px">
+      <h3>👥 视频 - 活跃用户榜</h3>
+      <table>
+        <thead><tr><th>#</th><th>User ID</th><th>看过视频数</th><th>总操作数</th><th>最后活跃</th></tr></thead>
+        <tbody id="topUsersBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ 新闻模块 ============ -->
+  <div class="module-section" id="moduleNews">
+    <div class="stats" id="newsStatsBox"></div>
+    <div class="row-full">
+      <div class="panel">
+        <h3>📈 新闻 - 最近 30 天趋势</h3>
+        <canvas id="newsTrendChart"></canvas>
+      </div>
+    </div>
+    <div class="row">
+      <div class="panel">
+        <h3>
+          📰 新闻源热度榜
+          <span class="tabs">
+            <span class="tab" onclick="switchSourcePeriod(this,'today')">今日</span>
+            <span class="tab active" onclick="switchSourcePeriod(this,'7d')">7天</span>
+            <span class="tab" onclick="switchSourcePeriod(this,'all')">总计</span>
+          </span>
+        </h3>
+        <table>
+          <thead><tr><th>#</th><th>新闻源</th><th>用户数</th><th>文章数</th><th>阅读次数</th></tr></thead>
+          <tbody id="topSourcesBody"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>
+          🔥 热门文章榜
+          <span class="tabs">
+            <span class="tab" onclick="switchArticleType(this,'listen')">朗读</span>
+            <span class="tab active" onclick="switchArticleType(this,'view')">曝光</span>
+          </span>
+          <span class="tabs">
+            <span class="tab" onclick="switchArticlePeriod(this,'today')">今日</span>
+            <span class="tab active" onclick="switchArticlePeriod(this,'7d')">7天</span>
+            <span class="tab" onclick="switchArticlePeriod(this,'all')">总计</span>
+          </span>
+        </h3>
+        <table>
+          <thead><tr><th>#</th><th>文章</th><th>来源</th><th>用户</th><th>次数</th></tr></thead>
+          <tbody id="topArticlesBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel" style="margin-bottom:24px">
+      <h3>👥 新闻 - 活跃读者榜</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>User ID</th><th>类型</th>
+            <th>听过文章</th><th>朗读</th><th>曝光</th><th>最后活跃</th>
+          </tr>
+        </thead>
+        <tbody id="topNewsUsersBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 危险区 -->
+  <div class="panel danger-zone" style="margin-bottom:24px">
+    <h3>⚠️ 数据库维护与管理 (危险区)</h3>
+    <p style="font-size:13px;color:#94a3b8;margin-bottom:15px;">破坏性操作不可恢复，请慎用。</p>
+    <div class="btn-group">
+      <button class="btn-danger" onclick="triggerClear('analytics')">🧹 清空所有行为统计</button>
+      <button class="btn-danger" onclick="triggerClear('users')">👤 清空用户及订阅数据</button>
+      <button class="btn-danger" onclick="triggerClear('all')">🔥 彻底清空所有数据</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <h4 id="modalTitle">⚠️ 危险操作确认</h4>
+    <p id="modalMsg"></p>
+    <div class="modal-btns">
+      <button class="modal-btn btn-cancel" onclick="closeModal()">取消</button>
+      <button class="modal-btn btn-confirm-final" id="modalConfirmBtn">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('admin_token') || '';
+let currentModule = 'video';
+let trendChart, newsTrendChart;
+let playPeriod='today', dlPeriod='today';
+let sourcePeriod='7d';
+let articleType='view', articlePeriod='7d';
+let pendingClearType = '';
+
+async function login(){
+  const pwd = document.getElementById('pwdInput').value;
+  const r = await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
+  if(!r.ok){document.getElementById('loginErr').innerText='密码错误';return}
+  const d = await r.json();
+  TOKEN = d.token;
+  localStorage.setItem('admin_token', TOKEN);
+  showDashboard();
+}
+
+function showDashboard(){
+  document.getElementById('loginBox').style.display='none';
+  document.getElementById('dashboard').style.display='block';
+  loadCurrentModule();
+}
+
+async function api(path, method='GET', body=null){
+  const headers = {'X-Admin-Token':TOKEN};
+  if(body) headers['Content-Type'] = 'application/json';
+  const opts = { method, headers };
+  if(body) opts.body = JSON.stringify(body);
+  const r = await fetch(path, opts);
+  if(r.status===401){
+    localStorage.removeItem('admin_token');
+    location.reload();
+    return null;
+  }
+  return r.json();
+}
+
+function switchModule(name){
+  currentModule = name;
+  document.getElementById('tabVideo').classList.toggle('active', name==='video');
+  document.getElementById('tabNews').classList.toggle('active', name==='news');
+  document.getElementById('moduleVideo').classList.toggle('active', name==='video');
+  document.getElementById('moduleNews').classList.toggle('active', name==='news');
+  loadCurrentModule();
+}
+
+function loadCurrentModule(){
+  document.getElementById('updateTime').innerText = '更新于 '+new Date().toLocaleTimeString();
+  if(currentModule==='video') loadVideoModule();
+  else loadNewsModule();
+}
+
+// ============ 视频模块 ============
+async function loadVideoModule(){
+  loadVideoOverview();
+  loadVideoTrend();
+  loadTopVideos('play', playPeriod);
+  loadTopVideos('download_complete', dlPeriod);
+  loadTopUsers();
+}
+
+async function loadVideoOverview(){
+  const d = await api('/admin/api/overview');if(!d)return;
+  const items = [
+    ['总用户数', d.total_users],
+    ['今日活跃', d.today_active_users],
+    ['今日播放', d.today_play],
+    ['今日下载', d.today_download],
+    ['累计播放', d.total_play_events],
+    ['累计下载', d.total_download_events],
+  ];
+  document.getElementById('statsBox').innerHTML = items.map(([l,v])=>
+    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v||0}</div></div>`).join('');
+}
+
+async function loadVideoTrend(){
+  const data = await api('/admin/api/daily_trend');if(!data)return;
+  const days=[...new Set(data.map(r=>r.day))].sort();
+  const playData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='play');return r?r.cnt:0});
+  const dlData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='download_complete');return r?r.cnt:0});
+  if(trendChart) trendChart.destroy();
+  trendChart = new Chart(document.getElementById('trendChart'),{
+    type:'line',
+    data:{labels:days,datasets:[
+      {label:'播放',data:playData,borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,.15)',tension:.3,fill:true},
+      {label:'下载',data:dlData,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.15)',tension:.3,fill:true},
+    ]},
+    options:{responsive:true,plugins:{legend:{labels:{color:'#cbd5e1'}}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}
+  });
+}
+
+async function loadTopVideos(type, period){
+  const data = await api(`/admin/api/top_videos?type=${type}&period=${period}&limit=15`);if(!data)return;
+  const tbody = type==='play'?'topPlayBody':'topDlBody';
+  document.getElementById(tbody).innerHTML = data.length===0
+    ? '<tr><td colspan="4" style="text-align:center;color:#64748b">暂无数据</td></tr>'
+    : data.map((r,i)=>`<tr>
+        <td>${i+1}</td>
+        <td class="clickable" onclick="showVideoUsers('${encodeURIComponent(r.video_url)}','${type}')">${r.video_title||r.video_url}</td>
+        <td><span class="pill pill-green">${r.unique_users}</span></td>
+        <td>${r.total_count}</td>
+      </tr>`).join('');
+}
+
+async function loadTopUsers(){
+  const data = await api('/admin/api/top_users');if(!data)return;
+  document.getElementById('topUsersBody').innerHTML = data.length===0
+    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
+    : data.map((r,i)=>`<tr>
+        <td>${i+1}</td>
+        <td style="font-family:monospace;font-size:11px">${r.user_id.substring(0,30)}...</td>
+        <td>${r.unique_videos}</td>
+        <td>${r.total_actions}</td>
+        <td style="color:#94a3b8;font-size:12px">${r.last_active.replace('T',' ').substring(0,19)}</td>
+      </tr>`).join('');
+}
+
+async function showVideoUsers(urlEnc, type){
+  const url = decodeURIComponent(urlEnc);
+  const data = await api(`/admin/api/video_users?video_url=${encodeURIComponent(url)}&type=${type}`);
+  if(!data)return;
+  const html = data.slice(0,50).map(u=>`• ${u.user_id.substring(0,25)}... (${u.count}次, 最后:${u.last_at.substring(0,16).replace('T',' ')})`).join('<br>');
+  showInfoModal(`👥 观看此视频的用户 (${data.length} 人)`, html || '暂无');
+}
+
+function switchPlayPeriod(el,p){
+  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');playPeriod=p;loadTopVideos('play',p);
+}
+function switchDlPeriod(el,p){
+  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');dlPeriod=p;loadTopVideos('download_complete',p);
+}
+
+// ============ 新闻模块 ============
+async function loadNewsModule(){
+  loadNewsOverview();
+  loadNewsTrend();
+  loadTopSources(sourcePeriod);
+  loadTopArticles(articleType, articlePeriod);
+  loadTopNewsUsers();
+}
+
+async function loadNewsOverview(){
+  const d = await api('/admin/api/news/overview');if(!d)return;
+  const items = [
+    ['总读者数', d.total_users],
+    ['今日活跃', d.today_active],
+    ['今日朗读', d.today_listen],
+    ['今日曝光', d.today_view],
+    ['累计朗读', d.total_listen],
+    ['累计曝光', d.total_view],
+  ];
+  document.getElementById('newsStatsBox').innerHTML = items.map(([l,v])=>
+    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v||0}</div></div>`).join('');
+}
+
+async function loadNewsTrend(){
+  const data = await api('/admin/api/news/daily_trend');if(!data)return;
+  const days = [...new Set(data.map(r=>r.day))].sort();
+  const listenData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='listen');return r?r.cnt:0});
+  const viewData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='view');return r?r.cnt:0});
+  if(newsTrendChart) newsTrendChart.destroy();
+  newsTrendChart = new Chart(document.getElementById('newsTrendChart'),{
+    type:'line',
+    data:{labels:days,datasets:[
+      {label:'朗读',data:listenData,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.15)',tension:.3,fill:true},
+      {label:'曝光',data:viewData,borderColor:'#fb923c',backgroundColor:'rgba(251,146,60,.10)',tension:.3,fill:true},
+    ]},
+    options:{responsive:true,plugins:{legend:{labels:{color:'#cbd5e1'}}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}
+  });
+}
+
+async function loadTopSources(period){
+  const data = await api(`/admin/api/news/top_sources?period=${period}`);if(!data)return;
+  document.getElementById('topSourcesBody').innerHTML = data.length===0
+    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
+    : data.map((r,i)=>`<tr>
+        <td>${i+1}</td>
+        <td><strong>${r.source_id||'(未知)'}</strong></td>
+        <td><span class="pill pill-green">${r.unique_users}</span></td>
+        <td><span class="pill pill-blue">${r.unique_articles}</span></td>
+        <td>${r.total_reads}</td>
+      </tr>`).join('');
+}
+
+async function loadTopArticles(type, period){
+  const data = await api(`/admin/api/news/top_articles?type=${type}&period=${period}`);if(!data)return;
+  document.getElementById('topArticlesBody').innerHTML = data.length===0
+    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
+    : data.map((r,i)=>{
+        const title = r.article_topic || r.article_key;
+        const shortTitle = title.length > 40 ? title.substring(0,40)+'...' : title;
+        return `<tr>
+          <td>${i+1}</td>
+          <td class="clickable" onclick="showArticleUsers('${encodeURIComponent(r.article_key)}','${type}')" title="${title}">${shortTitle}</td>
+          <td><span class="pill pill-orange">${r.source_id||'(未知)'}</span></td>
+          <td><span class="pill pill-green">${r.unique_users}</span></td>
+          <td>${r.total_count}</td>
+        </tr>`;
+      }).join('');
+}
+
+async function loadTopNewsUsers(){
+  const data = await api('/admin/api/news/top_users');if(!data)return;
+  document.getElementById('topNewsUsersBody').innerHTML = data.length===0
+    ? '<tr><td colspan="7" style="text-align:center;color:#64748b">暂无数据</td></tr>'
+    : data.map((r,i)=>`<tr>
+        <td>${i+1}</td>
+        <td style="font-family:monospace;font-size:11px">${r.user_id.substring(0,28)}...</td>
+        <td><span class="pill ${r.user_type==='apple'?'pill-blue':'pill-purple'}">${r.user_type||'-'}</span></td>
+        <td><strong>${r.unique_articles}</strong></td>
+        <td>${r.listen_count||0}</td>
+        <td>${r.view_count||0}</td>
+        <td style="color:#94a3b8;font-size:12px">${(r.last_active||'').replace('T',' ').substring(0,19)}</td>
+      </tr>`).join('');
+}
+
+async function showArticleUsers(keyEnc, type){
+  const key = decodeURIComponent(keyEnc);
+  const data = await api(`/admin/api/news/article_users?article_key=${encodeURIComponent(key)}&type=${type}`);
+  if(!data)return;
+  const html = data.slice(0,50).map(u=>{
+    const uid = u.user_id.substring(0,25);
+    const cnt = u.count;
+    const last = (u.last_at||'').substring(0,16).replace('T',' ');
+    return `• [${u.user_type||'-'}] ${uid}... (${cnt}次, 最后:${last})`;
+  }).join('<br>');
+  showInfoModal(`👥 ${type==='listen'?'朗读':'曝光'}此文章的用户 (${data.length} 人)`, html || '暂无');
+}
+
+function switchSourcePeriod(el,p){
+  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');sourcePeriod=p;loadTopSources(p);
+}
+function switchArticleType(el,t){
+  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');articleType=t;loadTopArticles(t,articlePeriod);
+}
+function switchArticlePeriod(el,p){
+  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');articlePeriod=p;loadTopArticles(articleType,p);
+}
+
+// ============ 通用弹窗 ============
+function showInfoModal(title, htmlBody){
+  document.getElementById('modalTitle').innerText = title;
+  document.getElementById('modalMsg').innerHTML = htmlBody;
+  const btn = document.getElementById('modalConfirmBtn');
+  btn.innerText = "关闭";
+  btn.onclick = closeModal;
+  document.getElementById('confirmModal').style.display = 'flex';
+}
+
+// ============ 危险操作 ============
+function triggerClear(type) {
+  pendingClearType = type;
+  let targetName = "";
+  if(type === 'analytics') targetName = "【全部行为统计数据（视频+新闻）】";
+  if(type === 'users') targetName = "【所有注册用户账号及订阅权限数据】";
+  if(type === 'all') targetName = "【全部数据】";
+  document.getElementById('modalTitle').innerText = "⚠️ 第一次安全确认";
+  document.getElementById('modalMsg').innerText = `您正在尝试清空 ${targetName}。此操作不可恢复！`;
+  const btn = document.getElementById('modalConfirmBtn');
+  btn.innerText = "继续下一步";
+  btn.onclick = secondConfirm;
+  document.getElementById('confirmModal').style.display = 'flex';
+}
+
+function secondConfirm() {
+  document.getElementById('modalTitle').innerText = "🚨 终极核对确认";
+  document.getElementById('modalMsg').innerText = `请再次确认！如果您十分确定，请点击下方按钮。`;
+  const btn = document.getElementById('modalConfirmBtn');
+  btn.innerText = "彻底清空并执行";
+  btn.onclick = executeClear;
+}
+
+async function executeClear() {
+  const result = await api('/admin/api/clear_db', 'POST', { type: pendingClearType });
+  closeModal();
+  if (result && result.status === 'success') {
+    loadCurrentModule();
+    setTimeout(()=>showInfoModal("✅ 操作成功", result.message), 300);
+  } else {
+    setTimeout(()=>showInfoModal("❌ 操作失败", (result && result.error) ? result.error : "未知错误"), 300);
+  }
+}
+
+function closeModal() {
+  document.getElementById('confirmModal').style.display = 'none';
+}
+
+if(TOKEN) showDashboard();
+</script>
+</body>
+</html>
 '''
 
 # --- 服务器启动 ---
