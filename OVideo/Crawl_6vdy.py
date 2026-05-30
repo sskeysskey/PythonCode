@@ -13,9 +13,9 @@ import re
 import json
 import time
 import requests
-import platform        # 新增
-import subprocess      # 新增
-import atexit          # 新增
+import platform
+import subprocess
+import atexit
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime

@@ -2,8 +2,12 @@ import json
 import argparse
 import pyperclip
 
-SKIP_CATEGORIES = {'Movie', 'Drama', 'Show'} 
-# SKIP_CATEGORIES = set()
+# SKIP_CATEGORIES = {'Movie', 'Drama', 'Show'} 
+SKIP_CATEGORIES = set()
+
+# ===== 新增：读取顺序与数量配置 =====
+REVERSE_SCAN = True               # 开关：True 表示每个分类倒着读取，False 表示原样正序读取
+SCAN_LIMIT_PER_CATEGORY = 50       # 数量配置：每个分类最多读取的项目数（例如 5 表示只抓最后5个/最前5个；设为 0 或 None 表示不限制）
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
 # 属于模糊匹配，命中任一关键字就跳过该项目
@@ -17,7 +21,6 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 
 # ===== 新增：特殊 channel 名称 =====
 SPECIAL_CHANNEL_NAME = '6vdy'
-
 
 def get_scan_episodes(episodes, category, show_last_n):
     """
@@ -197,8 +200,8 @@ def main():
     parser.add_argument(
         '--show-last-n',
         type=int,
-        default=5,
-        help='Show 分类每个 channel 只扫末尾 N 条（默认 5；设为 0 则不裁剪）'
+        default=0,
+        help='Show 分类每个 channel只扫末尾 N 条（默认 5；设为 0 则不裁剪）'
     )
     parser.add_argument(
         '--rating-threshold',
@@ -255,6 +258,11 @@ def main():
           if SHOW_LAST_N > 0 else "[Show 裁剪] 关闭（扫全部）")
     print(f"[评分过滤] 豆瓣或 IMDB 任一 >= {rating_threshold} 才处理")
     print(f"[特殊 channel] 名为 '{SPECIAL_CHANNEL_NAME}' 的 channel 将优先全部处理")
+    
+    # 输出读取顺序和数量配置的提示
+    order_desc = "倒序读取" if REVERSE_SCAN else "正序（从上到下）读取"
+    limit_desc = f"每个分类最多读取前 {SCAN_LIMIT_PER_CATEGORY} 个项目" if SCAN_LIMIT_PER_CATEGORY else "读取分类下的所有项目"
+    print(f"[读取配置] 顺序：{order_desc} | 数量限制：{limit_desc}")
 
     # 4. 遍历 OVideos.json 提取 episodes 里的 url
     # OVideos.json 的顶层是分类（如 "Movie", "Show"）
@@ -264,7 +272,20 @@ def main():
             print(f"[跳过] 根据配置，临时跳过 {category} 分组")
             continue
 
-        for item in items:
+        # ============================================================
+        # ===== 新增：根据配置处理读取顺序与数量限制 =====
+        # ============================================================
+        # 1. 处理顺序：如果开启了倒序
+        if REVERSE_SCAN:
+            items_to_process = list(reversed(items))
+        else:
+            items_to_process = list(items)
+
+        # 2. 处理数量限制
+        if SCAN_LIMIT_PER_CATEGORY and SCAN_LIMIT_PER_CATEGORY > 0:
+            items_to_process = items_to_process[:SCAN_LIMIT_PER_CATEGORY]
+
+        for item in items_to_process:
             # 用于日志的项目标识
             item_label = f"[{category}] {item.get('name') or item.get('title') or '未命名'}"
 

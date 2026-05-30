@@ -255,7 +255,7 @@ def should_skip_info_update(old_info: str, new_info: str) -> bool:
     pattern = r'(?:更新至|第)?(\d+)(?:集|期)?'
     
     old_match = re.search(pattern, old_info)
-    new_match = re.search(pattern, new_info)
+    new_match = re.search(pattern, new_match) if 'new_match' in locals() else re.search(pattern, new_info)
     
     if old_match and new_match:
         try:
@@ -545,11 +545,23 @@ def parse_list_page(html: str) -> list[dict]:
                 except ValueError:
                     score_val = 0.0
 
+        # 【新增修改】：提取列表项中的年份信息（用于 Show 分类的特殊过滤）
+        # 结构：<p class="item-status text-overflow">2026 / 中国大陆 / 大陆综艺/汉语普通话</p>
+        item_year = ""
+        status_p = li.select_one("div.name p.item-status")
+        if status_p:
+            status_text = clean_ws(status_p.get_text(strip=True))
+            # 提取开头的年份数字（如 2026）
+            year_match = re.match(r"^(\d{4})", status_text)
+            if year_match:
+                item_year = year_match.group(1)
+
         items.append({
             "name": name,
             "url": full_url,
             "info": info,
-            "score": score_val
+            "score": score_val,
+            "year": item_year  # 将提取到的年份传回
         })
     return items
 
@@ -844,10 +856,19 @@ def crawl_category(cat_name: str, cat_cfg: dict,
         log(f"  -> 共找到 {len(items)} 部", force=True)
 
         for idx_i, item in enumerate(items, 1):
-            # 【新增】：评分过滤逻辑
-            if item["score"] < MIN_SCORE_LIMIT:
-                log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
-                continue
+            # =============================================================
+            # 【新增修改】：分类过滤逻辑分流
+            # =============================================================
+            if cat_name == "Show":
+                # 综艺分类：不看评分，只看年份是否为 2026
+                if item["year"] != "2026":
+                    log(f"  ({idx_i}/{len(items)}) [跳过-年份不符] {item['name']} (年份: '{item['year']}' != '2026')")
+                    continue
+            else:
+                # 电影、电视剧、动漫分类：沿用原本的 6.5 评分过滤
+                if item["score"] < MIN_SCORE_LIMIT:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                    continue
 
             item_path = get_url_path(item["url"])
             
