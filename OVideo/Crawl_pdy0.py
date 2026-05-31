@@ -175,7 +175,7 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 6.5
+MIN_SCORE_LIMIT = 7.0
 
 # ==========================================
 # 黑名单播放源配置，遇到这些源将直接跳过不抓取
