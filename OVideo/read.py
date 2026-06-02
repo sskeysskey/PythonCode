@@ -7,7 +7,7 @@ SKIP_CATEGORIES = set()
 
 # ===== 新增：读取顺序与数量配置 =====
 REVERSE_SCAN = True               # 开关：True 表示每个分类倒着读取，False 表示原样正序读取
-SCAN_LIMIT_PER_CATEGORY = 50       # 数量配置：每个分类最多读取的项目数（例如 5 表示只抓最后5个/最前5个；设为 0 或 None 表示不限制）
+SCAN_LIMIT_PER_CATEGORY = 300       # 数量配置：每个分类最多读取的项目数（例如 5 表示只抓最后5个/最前5个；设为 0 或 None 表示不限制）
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
 # 属于模糊匹配，命中任一关键字就跳过该项目
@@ -26,7 +26,9 @@ def get_scan_episodes(episodes, category, show_last_n):
     """
     根据分类返回"本次实际要扫描的 episodes 列表"。
     - episodes 现在是字典 {"第01集": "url1", ...}，需要先提取出 values 列表。
-    - Show: 只取末尾 show_last_n 条（不足则全拿）
+    - Show: 
+      - 如果总集数超过 20：强制只取末尾 5 条（如果 show_last_n 传入了大于0的值，也可以用 show_last_n，这里默认用 5）
+      - 如果总集数不超过 20：全部扫描
     - 其他分类: 原样返回所有 values
     """
     if not episodes:
@@ -34,9 +36,17 @@ def get_scan_episodes(episodes, category, show_last_n):
     
     # 将字典的 values 转换为 URL 列表
     urls_list = list(episodes.values())
+    total_count = len(urls_list)
 
-    if category == 'Show' and show_last_n > 0:
-        return urls_list[-show_last_n:]
+    if category == 'Show':
+        if total_count > 20:
+            # 如果命令行/配置传入了 show_last_n 且大于 0，则使用传入的值；否则默认截取最后 5 个
+            limit = show_last_n if show_last_n > 0 else 5
+            return urls_list[-limit:]
+        else:
+            # 不超过 20 个，全部扫描
+            return urls_list
+            
     return urls_list
 
 

@@ -53,20 +53,20 @@ def get_year_config(year: str):
     return {
         "year": year,
         "categories": {
-            "Movie": {"id": 1, "enabled": True,  "pages": 1},
-            "Drama": {"id": 2, "enabled": True,  "pages": 0},
+            "Movie": {"id": 1, "enabled": True,  "pages": 0},
+            "Drama": {"id": 2, "enabled": True,  "pages": 5},
             "Show":  {"id": 3, "enabled": True,  "pages": 0},
             "Anime": {"id": 4, "enabled": True,  "pages": 0},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(1980, 1965, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(2019, 2010, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -91,7 +91,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -105,7 +105,7 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -176,6 +176,17 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
 MIN_SCORE_LIMIT = 7.0
+
+# ==========================================
+# 【新增】：剧集数量限制配置
+# ==========================================
+DRAMA_MAX_EPISODES_LIMIT = 50  # 电视剧分类最大剧集限制（超过则跳过不抓）
+ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳过不抓）
+
+# ==========================================
+# 【新增】：电视剧分类（Drama）允许抓取的地区过滤集合
+# ==========================================
+DRAMA_ALLOWED_REGIONS = {"美国", "韩国", "英国", "日本", "泰国"}
 
 # ==========================================
 # 黑名单播放源配置，遇到这些源将直接跳过不抓取
@@ -545,9 +556,10 @@ def parse_list_page(html: str) -> list[dict]:
                 except ValueError:
                     score_val = 0.0
 
-        # 【新增修改】：提取列表项中的年份信息（用于 Show 分类的特殊过滤）
+        # 【新增修改】：提取列表项中的年份和地区信息（用于 Show 和 Drama 分类的特殊过滤）
         # 结构：<p class="item-status text-overflow">2026 / 中国大陆 / 大陆综艺/汉语普通话</p>
         item_year = ""
+        item_region = ""
         status_p = li.select_one("div.name p.item-status")
         if status_p:
             status_text = clean_ws(status_p.get_text(strip=True))
@@ -555,13 +567,19 @@ def parse_list_page(html: str) -> list[dict]:
             year_match = re.match(r"^(\d{4})", status_text)
             if year_match:
                 item_year = year_match.group(1)
+            
+            # 使用斜杠分割提取地区（一般在第二个位置，即 index 为 1）
+            parts = [p.strip() for p in re.split(r'[/／]', status_text)]
+            if len(parts) >= 2:
+                item_region = parts[1]
 
         items.append({
             "name": name,
             "url": full_url,
             "info": info,
             "score": score_val,
-            "year": item_year  # 将提取到的年份传回
+            "year": item_year,    # 将提取到的年份传回
+            "region": item_region # 将提取到的地区传回
         })
     return items
 
@@ -864,8 +882,16 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 if item["year"] != "2026":
                     log(f"  ({idx_i}/{len(items)}) [跳过-年份不符] {item['name']} (年份: '{item['year']}' != '2026')")
                     continue
+            elif cat_name == "Drama":
+                # 电视剧分类：不仅过滤最低评分限制，同时增加地区过滤规则
+                if item["score"] < MIN_SCORE_LIMIT:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                    continue
+                if item["region"] not in DRAMA_ALLOWED_REGIONS:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-地区不符] {item['name']} (地区: '{item['region']}' 不在允许列表中)")
+                    continue
             else:
-                # 电影、电视剧、动漫分类：沿用原本的 6.5 评分过滤
+                # 电影、动漫分类：沿用原本的 7.0 评分过滤
                 if item["score"] < MIN_SCORE_LIMIT:
                     log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
                     continue
@@ -970,6 +996,20 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 # 没抓到任何在线源 → 跳过
                 if detail is None:
                     continue
+
+                # =============================================================
+                # 【新增修改】：针对 Drama 和 Anime 的最大剧集数限制过滤
+                # =============================================================
+                if detail.get("playlist"):
+                    # 获取所有渠道中 episodes 字典大小的最大值
+                    max_episodes = max(len(p.get("episodes", {})) for p in detail["playlist"])
+                    
+                    if cat_name == "Drama" and max_episodes > DRAMA_MAX_EPISODES_LIMIT:
+                        log(f"  ({idx_i}/{len(items)}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {DRAMA_MAX_EPISODES_LIMIT})", force=True)
+                        continue
+                    elif cat_name == "Anime" and max_episodes > ANIME_MAX_EPISODES_LIMIT:
+                        log(f"  ({idx_i}/{len(items)}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {ANIME_MAX_EPISODES_LIMIT})", force=True)
+                        continue
 
                 # 【修改处】：只有当确认有有效播放源，且不会被跳过时，才打印新增/更新的日志
                 log(f"  ({idx_i}/{len(items)}) {tag} {item['name']}  {item['url']}  info={item['info']}", force=True)

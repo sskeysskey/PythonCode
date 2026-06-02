@@ -80,8 +80,8 @@ def update_movie_quality_info_if_needed(existing, new_6vdy_episodes):
     """
     针对无集数概念的电影项目：
     如果原 info 包含 'TC', 'TS', '抢先', 'HC' 之一，
-    且新写入的播放源 episodes 的 key 中包含 'HD'，
-    则将 info 更新为 episodes 中第一个包含 'HD' 的 key。
+    且新写入的播放源 episodes 的 key 中包含 'HD'，则将 info 更新为该 key。
+    【新增】：如果新 key 中不含 'HD'，但新 key 本身也不含低画质关键字（如 '正片'），则也将 info 更新为新 key。
     """
     if not new_6vdy_episodes:
         return False
@@ -108,6 +108,19 @@ def update_movie_quality_info_if_needed(existing, new_6vdy_episodes):
         existing["info"] = target_hd_key
         print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
               f"新源包含高清格式，info 已更新为「{target_hd_key}」")
+        return True
+
+    # 4. 【新增兜底逻辑】如果没有找到 "HD" 关键字，但新源的第一个 key 本身不包含任何低画质关键字
+    first_new_key = list(new_6vdy_episodes.keys())[0]
+    first_new_key_upper = first_new_key.upper()
+    
+    # 检查新 key 是否不含低画质关键字
+    new_key_is_clean = not any(kw in first_new_key_upper for kw in keywords)
+    
+    if new_key_is_clean:
+        existing["info"] = first_new_key
+        print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
+              f"新源「{first_new_key}」无抢先标识，info 已更新为「{first_new_key}」")
         return True
 
     return False
