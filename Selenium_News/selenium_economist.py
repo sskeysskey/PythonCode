@@ -103,7 +103,7 @@ def main():
         print(f"警告：未找到 Chrome 二进制文件于 {CHROME_BINARY_PATH}，尝试使用系统默认路径...")
 
     # --- Headless模式 & 伪装设置 ---
-    # options.add_argument('--headless=new') 
+    options.add_argument('--headless=new') 
     options.add_argument('--window-size=1920,1080')
     
     # --- 伪装设置 (User-Agent & 去除自动化特征) ---

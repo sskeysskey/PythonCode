@@ -1,1558 +1,370 @@
+# -*- coding: utf-8 -*-
+"""
+独立详情页抓取工具：输入URL + 分类，自动写入 OVideos.json
+与原爬虫 gg8.ukuzy0.com 完全兼容
+"""
 import os
+import re
 import json
-import sqlite3
-import traceback
-from flask import Flask, jsonify, send_from_directory, request, g
-from flask_cors import CORS
-from flask_compress import Compress
-from werkzeug.utils import safe_join
-from datetime import datetime, timedelta
-import secrets, hashlib
-from functools import wraps
+import time
+import hashlib
+from urllib.parse import urljoin, urlparse, parse_qs
 
-app = Flask(__name__)
-CORS(app)
+import requests
+from bs4 import BeautifulSoup
 
-# 【新增】初始化 Gzip 压缩
-# 这会自动压缩 application/json, text/csv, text/plain 等响应
-# 默认压缩级别为 6，足以大幅减小文本文件体积
-Compress(app)
+# ===================== 【必须和你原爬虫一样】 =====================
+BASE_DOMAIN = "https://gg8.ukuzy0.com"
+JSON_PATH = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
+IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
+CHANNEL_NAME = "ukyun"
+PLAY_TYPE_PREFER = "ukm3u8"
 
-# --- 配置 ---
-# 获取当前 app.py 所在的目录 (即 LocalServer)
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# 获取上级目录 (即 /root 或 /Users/yanzhang/Coding)
-PARENT_DIR = os.path.dirname(CURRENT_DIR)
-
-BASE_RESOURCES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Resources')
-ALLOWED_APPS = ['ONews', 'Finance', 'Prediction', 'OVideo']
-ALLOWED_EVENT_TYPES = {'play', 'download_complete'}
-# 【修改】移除了 'read'，仅保留 view, listen
-ALLOWED_NEWS_EVENT_TYPES = {'view', 'listen'}
-ALLOWED_REPORT_TYPES = {'playback_failed', 'download_failed', 'media_error', 'content_mismatch', 'other'}
-report_last_time = {}  # 内存软限流: user_id -> 最近提交时间戳
-
-# 【新增】用户数据库路径
-USER_DB_PATH = os.path.join(PARENT_DIR, 'user_data.db')
-ANALYTICS_DB_PATH = os.path.join(PARENT_DIR, 'analytics.db')
-FINANCE_DB_PATH = os.path.join(BASE_RESOURCES_DIR, 'Finance', 'Finance.db')
-
-# ⚠️ 改成你自己的密码！
-ADMIN_PASSWORD_HASH = hashlib.sha256("YourStrongPassword123!".encode()).hexdigest()
-ADMIN_TOKENS = set()  # 内存存有效 token，重启失效（简单够用）
-
-# 【新增】简单的邀请码配置 (实际生产中可以放在数据库里)
-# 格式: "邀请码": "备注"
-VALID_INVITE_CODES = {
-    "ONEWS_FAMILY_2024": "Family Access",
-    "VIP_FRIEND_888": "Friend Access",
-    "DEV_TEST_KEY": "Developer Key"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": BASE_DOMAIN + "/",
 }
 
-# --- 数据库连接辅助函数 ---
-def require_admin(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        token = request.headers.get('X-Admin-Token') or request.args.get('token')
-        if token not in ADMIN_TOKENS:
-            return jsonify({"error": "Unauthorized"}), 401
-        return f(*args, **kwargs)
-    return wrapper
+REQUEST_TIMEOUT = 20
+RETRY = 3
 
-@app.teardown_appcontext
-def close_connection(exception):
-    db = getattr(g, '_finance_database', None)
-    if db is not None:
-        db.close()
-
-# --- 用户数据库初始化 (通用) ---
-def init_user_db():
-    print(f"检查用户数据库: {USER_DB_PATH}")
-    # 确保存储目录存在
-    os.makedirs(os.path.dirname(USER_DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-    c = conn.cursor()
-    
-    # 【核心修改】新的表结构
-    # finance_expire_at: Finance 付费过期时间
-    # finance_is_permanent: Finance 永久/亲友 VIP 标记 (0或1)
-    # onews_expire_at: ONews 付费过期时间
-    # onews_is_permanent: ONews 永久/亲友 VIP 标记 (0或1)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apple_user_id TEXT NOT NULL UNIQUE,
-            created_at TIMESTAMP NOT NULL,
-            last_login_at TIMESTAMP,
-            
-            finance_expire_at TIMESTAMP,
-            finance_is_permanent INTEGER DEFAULT 0,
-            
-            onews_expire_at TIMESTAMP,
-            onews_is_permanent INTEGER DEFAULT 0,
-            
-            prediction_expire_at TIMESTAMP,
-            prediction_is_permanent INTEGER DEFAULT 0
-        )
-    ''')
-    
-    # 2. 数据库升级逻辑：针对已经有旧数据库，需要补充新字段的老环境
-    # 尝试添加 prediction_expire_at 列
-    try:
-        c.execute('ALTER TABLE users ADD COLUMN prediction_expire_at TIMESTAMP')
-    except sqlite3.OperationalError:
-        # 如果捕获到 OperationalError，说明这列已经存在了，直接跳过即可
-        pass 
-
-    # 尝试添加 prediction_is_permanent 列
-    try:
-        c.execute('ALTER TABLE users ADD COLUMN prediction_is_permanent INTEGER DEFAULT 0')
-    except sqlite3.OperationalError:
-        pass
-    conn.commit()
-    conn.close()
-    print("用户数据库已准备就绪。")
-
-def init_analytics_db():
-    print(f"检查行为数据库: {ANALYTICS_DB_PATH}")
-    conn = sqlite3.connect(ANALYTICS_DB_PATH, timeout=60.0)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_video_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            video_url TEXT NOT NULL,
-            video_title TEXT,
-            event_type TEXT NOT NULL,
-            first_at TIMESTAMP NOT NULL,
-            last_at TIMESTAMP NOT NULL,
-            count INTEGER DEFAULT 1,
-            UNIQUE(user_id, video_url, event_type)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS event_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            video_url TEXT NOT NULL,
-            video_title TEXT,
-            event_type TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL
-        )
-    ''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_logs_time ON event_logs(created_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_logs_type ON event_logs(event_type)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_events_url ON user_video_events(video_url)')
-
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_news_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            user_type TEXT DEFAULT 'apple',   -- apple / device
-            article_key TEXT NOT NULL,        -- source_id|topic 的稳定键
-            article_topic TEXT,
-            source_id TEXT,
-            article_date TEXT,                -- 文章 yyMMdd
-            event_type TEXT NOT NULL,         -- view/listen
-            first_at TIMESTAMP NOT NULL,
-            last_at TIMESTAMP NOT NULL,
-            count INTEGER DEFAULT 1,
-            UNIQUE(user_id, article_key, event_type)
-        )
-    ''')
-    # 【新增】新闻流水表
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS news_event_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            user_type TEXT DEFAULT 'apple',
-            article_key TEXT NOT NULL,
-            article_topic TEXT,
-            source_id TEXT,
-            article_date TEXT,
-            event_type TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL
-        )
-    ''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_news_logs_time ON news_event_logs(created_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_news_logs_source ON news_event_logs(source_id)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_news_logs_type ON news_event_logs(event_type)')
-    
-    #【新增】错误链接举报表
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS video_link_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            video_title TEXT,
-            source_url TEXT,
-            episode_url TEXT,
-            channel_name TEXT,
-            episode_name TEXT,
-            real_url TEXT,
-            report_type TEXT,
-            note TEXT,
-            app_version TEXT,
-            first_at TIMESTAMP NOT NULL,
-            last_at TIMESTAMP NOT NULL,
-            count INTEGER DEFAULT 1,
-            status TEXT DEFAULT 'pending',
-            UNIQUE(user_id, episode_url, report_type)
-        )
-    ''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_reports_status ON video_link_reports(status)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_reports_ep ON video_link_reports(episode_url)')
-    conn.commit()
-    conn.close()
-    print("行为数据库已就绪。")
-
-# --- API 路由 ---
-@app.route('/api/<app_name>/check_version', methods=['GET'])
-def check_version(app_name):
-    print(f"收到来自应用 '{app_name}' 的版本检查请求")
-    if app_name not in ALLOWED_APPS:
-        return jsonify({"error": "无效的应用名称"}), 404
-    
-    # 获取服务器当前的日期，格式与你的 json 文件一致 (yyMMdd)
-    server_now = datetime.now()
-    server_date_str = server_now.strftime('%y%m%d')
-    
-    # 获取原始的 version.json 内容
-    version_file_path = os.path.join(BASE_RESOURCES_DIR, app_name, 'version.json')
-    if os.path.exists(version_file_path):
-        with open(version_file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        # 【关键】动态注入服务器当前日期
-        data['server_date'] = server_date_str
-        return jsonify(data)
-    else:
-        return jsonify({"error": "Version file not found"}), 404
-
-# --- 在 AppServer.py 中添加删除账号路由 ---
-@app.route('/api/<app_name>/user/delete', methods=['POST'])
-def delete_user(app_name):
-    data = request.get_json()
-    user_id = data.get('user_id')
-    
-    if not user_id: 
-        return jsonify({"error": "Missing user_id"}), 400
-        
-    conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-    c = conn.cursor()
-    try:
-        # 从数据库中永久删除该用户
-        c.execute("DELETE FROM users WHERE apple_user_id = ?", (user_id,))
-        if c.rowcount == 0:
-            return jsonify({"error": "User not found"}), 404
-        conn.commit()
-        print(f"[{app_name}] 用户 {user_id} 已成功删除账号。")
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        print(f"删除账号失败: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-# --- 用户认证与权限核心逻辑 ---
-def check_user_subscription_status(user_row, app_name):
-    """
-    检查用户权限。
-    逻辑：
-    1. 先检查该 App 的 is_permanent (亲友/后门)。如果是 1，直接返回 2099年。
-    2. 再检查该 App 的 expire_at (付费)。如果时间还没到，返回该时间。
-    3. 否则返回 False。
-    """
-    now = datetime.utcnow()
-    
-    # 根据传入的 app_name 决定查哪些字段
-    # 比如 app_name="Finance" -> prefix="finance"
-    prefix = app_name.lower() 
-    perm_col = f"{prefix}_is_permanent"
-    expire_col = f"{prefix}_expire_at"
-    
-    # 1. 【优先】检查永久 VIP (亲友/后门)
-    # 数据库里取出来可能是 1 或 True，做个兼容
-    if user_row[perm_col] == 1:
-        # 对于亲友，我们返回一个极远的未来时间，让前端显示“长期有效”或类似效果
-        return True, "2099-12-31T23:59:59"
-        
-    # 2. 检查付费订阅的过期时间
-    if user_row[expire_col]:
+# ============================ 工具函数 ============================
+def fetch(url):
+    last_err = None
+    for i in range(RETRY):
         try:
-            # 数据库存的是字符串，转回 datetime
-            expires_at = datetime.fromisoformat(str(user_row[expire_col]))
-            if expires_at > now:
-                return True, user_row[expire_col]
-            else:
-                # 【优化】如果已经过期，虽然逻辑上返回 False，
-                # 但可以在这里记录一下，或者由 App 端下次登录时更新
-                return False, user_row[expire_col]
+            r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            r.encoding = r.apparent_encoding or "utf-8"
+            if r.status_code == 200 and r.text:
+                return r.text
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(1)
+    print(f"[ERROR] 抓取失败: {url} -> {last_err}")
+    return None
+
+def load_json():
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
         except:
-            pass
-            
-    return False, None
+            return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
+    return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
 
-# --- 用户认证相关 ---
-def handle_auth(app_name):
+def save_json(data):
+    with open(JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def split_list_field(value):
+    if not value:
+        return []
+    parts = re.split(r"[，,/、\|\s]+", value)
+    return [p.strip() for p in parts if p.strip()]
+
+def normalize_episode_name(name):
+    if not name:
+        return name
+    if re.search(r'^\d+P$', name, re.IGNORECASE) or name.upper() == '4K':
+        return name
+    m = re.search(r"第\s*(\d+)\s*[集话期]", name)
+    if m:
+        return f"第{int(m.group(1)):02d}集"
+    m = re.search(r"^(\d+)\s*[集话期]?$", name)
+    if m:
+        return f"第{int(m.group(1)):02d}集"
+    return name
+
+def image_filename_from_url(url, name=""):
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    base = os.path.basename(parsed.path)
+    if not re.search(r'\.(jpg|jpeg|png|webp|gif)$', base, re.IGNORECASE):
+        h = hashlib.md5((name or url).encode("utf-8")).hexdigest()[:10]
+        base = f"{h}.jpg"
+    return base
+
+def download_image(url, filename):
+    if not url or not filename:
+        return False
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    target = os.path.join(IMAGE_DIR, filename)
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        print(f"[图片] 已存在: {filename}")
+        return True
     try:
-        data = request.get_json()
-        user_id = data.get('user_id')
-        # email 和 full_name 我们不再获取也不再存储
-        
-        if not user_id: return jsonify({"error": "Missing user_id"}), 400
-        conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE apple_user_id = ?", (user_id,))
-        user = c.fetchone()
-        now = datetime.utcnow()
-        is_subscribed = False
-        expiration_date = None
-        if user:
-            # 老用户：更新登录时间
-            c.execute("UPDATE users SET last_login_at = ? WHERE apple_user_id = ?", (now, user_id))
-            # 检查权限 (传入 app_name)
-            is_subscribed, expiration_date = check_user_subscription_status(user, app_name)
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True)
+        if r.status_code == 200:
+            with open(target, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+            print(f"[图片] 下载成功: {filename}")
+            return True
+    except:
+        print(f"[图片] 下载失败")
+    return False
+
+def reorder_item_keys(item):
+    new_item = {}
+    if "name" in item:
+        new_item["name"] = item["name"]
+    if "url" in item:
+        new_item["url"] = item["url"]
+    url_keys = []
+    for k in item.keys():
+        if k.startswith("url") and k != "url":
+            match = re.match(r"^url(\d+)$", k)
+            if match:
+                url_keys.append((int(match.group(1)), k))
+    url_keys.sort()
+    for _, k in url_keys:
+        new_item[k] = item[k]
+    preferred_order = [
+        "info", "update", "image", "导演", "编剧", "主演",
+        "类型", "地区", "date", "alias", "intro", "评分", "playlist"
+    ]
+    for k in preferred_order:
+        if k in item:
+            new_item[k] = item[k]
+    for k, v in item.items():
+        if k not in new_item:
+            new_item[k] = v
+    return new_item
+
+def find_next_url_key(item):
+    if not item.get("url"):
+        return "url"
+    i = 1
+    while item.get(f"url{i}"):
+        i += 1
+    return f"url{i}"
+
+# ===================== 【核心：解析详情页】 =====================
+def parse_detail(html):
+    soup = BeautifulSoup(html, "html.parser")
+    data = {
+        "image_url": "", "alias": "", "导演": "", "编剧": [], "主演": [],
+        "类型": [], "地区": "", "date": "", "update": "", "intro": "",
+        "playlist_episodes": []
+    }
+
+    # ===================== 【正确抓取：name + info】 =====================
+    # 抓取 name：<h2>甜性涩爱</h2>
+    name = ""
+    h2_tag = soup.select_one(".vod .vodh h2")
+    if h2_tag:
+        name = h2_tag.get_text(strip=True)
+
+    # 抓取 info：<span>超清</span>
+    info = ""
+    info_tag = soup.select_one(".vod .vodh span")
+    if info_tag:
+        info = info_tag.get_text(strip=True)
+
+    # update 时间（留空不影响）
+    update = ""
+
+    # 封面图
+    img = soup.select_one("div.vodImg img")
+    if img:
+        raw_url = (img.get("data-original") or img.get("src") or "").strip()
+        if "url=" in raw_url:
+            try:
+                qs = parse_qs(urlparse(raw_url).query)
+                if 'url' in qs:
+                    raw_url = qs['url'][0]
+            except:
+                pass
+        data["image_url"] = urljoin(BASE_DOMAIN + "/", raw_url)
+
+    # 详情信息
+    info_box = soup.select_one("div.vodinfobox")
+    if info_box:
+        for li in info_box.find_all("li"):
+            label_text = li.get_text(" ", strip=True)
+            span = li.find("span")
+            value = span.get_text(" ", strip=True) if span else ""
+            if "别名" in label_text:
+                data["alias"] = value
+            elif "导演" in label_text:
+                data["导演"] = value
+            elif "编剧" in label_text:
+                data["编剧"] = split_list_field(value)
+            elif "主演" in label_text:
+                data["主演"] = split_list_field(value)
+            elif "类型" in label_text:
+                data["类型"] = split_list_field(value)
+            elif "地区" in label_text:
+                data["地区"] = value
+            elif "上映" in label_text:
+                data["date"] = value
+            elif "更新" in label_text:
+                data["update"] = value
+
+    # 简介
+    play_infos = soup.select("div.vodplayinfo")
+    if play_infos:
+        data["intro"] = play_infos[0].get_text(" ", strip=True)
+
+    # 播放列表
+    chosen = None
+    for play_div in soup.select('div[id^="play_"]'):
+        suf = play_div.select_one("span.suf")
+        if suf and suf.get_text(strip=True).lower() == PLAY_TYPE_PREFER:
+            chosen = play_div
+            break
+
+    if chosen:
+        for li in chosen.select("ul li"):
+            a = li.find("a")
+            if not a:
+                continue
+            raw_text = (a.get("title") or a.get_text(" ", strip=True)).strip()
+            href_attr = a.get("href", "").strip()
+            m = re.search(r'(https?://[^\s]+)', raw_text)
+            if m:
+                url = m.group(1)
+                name_ep = raw_text[:m.start()].replace('$', '').strip()
+            elif href_attr.startswith("http"):
+                url = href_attr
+                name_ep = raw_text.replace('$', '').strip()
+            else:
+                continue
+            if not name_ep:
+                name_ep = "第1集"
+            data["playlist_episodes"].append((name_ep, url))
+
+    return name, info, update, data
+
+# ===================== 合并到 JSON =====================
+def merge_item(group_list, new_data, detail_url):
+    name = new_data["name"]
+    existing = None
+    for it in group_list:
+        if it.get("name") == name:
+            existing = it
+            break
+
+    merged_types = []
+    for t in new_data.get("类型", []):
+        if t and t not in merged_types:
+            merged_types.append(t)
+
+    ukyun_channel = {"name": CHANNEL_NAME, "episodes": {}}
+    for ep_title, ep_url in new_data.get("playlist_episodes", []):
+        key = normalize_episode_name(ep_title)
+        if key and ep_url:
+            ukyun_channel["episodes"][key] = ep_url
+
+    # 新建
+    if existing is None:
+        item = {
+            "name": name,
+            "url": detail_url,
+            "info": new_data.get("info", ""),
+            "update": new_data.get("update", ""),
+            "image": "",
+            "导演": new_data.get("导演", ""),
+            "编剧": new_data.get("编剧", []),
+            "主演": new_data.get("主演", []),
+            "类型": merged_types,
+            "地区": new_data.get("地区", ""),
+            "date": new_data.get("date", ""),
+            "alias": new_data.get("alias", ""),
+            "intro": new_data.get("intro", ""),
+            "评分": {"豆瓣": "", "IMDB": ""},
+            "playlist": [ukyun_channel] if ukyun_channel["episodes"] else [],
+        }
+        item = reorder_item_keys(item)
+        group_list.append(item)
+        return item, True
+
+    # 合并
+    next_key = find_next_url_key(existing)
+    existing[next_key] = detail_url
+    if new_data.get("info"):
+        existing["info"] = new_data["info"]
+    if new_data.get("update"):
+        existing["update"] = new_data["update"]
+
+    def fill(key, val):
+        if val and not existing.get(key):
+            existing[key] = val
+    fill("导演", new_data.get("导演"))
+    fill("编剧", new_data.get("编剧"))
+    fill("主演", new_data.get("主演"))
+    fill("地区", new_data.get("地区"))
+    fill("date", new_data.get("date"))
+    fill("alias", new_data.get("alias"))
+    fill("intro", new_data.get("intro"))
+
+    if ukyun_channel["episodes"]:
+        pl = existing.get("playlist", [])
+        idx = next((i for i, ch in enumerate(pl) if ch.get("name") == CHANNEL_NAME), -1)
+        if idx == -1:
+            pl.insert(0, ukyun_channel)
         else:
-            # 新用户：插入记录。注意这里不需要记录 app_source 了，因为 apple_id 唯一
-            c.execute(
-                "INSERT INTO users (apple_user_id, created_at, last_login_at) VALUES (?, ?, ?)",
-                (user_id, now, now)
-            )
-            # 新用户肯定没订阅且不是VIP
-        
-        conn.commit()
-        conn.close()
-        return jsonify({
-            "status": "success", 
-            "is_subscribed": is_subscribed,
-            "subscription_expires_at": expiration_date
-        }), 200
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-def handle_status_check(app_name):
-    user_id = request.args.get('user_id')
-    if not user_id: return jsonify({"error": "Missing user_id"}), 400
-    conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("SELECT * FROM users WHERE apple_user_id = ?", (user_id,))
-        row = c.fetchone()
-        is_subscribed = False
-        expires_at_str = None
-        if row:
-            # 【修改】使用统一的检查逻辑
-            is_subscribed, expires_at_str = check_user_subscription_status(row, app_name)
-        return jsonify({"is_subscribed": is_subscribed, "subscription_expires_at": expires_at_str})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-# 【新增】处理邀请码兑换
-def handle_redeem_invite(app_name):
-    data = request.get_json()
-    user_id = data.get('user_id')
-    invite_code = data.get('invite_code')
-    if not user_id or not invite_code:
-        return jsonify({"error": "缺少参数"}), 400
-        
-    # 验证邀请码
-    if invite_code not in VALID_INVITE_CODES:
-        return jsonify({"error": "无效的邀请码"}), 403
-    conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-    c = conn.cursor()
-    try:
-        # 确定要更新哪个字段
-        perm_col = f"{app_name.lower()}_is_permanent"
-        
-        # 设置永久 VIP 标记为 1
-        query = f"UPDATE users SET {perm_col} = 1 WHERE apple_user_id = ?"
-        c.execute(query, (user_id,))
-        if c.rowcount == 0:
-            return jsonify({"error": "用户不存在，请先登录"}), 404
-        conn.commit()
-        print(f"[{app_name}] 用户 {user_id} 使用邀请码 {invite_code} 升级为永久 VIP")
-        
-        return jsonify({
-            "status": "success",
-            "is_subscribed": True,
-            "subscription_expires_at": "2099-12-31T23:59:59"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-def handle_payment(app_name):
-    data = request.get_json()
-    user_id = data.get('user_id')
-    days = data.get('days', 30) # 保持默认值用于兼容旧版本或手动充值
-    # 【新增】接收客户端传来的真实过期时间字符串 (ISO 8601 格式)
-    explicit_expiry = data.get('explicit_expiry') 
-    if not user_id: return jsonify({"error": "Missing user_id"}), 400
-    conn = sqlite3.connect(USER_DB_PATH, timeout=60.0)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("SELECT * FROM users WHERE apple_user_id = ?", (user_id,))
-        row = c.fetchone()
-        if not row: return jsonify({"error": "User not found"}), 404
-        now = datetime.utcnow()
-        
-        # 确定要更新哪个字段
-        expire_col = f"{app_name.lower()}_expire_at"
-        new_expiry_str = ""
-
-        # 【核心修改】逻辑分支
-        if explicit_expiry:
-            # 方案 A: 客户端传了真实的 Apple 过期时间，直接使用
-            # 这样就实现了"同步"，而不是"充值"
-            print(f"[{app_name}] 同步用户 {user_id} 订阅时间至: {explicit_expiry}")
-            new_expiry_str = explicit_expiry
-        else:
-            # 方案 B: 旧逻辑 (充值模式) - 依然保留以备不时之需
-            current_expiry_str = row[expire_col]
-            new_expiry = now + timedelta(days=days) 
-            
-            if current_expiry_str:
-                try:
-                    current_expiry = datetime.fromisoformat(current_expiry_str)
-                    if current_expiry > now:
-                        new_expiry = current_expiry + timedelta(days=days)
-                except: pass
-            new_expiry_str = new_expiry.isoformat()
-        
-        # 执行更新
-        query = f"UPDATE users SET {expire_col} = ? WHERE apple_user_id = ?"
-        c.execute(query, (new_expiry_str, user_id))
-        conn.commit()
-        return jsonify({
-            "status": "success", 
-            "is_subscribed": True, 
-            "subscription_expires_at": new_expiry_str
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-# --- ONews 路由 (保持兼容) ---
-@app.route('/api/ONews/auth/apple', methods=['POST'])
-def onews_auth(): return handle_auth('ONews')
-
-@app.route('/api/ONews/payment/subscribe', methods=['POST'])
-def onews_pay(): return handle_payment('ONews')
-
-# 注意状态检查也要传 App 名，因为我们要看特定 App 的权限
-@app.route('/api/ONews/user/status', methods=['GET'])
-def onews_status(): 
-    # 这里复用 handle_auth 里的 check 逻辑，稍微改写一下 handle_status_check
-    return handle_status_check('ONews') 
-
-# ONews 兑换路由
-@app.route('/api/ONews/user/redeem', methods=['POST'])
-def onews_redeem(): return handle_redeem_invite('ONews')
-
-# --- Prediction 路由 ---
-@app.route('/api/Prediction/auth/apple', methods=['POST'])
-def prediction_auth(): return handle_auth('Prediction')
-
-@app.route('/api/Prediction/payment/subscribe', methods=['POST'])
-def prediction_pay(): return handle_payment('Prediction')
-
-@app.route('/api/Prediction/user/status', methods=['GET'])
-def prediction_status(): return handle_status_check('Prediction')
-
-@app.route('/api/Prediction/user/redeem', methods=['POST'])
-def prediction_redeem(): return handle_redeem_invite('Prediction')
-
-@app.route('/api/Prediction/user/delete', methods=['POST'])
-def prediction_delete(): return delete_user('Prediction')
-
-# --- Finance 路由 ---
-@app.route('/api/Finance/auth/apple', methods=['POST'])
-def finance_auth(): return handle_auth('Finance')
-
-@app.route('/api/Finance/payment/subscribe', methods=['POST'])
-def finance_pay(): return handle_payment('Finance')
-
-@app.route('/api/Finance/user/status', methods=['GET'])
-def finance_status(): return handle_status_check('Finance')
-
-# 注册 Finance 的兑换路由！！！
-@app.route('/api/Finance/user/redeem', methods=['POST'])
-def finance_redeem(): return handle_redeem_invite('Finance')
-
-    
-@app.route('/api/ONews/track', methods=['POST'])
-def track_news_event():
-    try:
-        data = request.get_json()
-        user_id       = data.get('user_id')
-        user_type     = data.get('user_type', 'apple')
-        article_key   = data.get('article_key')
-        article_topic = data.get('article_topic', '')
-        source_id     = data.get('source_id', '')
-        article_date  = data.get('article_date', '')
-        event_type    = data.get('event_type')
-        if not user_id or not article_key or event_type not in ALLOWED_NEWS_EVENT_TYPES:
-            return jsonify({"error": "Invalid params"}), 400
-        now = datetime.utcnow().isoformat()
-        conn = sqlite3.connect(ANALYTICS_DB_PATH, timeout=30.0)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO user_news_events
-                (user_id, user_type, article_key, article_topic, source_id,
-                 article_date, event_type, first_at, last_at, count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(user_id, article_key, event_type)
-            DO UPDATE SET last_at = ?, count = count + 1
-        ''', (user_id, user_type, article_key, article_topic, source_id,
-              article_date, event_type, now, now, now))
-        c.execute('''
-            INSERT INTO news_event_logs
-                (user_id, user_type, article_key, article_topic, source_id,
-                 article_date, event_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, user_type, article_key, article_topic, source_id,
-              article_date, event_type, now))
-        conn.commit()
-        conn.close()
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-    
-@app.route('/admin/login', methods=['POST'])
-def admin_login():
-    pwd = request.get_json().get('password', '')
-    if hashlib.sha256(pwd.encode()).hexdigest() == ADMIN_PASSWORD_HASH:
-        token = secrets.token_urlsafe(32)
-        ADMIN_TOKENS.add(token)
-        return jsonify({"token": token})
-    return jsonify({"error": "密码错误"}), 401
-
-def _query_analytics(sql, params=()):
-    conn = sqlite3.connect(ANALYTICS_DB_PATH, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-# 今日 / 总览
-@app.route('/admin/api/news/overview', methods=['GET'])
-@require_admin
-def admin_news_overview():
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    return jsonify({
-        "total_users":     _query_analytics("SELECT COUNT(DISTINCT user_id) c FROM news_event_logs")[0]['c'],
-        "total_view":      _query_analytics("SELECT COUNT(*) c FROM news_event_logs WHERE event_type='view'")[0]['c'],
-        "total_listen":    _query_analytics("SELECT COUNT(*) c FROM news_event_logs WHERE event_type='listen'")[0]['c'],
-        "today_active":    _query_analytics("SELECT COUNT(DISTINCT user_id) c FROM news_event_logs WHERE date(created_at)=?", (today,))[0]['c'],
-        "today_listen":    _query_analytics("SELECT COUNT(*) c FROM news_event_logs WHERE event_type='listen' AND date(created_at)=?", (today,))[0]['c'],
-        "today_view":      _query_analytics("SELECT COUNT(*) c FROM news_event_logs WHERE event_type='view' AND date(created_at)=?", (today,))[0]['c'],
-    })
-
-# 热门新闻源
-@app.route('/admin/api/news/top_sources', methods=['GET'])
-@require_admin
-def admin_top_sources():
-    period = request.args.get('period', '7d')
-    where = ""
-    if period == 'today':
-        where = "AND date(created_at) = date('now')"
-    elif period == '7d':
-        where = "AND created_at >= datetime('now', '-7 days')"
-    
-    sql = f'''
-        SELECT source_id,
-               COUNT(DISTINCT user_id) AS unique_users,
-               COUNT(DISTINCT article_key) AS unique_articles,
-               COUNT(*) AS total_reads
-        FROM news_event_logs
-        WHERE event_type IN ('listen', 'view') {where}
-        GROUP BY source_id
-        ORDER BY total_reads DESC
-    '''
-    return jsonify(_query_analytics(sql))
-
-# 热门文章
-@app.route('/admin/api/news/top_articles', methods=['GET'])
-@require_admin
-def admin_top_articles():
-    event_type = request.args.get('type', 'listen') # 默认改为 listen
-    period = request.args.get('period', '7d')
-    where = ""
-    if period == 'today':
-        where = "AND date(created_at) = date('now')"
-    elif period == '7d':
-        where = "AND created_at >= datetime('now', '-7 days')"
-    sql = f'''
-        SELECT article_key, article_topic, source_id,
-               COUNT(DISTINCT user_id) AS unique_users,
-               COUNT(*) AS total_count
-        FROM news_event_logs
-        WHERE event_type = ? {where}
-        GROUP BY article_key
-        ORDER BY unique_users DESC
-        LIMIT 30
-    '''
-    return jsonify(_query_analytics(sql, (event_type,)))
-
-# 新闻 - 每日趋势（最近30天）
-@app.route('/admin/api/news/daily_trend', methods=['GET'])
-@require_admin
-def admin_news_daily_trend():
-    rows = _query_analytics('''
-        SELECT date(created_at) AS day,
-               event_type,
-               COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS uu
-        FROM news_event_logs
-        WHERE created_at >= datetime('now', '-30 days')
-        GROUP BY day, event_type
-        ORDER BY day ASC
-    ''')
-    return jsonify(rows)
-
-# 新闻 - 活跃用户榜
-@app.route('/admin/api/news/top_users', methods=['GET'])
-@require_admin
-def admin_news_top_users():
-    rows = _query_analytics('''
-        SELECT user_id,
-               user_type,
-               COUNT(DISTINCT article_key) AS unique_articles,
-               SUM(CASE WHEN event_type='listen' THEN 1 ELSE 0 END) AS listen_count,
-               SUM(CASE WHEN event_type='view' THEN 1 ELSE 0 END) AS view_count,
-               MAX(created_at) AS last_active
-        FROM news_event_logs
-        GROUP BY user_id
-        ORDER BY unique_articles DESC
-        LIMIT 50
-    ''')
-    return jsonify(rows)
-
-# 新闻 - 某篇文章的读者列表
-@app.route('/admin/api/news/article_users', methods=['GET'])
-@require_admin
-def admin_news_article_users():
-    article_key = request.args.get('article_key')
-    event_type = request.args.get('type', 'listen')
-    rows = _query_analytics('''
-        SELECT user_id, user_type, first_at, last_at, count
-        FROM user_news_events
-        WHERE article_key = ? AND event_type = ?
-        ORDER BY last_at DESC
-    ''', (article_key, event_type))
-    return jsonify(rows)
-
-# 新闻 - 某个用户的详细阅读历史（按日期分组）
-@app.route('/admin/api/news/user_details', methods=['GET'])
-@require_admin
-def admin_news_user_details():
-    user_id = request.args.get('user_id')
-    event_type = request.args.get('type') # listen 或 view
-    if not user_id or not event_type:
-        return jsonify({"error": "Missing parameters"}), 400
-        
-    # 查询该用户该事件的所有流水，按日期和文章去重，按流水时间降序
-    sql = '''
-        SELECT article_date, article_topic, source_id, MAX(created_at) as last_time, COUNT(*) as click_count
-        FROM news_event_logs
-        WHERE user_id = ? AND event_type = ?
-        GROUP BY article_date, article_key
-        ORDER BY article_date DESC, last_time DESC
-    '''
-    rows = _query_analytics(sql, (user_id, event_type))
-    return jsonify(rows)
-
-# 概览：今日 / 总计
-@app.route('/admin/api/overview', methods=['GET'])
-@require_admin
-def admin_overview():
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    return jsonify({
-        "total_users":          _query_analytics("SELECT COUNT(DISTINCT user_id) AS c FROM event_logs")[0]['c'],
-        "total_play_events":    _query_analytics("SELECT COUNT(*) AS c FROM event_logs WHERE event_type='play'")[0]['c'],
-        "total_download_events":_query_analytics("SELECT COUNT(*) AS c FROM event_logs WHERE event_type='download_complete'")[0]['c'],
-        "today_active_users":   _query_analytics("SELECT COUNT(DISTINCT user_id) AS c FROM event_logs WHERE date(created_at)=?", (today,))[0]['c'],
-        "today_play":           _query_analytics("SELECT COUNT(*) AS c FROM event_logs WHERE event_type='play' AND date(created_at)=?", (today,))[0]['c'],
-        "today_download":       _query_analytics("SELECT COUNT(*) AS c FROM event_logs WHERE event_type='download_complete' AND date(created_at)=?", (today,))[0]['c'],
-        "pending_reports":      _query_analytics("SELECT COUNT(DISTINCT episode_url) AS c FROM video_link_reports WHERE status='pending'")[0]['c'],
-    })
-
-# 视频排行榜（区分唯一用户数 / 总次数）
-@app.route('/admin/api/top_videos', methods=['GET'])
-@require_admin
-def admin_top_videos():
-    event_type = request.args.get('type', 'play')   # play / download_complete
-    period = request.args.get('period', 'all')      # today / 7d / all
-    limit = int(request.args.get('limit', 20))
-    where_time = ""
-    params = [event_type]
-    if period == 'today':
-        where_time = "AND date(created_at) = date('now')"
-    elif period == '7d':
-        where_time = "AND created_at >= datetime('now', '-7 days')"
-
-    # 用流水表统计：唯一用户数 + 总触发次数
-    sql = f'''
-        SELECT video_url, video_title,
-               COUNT(DISTINCT user_id) AS unique_users,
-               COUNT(*) AS total_count
-        FROM event_logs
-        WHERE event_type = ? {where_time}
-        GROUP BY video_url
-        ORDER BY unique_users DESC, total_count DESC
-        LIMIT ?
-    '''
-    params.append(limit)
-    return jsonify(_query_analytics(sql, params))
-
-# 某个视频的观看用户列表
-@app.route('/admin/api/video_users', methods=['GET'])
-@require_admin
-def admin_video_users():
-    video_url = request.args.get('video_url')
-    event_type = request.args.get('type', 'play')
-    rows = _query_analytics('''
-        SELECT user_id, first_at, last_at, count
-        FROM user_video_events
-        WHERE video_url = ? AND event_type = ?
-        ORDER BY last_at DESC
-    ''', (video_url, event_type))
-    return jsonify(rows)
-
-# 每日趋势（最近 30 天）
-@app.route('/admin/api/daily_trend', methods=['GET'])
-@require_admin
-def admin_daily_trend():
-    rows = _query_analytics('''
-        SELECT date(created_at) AS day,
-               event_type,
-               COUNT(*) AS cnt,
-               COUNT(DISTINCT user_id) AS uu
-        FROM event_logs
-        WHERE created_at >= datetime('now', '-30 days')
-        GROUP BY day, event_type
-        ORDER BY day ASC
-    ''')
-    return jsonify(rows)
-
-# 错误链接举报列表(按 集数+类型 聚合)
-@app.route('/admin/api/video_reports', methods=['GET'])
-@require_admin
-def admin_video_reports():
-    status = request.args.get('status', 'pending')   # pending / all
-    where = "WHERE status='pending'" if status == 'pending' else ""
-    sql = f'''
-        SELECT video_title, source_url, episode_url, channel_name, episode_name,
-               report_type,
-               MAX(real_url) AS real_url,
-               COUNT(DISTINCT user_id) AS unique_users,
-               SUM(count) AS total_count,
-               MAX(last_at) AS last_at,
-               GROUP_CONCAT(DISTINCT NULLIF(note,'')) AS notes
-        FROM video_link_reports
-        {where}
-        GROUP BY episode_url, report_type
-        ORDER BY unique_users DESC, total_count DESC
-        LIMIT 200
-    '''
-    return jsonify(_query_analytics(sql))
-
-# 标记某条举报为已处理
-@app.route('/admin/api/resolve_report', methods=['POST'])
-@require_admin
-def admin_resolve_report():
-    data = request.get_json() or {}
-    episode_url = data.get('episode_url')
-    if not episode_url:
-        return jsonify({"error": "Missing episode_url"}), 400
-    conn = sqlite3.connect(ANALYTICS_DB_PATH, timeout=30.0)
-    c = conn.cursor()
-    c.execute("UPDATE video_link_reports SET status='resolved' WHERE episode_url=?", (episode_url,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"})
-
-# 活跃用户排行
-@app.route('/admin/api/top_users', methods=['GET'])
-@require_admin
-def admin_top_users():
-    rows = _query_analytics('''
-        SELECT user_id,
-               COUNT(DISTINCT video_url) AS unique_videos,
-               COUNT(*) AS total_actions,
-               MAX(created_at) AS last_active
-        FROM event_logs
-        GROUP BY user_id
-        ORDER BY unique_videos DESC
-        LIMIT 50
-    ''')
-    return jsonify(rows)
-
-# 【新增】一键清除数据库 API
-@app.route('/admin/api/clear_db', methods=['POST'])
-@require_admin
-def admin_clear_db():
-    data = request.get_json() or {}
-    clear_type = data.get('type')  # 'analytics', 'users', 'all'
-    
-    if clear_type not in ['analytics', 'users', 'all']:
-        return jsonify({"error": "无效的清除类型"}), 400
-    try:
-        # 1. 清除行为统计数据
-        if clear_type in ['analytics', 'all']:
-            conn = sqlite3.connect(ANALYTICS_DB_PATH, timeout=30.0)
-            c = conn.cursor()
-            c.execute("DELETE FROM user_video_events")
-            c.execute("DELETE FROM event_logs")
-            c.execute("DELETE FROM user_news_events")
-            c.execute("DELETE FROM news_event_logs")
-            c.execute("DELETE FROM video_link_reports")
-            conn.commit()
-            conn.close()
-            
-        # 2. 清除用户及订阅数据
-        if clear_type in ['users', 'all']:
-            conn = sqlite3.connect(USER_DB_PATH, timeout=30.0)
-            c = conn.cursor()
-            c.execute("DELETE FROM users")
-            conn.commit()
-            conn.close()
-        return jsonify({"status": "success", "message": f"成功清空了 {clear_type} 相关的数据。"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Dashboard 网页本体
-@app.route('/admin', methods=['GET'])
-def admin_page():
-    return ADMIN_HTML  # 见下方
-
-ADMIN_HTML = r'''
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ONews 行为监控</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-  .login-box{max-width:380px;margin:120px auto;background:#1e293b;padding:40px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
-  .login-box h1{margin-bottom:24px;font-size:22px;text-align:center}
-  input,button{width:100%;padding:12px 14px;border-radius:10px;border:none;font-size:15px}
-  input{background:#0f172a;color:#e2e8f0;border:1px solid #334155;margin-bottom:14px}
-  button{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;cursor:pointer;font-weight:600}
-  button:hover{opacity:.9}
-  .container{max-width:1400px;margin:0 auto;padding:24px;display:none}
-  .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px}
-  .header h1{font-size:22px;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  
-  .module-switch{display:flex;gap:8px;background:#1e293b;padding:6px;border-radius:12px;border:1px solid #334155}
-  .module-tab{padding:8px 18px;border-radius:8px;font-size:13px;cursor:pointer;font-weight:600;color:#94a3b8;transition:all .2s}
-  .module-tab.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white}
-  
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
-  .stat-card{background:#1e293b;padding:20px;border-radius:14px;border:1px solid #334155}
-  .stat-card .label{font-size:12px;color:#94a3b8;margin-bottom:8px}
-  .stat-card .value{font-size:28px;font-weight:700;background:linear-gradient(135deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
-  .row-full{display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:24px}
-  @media(max-width:900px){.row{grid-template-columns:1fr}}
-  .panel{background:#1e293b;padding:20px;border-radius:14px;border:1px solid #334155}
-  .panel h3{margin-bottom:16px;font-size:15px;color:#cbd5e1;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
-  .tabs{display:flex;gap:6px}
-  .tab{padding:6px 12px;background:#0f172a;border-radius:8px;font-size:12px;cursor:pointer;border:1px solid #334155}
-  .tab.active{background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-color:transparent}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #334155}
-  th{color:#94a3b8;font-weight:500;font-size:12px}
-  tr:hover td{background:#0f172a}
-  .pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px}
-  .pill-green{background:rgba(34,197,94,.2);color:#86efac}
-  .pill-blue{background:rgba(59,130,246,.2);color:#93c5fd}
-  .pill-purple{background:rgba(167,139,250,.2);color:#c4b5fd}
-  .pill-orange{background:rgba(251,146,60,.2);color:#fdba74}
-  .err{color:#f87171;text-align:center;margin-top:10px;font-size:13px}
-  .clickable{cursor:pointer;color:#60a5fa}
-  .clickable:hover{text-decoration:underline}
-  canvas{max-height:280px}
-  .module-section{display:none}
-  .module-section.active{display:block}
-  
-  .danger-zone{border:1px solid #ef4444;background:rgba(239,68,68,.05)}
-  .danger-zone h3{color:#f87171 !important}
-  .btn-group{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
-  .btn-danger{background:#dc2626;width:auto;padding:10px 20px;font-size:13px;border-radius:8px}
-  .btn-danger:hover{background:#b91c1c}
-  
-  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:1000}
-  .modal{background:#1e293b;border:1px solid #ef4444;border-radius:14px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}
-  .modal h4{color:#f87171;font-size:18px;margin-bottom:12px}
-  .modal p{font-size:14px;color:#cbd5e1;line-height:1.6;margin-bottom:20px}
-  .modal-btns{display:flex;justify-content:flex-end;gap:12px}
-  .modal-btn{padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;border:none;font-weight:600}
-  .btn-cancel{background:#475569;color:#e2e8f0}
-  .btn-confirm-final{background:#dc2626;color:white}
-  
-  /* 排序指示样式 */
-  .sortable { cursor: pointer; user-select: none; }
-  .sortable:hover { color: #60a5fa; }
-</style>
-</head>
-<body>
-
-<div class="login-box" id="loginBox">
-  <h1>🎬 ONews 后台</h1>
-  <input type="password" id="pwdInput" placeholder="管理员密码" />
-  <button onclick="login()">登录</button>
-  <div class="err" id="loginErr"></div>
-</div>
-
-<div class="container" id="dashboard">
-  <div class="header">
-    <h1>📊 ONews 用户行为监控</h1>
-    <div class="module-switch">
-      <div class="module-tab active" id="tabVideo" onclick="switchModule('video')">🎬 视频模块</div>
-      <div class="module-tab" id="tabNews" onclick="switchModule('news')">📰 新闻模块</div>
-    </div>
-    <div>
-      <span style="color:#94a3b8;font-size:13px;margin-right:12px" id="updateTime"></span>
-      <button onclick="loadCurrentModule()" style="width:auto;padding:8px 16px;font-size:13px">🔄 刷新</button>
-    </div>
-  </div>
-
-  <!-- ============ 视频模块 ============ -->
-  <div class="module-section active" id="moduleVideo">
-    <div class="stats" id="statsBox"></div>
-    <div class="row-full">
-      <div class="panel">
-        <h3>📈 视频 - 最近 30 天趋势</h3>
-        <canvas id="trendChart"></canvas>
-      </div>
-    </div>
-    <div class="panel danger-zone" style="margin-bottom:24px">
-      <h3>🚨 错误链接举报
-        <span class="tabs">
-          <span class="tab active" onclick="switchReportStatus(this,'pending')">待处理</span>
-          <span class="tab" onclick="switchReportStatus(this,'all')">全部</span>
-        </span>
-      </h3>
-      <table>
-        <thead><tr>
-          <th>#</th><th>视频 / 播放页URL</th><th>播放源 (线路)</th><th>集数</th><th>问题</th>
-          <th>举报人</th><th>次数</th><th>m3u8</th><th>操作</th>
-        </tr></thead>
-        <tbody id="reportBody"></tbody>
-      </table>
-    </div>
-    <div class="row">
-      <div class="panel">
-        <h3>
-          🔥 视频播放榜
-          <span class="tabs">
-            <span class="tab active" onclick="switchPlayPeriod(this,'today')">今日</span>
-            <span class="tab" onclick="switchPlayPeriod(this,'7d')">7天</span>
-            <span class="tab" onclick="switchPlayPeriod(this,'all')">总计</span>
-          </span>
-        </h3>
-        <table>
-          <thead><tr><th>#</th><th>视频</th><th>用户数</th><th>次数</th></tr></thead>
-          <tbody id="topPlayBody"></tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h3>
-          📥 视频下载榜
-          <span class="tabs">
-            <span class="tab active" onclick="switchDlPeriod(this,'today')">今日</span>
-            <span class="tab" onclick="switchDlPeriod(this,'7d')">7天</span>
-            <span class="tab" onclick="switchDlPeriod(this,'all')">总计</span>
-          </span>
-        </h3>
-        <table>
-          <thead><tr><th>#</th><th>视频</th><th>用户数</th><th>次数</th></tr></thead>
-          <tbody id="topDlBody"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="panel" style="margin-bottom:24px">
-      <h3>👥 视频 - 活跃用户榜</h3>
-      <table>
-        <thead><tr><th>#</th><th>User ID</th><th>看过视频数</th><th>总操作数</th><th>最后活跃</th></tr></thead>
-        <tbody id="topUsersBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ============ 新闻模块 ============ -->
-  <div class="module-section" id="moduleNews">
-    <!-- 1. 统计卡片 -->
-    <div class="stats" id="newsStatsBox"></div>
-    
-    <!-- 2. 【位置上移】新闻 - 活跃读者榜 -->
-    <div class="panel" style="margin-bottom:24px">
-      <h3>👥 新闻 - 活跃读者榜 <span style="font-size:12px; color:#94a3b8; font-weight:normal;">(点击“所有文章”或“最后活跃”可切换排序)</span></h3>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>user id_apple</th>
-            <th>user id_device</th>
-            <th class="sortable" onclick="sortNewsUsers('unique_articles')">所有文章 <span id="sort_unique_articles">▼</span></th>
-            <th>朗读</th>
-            <th>曝光</th>
-            <th class="sortable" onclick="sortNewsUsers('last_active')">最后活跃 <span id="sort_last_active"></span></th>
-          </tr>
-        </thead>
-        <tbody id="topNewsUsersBody"></tbody>
-      </table>
-    </div>
-
-    <!-- 3. 趋势图表 -->
-    <div class="row-full">
-      <div class="panel">
-        <h3>📈 新闻 - 最近 30 天趋势</h3>
-        <canvas id="newsTrendChart"></canvas>
-      </div>
-    </div>
-    
-    <!-- 4. 新闻源热度榜与热门文章榜 -->
-    <div class="row">
-      <div class="panel">
-        <h3>
-          📰 新闻源热度榜
-          <span class="tabs">
-            <span class="tab" onclick="switchSourcePeriod(this,'today')">今日</span>
-            <span class="tab active" onclick="switchSourcePeriod(this,'7d')">7天</span>
-            <span class="tab" onclick="switchSourcePeriod(this,'all')">总计</span>
-          </span>
-        </h3>
-        <table>
-          <thead><tr><th>#</th><th>新闻源</th><th>用户数</th><th>文章数</th><th>阅读次数</th></tr></thead>
-          <tbody id="topSourcesBody"></tbody>
-        </table>
-      </div>
-      <div class="panel">
-        <h3>
-          🔥 热门文章榜
-          <span class="tabs">
-            <span class="tab" onclick="switchArticleType(this,'listen')">朗读</span>
-            <span class="tab active" onclick="switchArticleType(this,'view')">曝光</span>
-          </span>
-          <span class="tabs">
-            <span class="tab" onclick="switchArticlePeriod(this,'today')">今日</span>
-            <span class="tab active" onclick="switchArticlePeriod(this,'7d')">7天</span>
-            <span class="tab" onclick="switchArticlePeriod(this,'all')">总计</span>
-          </span>
-        </h3>
-        <table>
-          <thead><tr><th>#</th><th>文章</th><th>来源</th><th>用户</th><th>次数</th></tr></thead>
-          <tbody id="topArticlesBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- 危险区 -->
-  <div class="panel danger-zone" style="margin-bottom:24px">
-    <h3>⚠️ 数据库维护与管理 (危险区)</h3>
-    <p style="font-size:13px;color:#94a3b8;margin-bottom:15px;">破坏性操作不可恢复，请慎用。</p>
-    <div class="btn-group">
-      <button class="btn-danger" onclick="triggerClear('analytics')">🧹 清空所有行为统计</button>
-      <button class="btn-danger" onclick="triggerClear('users')">👤 清空用户及订阅数据</button>
-      <button class="btn-danger" onclick="triggerClear('all')">🔥 彻底清空所有数据</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="confirmModal">
-  <div class="modal">
-    <h4 id="modalTitle">⚠️ 危险操作确认</h4>
-    <p id="modalMsg"></p>
-    <div class="modal-btns">
-      <button class="modal-btn btn-cancel" onclick="closeModal()">取消</button>
-      <button class="modal-btn btn-confirm-final" id="modalConfirmBtn">确认执行</button>
-    </div>
-  </div>
-</div>
-
-<script>
-let TOKEN = localStorage.getItem('admin_token') || '';
-let currentModule = 'video';
-let trendChart, newsTrendChart;
-let playPeriod='today', dlPeriod='today';
-let sourcePeriod='7d';
-let articleType='view', articlePeriod='7d';
-let pendingClearType = '';
-let reportStatus = 'pending';
-const REPORT_TYPE_MAP = {
-  playback_failed:'无法播放', download_failed:'无法缓存',
-  media_error:'音画异常', content_mismatch:'内容不符', other:'其他'
-};
-
-// 缓存新闻用户数据，用于前端快速排序
-let cachedNewsUsers = [];
-let newsUserSortField = 'unique_articles'; // 默认按文章数排序
-let newsUserSortOrder = 'desc';            // 默认降序
-
-async function loadVideoReports(){
-  const data = await api(`/admin/api/video_reports?status=${reportStatus}`);
-  if(!data) return;
-  document.getElementById('reportBody').innerHTML = data.length===0
-    ? '<tr><td colspan="9" style="text-align:center;color:#64748b">暂无举报</td></tr>'
-    : data.map((r,i)=>{
-        const typeName = REPORT_TYPE_MAP[r.report_type] || r.report_type;
-        // 1. 提取播放源线路和集数
-        const channel = r.channel_name ? `<span class="pill pill-blue">${r.channel_name}</span>` : '<span style="color:#64748b">-</span>';
-        const episode = r.episode_name ? `<span class="pill pill-purple">${r.episode_name}</span>` : '<span style="color:#64748b">-</span>';
-        const realLink = r.real_url
-          ? `<a href="${r.real_url}" target="_blank" style="color:#60a5fa">打开</a>` : '-';
-        const noteTip = r.notes ? ` title="${(r.notes||'').replace(/"/g,'')}"` : '';
-        return `<tr>
-          <td>${i+1}</td>
-          <td${noteTip}><strong>${r.video_title||'(未知)'}</strong><br>
-              <span style="font-size:11px;color:#64748b">${(r.episode_url||'').substring(0,48)}</span></td>
-          <td>${channel}</td>
-          <td>${episode}</td>
-          <td><span class="pill pill-orange">${typeName}</span></td>
-          <td><span class="pill pill-green">${r.unique_users}</span></td>
-          <td>${r.total_count}</td>
-          <td>${realLink}</td>
-          <td><span class="clickable" onclick="resolveReport('${encodeURIComponent(r.episode_url)}')">✓ 处理</span></td>
-        </tr>`;
-      }).join('');
-}
-
-function switchReportStatus(el,s){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active'); reportStatus=s; loadVideoReports();
-}
-
-async function resolveReport(epEnc){
-  const ep = decodeURIComponent(epEnc);
-  const r = await api('/admin/api/resolve_report','POST',{episode_url:ep});
-  if(r && r.status==='success') loadVideoReports();
-}
-
-async function login(){
-  const pwd = document.getElementById('pwdInput').value;
-  const r = await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
-  if(!r.ok){document.getElementById('loginErr').innerText='密码错误';return}
-  const d = await r.json();
-  TOKEN = d.token;
-  localStorage.setItem('admin_token', TOKEN);
-  showDashboard();
-}
-
-function showDashboard(){
-  document.getElementById('loginBox').style.display='none';
-  document.getElementById('dashboard').style.display='block';
-  loadCurrentModule();
-}
-
-async function api(path, method='GET', body=null){
-  const headers = {'X-Admin-Token':TOKEN};
-  if(body) headers['Content-Type'] = 'application/json';
-  const opts = { method, headers };
-  if(body) opts.body = JSON.stringify(body);
-  const r = await fetch(path, opts);
-  if(r.status===401){
-    localStorage.removeItem('admin_token');
-    location.reload();
-    return null;
-  }
-  return r.json();
-}
-
-function switchModule(name){
-  currentModule = name;
-  document.getElementById('tabVideo').classList.toggle('active', name==='video');
-  document.getElementById('tabNews').classList.toggle('active', name==='news');
-  document.getElementById('moduleVideo').classList.toggle('active', name==='video');
-  document.getElementById('moduleNews').classList.toggle('active', name==='news');
-  loadCurrentModule();
-}
-
-function loadCurrentModule(){
-  document.getElementById('updateTime').innerText = '更新于 '+new Date().toLocaleTimeString();
-  if(currentModule==='video') loadVideoModule();
-  else loadNewsModule();
-}
-
-// ============ 视频模块 ============
-async function loadVideoModule(){
-  loadVideoOverview();
-  loadVideoTrend();
-  loadTopVideos('play', playPeriod);
-  loadTopVideos('download_complete', dlPeriod);
-  loadTopUsers();
-  loadVideoReports();
-}
-
-async function loadVideoOverview(){
-  const d = await api('/admin/api/overview');if(!d)return;
-  const items = [
-    ['总用户数', d.total_users],
-    ['今日活跃', d.today_active_users],
-    ['今日播放', d.today_play],
-    ['今日下载', d.today_download],
-    ['累计播放', d.total_play_events],
-    ['累计下载', d.total_download_events],
-    ['待处理举报', d.pending_reports],
-  ];
-  document.getElementById('statsBox').innerHTML = items.map(([l,v])=>
-    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v||0}</div></div>`).join('');
-}
-
-async function loadVideoTrend(){
-  const data = await api('/admin/api/daily_trend');if(!data)return;
-  const days=[...new Set(data.map(r=>r.day))].sort();
-  const playData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='play');return r?r.cnt:0});
-  const dlData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='download_complete');return r?r.cnt:0});
-  if(trendChart) trendChart.destroy();
-  trendChart = new Chart(document.getElementById('trendChart'),{
-    type:'line',
-    data:{labels:days,datasets:[
-      {label:'播放',data:playData,borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,.15)',tension:.3,fill:true},
-      {label:'下载',data:dlData,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.15)',tension:.3,fill:true},
-    ]},
-    options:{responsive:true,plugins:{legend:{labels:{color:'#cbd5e1'}}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}
-  });
-}
-
-async function loadTopVideos(type, period){
-  const data = await api(`/admin/api/top_videos?type=${type}&period=${period}&limit=15`);if(!data)return;
-  const tbody = type==='play'?'topPlayBody':'topDlBody';
-  document.getElementById(tbody).innerHTML = data.length===0
-    ? '<tr><td colspan="4" style="text-align:center;color:#64748b">暂无数据</td></tr>'
-    : data.map((r,i)=>`<tr>
-        <td>${i+1}</td>
-        <td class="clickable" onclick="showVideoUsers('${encodeURIComponent(r.video_url)}','${type}')">${r.video_title||r.video_url}</td>
-        <td><span class="pill pill-green">${r.unique_users}</span></td>
-        <td>${r.total_count}</td>
-      </tr>`).join('');
-}
-
-async function loadTopUsers(){
-  const data = await api('/admin/api/top_users');if(!data)return;
-  document.getElementById('topUsersBody').innerHTML = data.length===0
-    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
-    : data.map((r,i)=>`<tr>
-        <td>${i+1}</td>
-        <td style="font-family:monospace;font-size:11px">${r.user_id.substring(0,30)}...</td>
-        <td>${r.unique_videos}</td>
-        <td>${r.total_actions}</td>
-        <td style="color:#94a3b8;font-size:12px">${r.last_active.replace('T',' ').substring(0,19)}</td>
-      </tr>`).join('');
-}
-
-async function showVideoUsers(urlEnc, type){
-  const url = decodeURIComponent(urlEnc);
-  const data = await api(`/admin/api/video_users?video_url=${encodeURIComponent(url)}&type=${type}`);
-  if(!data)return;
-  const html = data.slice(0,50).map(u=>`• ${u.user_id.substring(0,25)}... (${u.count}次, 最后:${u.last_at.substring(0,16).replace('T',' ')})`).join('<br>');
-  showInfoModal(`👥 观看此视频的用户 (${data.length} 人)`, html || '暂无');
-}
-
-function switchPlayPeriod(el,p){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');playPeriod=p;loadTopVideos('play',p);
-}
-function switchDlPeriod(el,p){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');dlPeriod=p;loadTopVideos('download_complete',p);
-}
-
-// ============ 新闻模块 ============
-async function loadNewsModule(){
-  loadNewsOverview();
-  loadNewsTrend();
-  loadTopSources(sourcePeriod);
-  loadTopArticles(articleType, articlePeriod);
-  await loadTopNewsUsers(); // 等待拉取并渲染活跃用户
-}
-
-async function loadNewsOverview(){
-  const d = await api('/admin/api/news/overview');if(!d)return;
-  const items = [
-    ['总读者数', d.total_users],
-    ['今日活跃', d.today_active],
-    ['今日朗读', d.today_listen],
-    ['今日曝光', d.today_view],
-    ['累计朗读', d.total_listen],
-    ['累计曝光', d.total_view],
-  ];
-  document.getElementById('newsStatsBox').innerHTML = items.map(([l,v])=>
-    `<div class="stat-card"><div class="label">${l}</div><div class="value">${v||0}</div></div>`).join('');
-}
-
-async function loadNewsTrend(){
-  const data = await api('/admin/api/news/daily_trend');if(!data)return;
-  const days = [...new Set(data.map(r=>r.day))].sort();
-  const listenData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='listen');return r?r.cnt:0});
-  const viewData = days.map(d=>{const r=data.find(x=>x.day===d&&x.event_type==='view');return r?r.cnt:0});
-  if(newsTrendChart) newsTrendChart.destroy();
-  newsTrendChart = new Chart(document.getElementById('newsTrendChart'),{
-    type:'line',
-    data:{labels:days,datasets:[
-      {label:'朗读',data:listenData,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.15)',tension:.3,fill:true},
-      {label:'曝光',data:viewData,borderColor:'#fb923c',backgroundColor:'rgba(251,146,60,.10)',tension:.3,fill:true},
-    ]},
-    options:{responsive:true,plugins:{legend:{labels:{color:'#cbd5e1'}}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}
-  });
-}
-
-async function loadTopSources(period){
-  const data = await api(`/admin/api/news/top_sources?period=${period}`);if(!data)return;
-  document.getElementById('topSourcesBody').innerHTML = data.length===0
-    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
-    : data.map((r,i)=>`<tr>
-        <td>${i+1}</td>
-        <td><strong>${r.source_id||'(未知)'}</strong></td>
-        <td><span class="pill pill-green">${r.unique_users}</span></td>
-        <td><span class="pill pill-blue">${r.unique_articles}</span></td>
-        <td>${r.total_reads}</td>
-      </tr>`).join('');
-}
-
-async function loadTopArticles(type, period){
-  const data = await api(`/admin/api/news/top_articles?type=${type}&period=${period}`);if(!data)return;
-  document.getElementById('topArticlesBody').innerHTML = data.length===0
-    ? '<tr><td colspan="5" style="text-align:center;color:#64748b">暂无数据</td></tr>'
-    : data.map((r,i)=>{
-        const title = r.article_topic || r.article_key;
-        const shortTitle = title.length > 40 ? title.substring(0,40)+'...' : title;
-        return `<tr>
-          <td>${i+1}</td>
-          <td class="clickable" onclick="showArticleUsers('${encodeURIComponent(r.article_key)}','${type}')" title="${title}">${shortTitle}</td>
-          <td><span class="pill pill-orange">${r.source_id||'(未知)'}</span></td>
-          <td><span class="pill pill-green">${r.unique_users}</span></td>
-          <td>${r.total_count}</td>
-        </tr>`;
-      }).join('');
-}
-
-// 获取活跃读者数据并缓存
-async function loadTopNewsUsers(){
-  const data = await api('/admin/api/news/top_users');if(!data)return;
-  cachedNewsUsers = data;
-  renderNewsUsers();
-}
-
-// 渲染活跃读者表格
-function renderNewsUsers(){
-  // 1. 更新表头排序箭头显示
-  document.getElementById('sort_unique_articles').innerText = newsUserSortField === 'unique_articles' ? (newsUserSortOrder === 'desc' ? '▼' : '▲') : '';
-  document.getElementById('sort_last_active').innerText = newsUserSortField === 'last_active' ? (newsUserSortOrder === 'desc' ? '▼' : '▲') : '';
-
-  // 2. 排序缓存数据
-  const sortedData = [...cachedNewsUsers].sort((a, b) => {
-    let valA = a[newsUserSortField];
-    let valB = b[newsUserSortField];
-    
-    // 如果是日期字符串，直接进行字符串对比
-    if (newsUserSortField === 'last_active') {
-      valA = valA || '';
-      valB = valB || '';
-    } else {
-      valA = Number(valA) || 0;
-      valB = Number(valB) || 0;
+            pl[idx]["episodes"].update(ukyun_channel["episodes"])
+        existing["playlist"] = pl
+
+    ordered = reorder_item_keys(existing)
+    existing.clear()
+    existing.update(ordered)
+    return existing, False
+
+# ===================== 主程序 =====================
+def main():
+    print("===== 独立详情页抓取工具 =====")
+    url = input("请输入详情页URL：").strip()
+    cate = input("请输入分类 (Movie/Drama/Show/Anime)：").strip()
+
+    if cate not in ["Movie", "Drama", "Show", "Anime"]:
+        print("分类错误！")
+        return
+
+    print("正在抓取...")
+    html = fetch(url)
+    if not html:
+        return
+
+    name, info, update, d = parse_detail(html)
+    print(f"抓取成功：{name} | {info}")
+
+    new_data = {
+        "name": name,
+        "info": info,
+        "update": update,
+        "类型": d["类型"],
+        "导演": d["导演"],
+        "编剧": d["编剧"],
+        "主演": d["主演"],
+        "地区": d["地区"],
+        "date": d["date"],
+        "alias": d["alias"],
+        "intro": d["intro"],
+        "image_url": d["image_url"],
+        "playlist_episodes": d["playlist_episodes"],
     }
 
-    if (valA < valB) return newsUserSortOrder === 'desc' ? 1 : -1;
-    if (valA > valB) return newsUserSortOrder === 'desc' ? -1 : 1;
-    return 0;
-  });
+    data = load_json()
+    group = data[cate]
+    item, is_new = merge_item(group, new_data, url)
 
-  // 3. 渲染 HTML
-  document.getElementById('topNewsUsersBody').innerHTML = sortedData.length===0
-    ? '<tr><td colspan="7" style="text-align:center;color:#64748b">暂无数据</td></tr>'
-    : sortedData.map((r,i)=>{
-        const isApple = r.user_type === 'apple';
-        const isDevice = r.user_type === 'device';
-        const displayAppleId = isApple ? `<span style="font-family:monospace;font-size:11px">${r.user_id.substring(0,24)}...</span>` : '<span style="color:#475569">-</span>';
-        const displayDeviceId = isDevice ? `<span style="font-family:monospace;font-size:11px">${r.user_id.substring(0,24)}...</span>` : '<span style="color:#475569">-</span>';
-        
-        return `<tr>
-          <td>${i+1}</td>
-          <td>${displayAppleId}</td>
-          <td>${displayDeviceId}</td>
-          <td><strong>${r.unique_articles}</strong></td>
-          <td><span class="clickable" style="font-weight:bold;" onclick="showUserNewsDetails('${encodeURIComponent(r.user_id)}', 'listen')">${r.listen_count||0}</span></td>
-          <td><span class="clickable" style="font-weight:bold;" onclick="showUserNewsDetails('${encodeURIComponent(r.user_id)}', 'view')">${r.view_count||0}</span></td>
-          <td style="color:#94a3b8;font-size:12px">${(r.last_active||'').replace('T',' ').substring(0,19)}</td>
-        </tr>`;
-      }).join('');
-}
+    # 下载图片
+    if d["image_url"] and not item.get("image"):
+        fn = image_filename_from_url(d["image_url"], name)
+        if download_image(d["image_url"], fn):
+            item["image"] = fn
 
-// 切换排序字段
-function sortNewsUsers(field) {
-  if (newsUserSortField === field) {
-    // 如果点击的是当前排序字段，则切换升序/降序
-    newsUserSortOrder = newsUserSortOrder === 'desc' ? 'asc' : 'desc';
-  } else {
-    // 切换新字段，默认降序
-    newsUserSortField = field;
-    newsUserSortOrder = 'desc';
-  }
-  renderNewsUsers();
-}
+    save_json(data)
+    print(f"\n✅ 成功写入：{cate} -> {name}")
+    print("✅ 已保存到 OVideos.json")
 
-async function showArticleUsers(keyEnc, type){
-  const key = decodeURIComponent(keyEnc);
-  const data = await api(`/admin/api/news/article_users?article_key=${encodeURIComponent(key)}&type=${type}`);
-  if(!data)return;
-  const html = data.slice(0,50).map(u=>{
-    const uid = u.user_id.substring(0,25);
-    const cnt = u.count;
-    const last = (u.last_at||'').substring(0,16).replace('T',' ');
-    return `• [${u.user_type||'-'}] ${uid}... (${cnt}次, 最后:${last})`;
-  }).join('<br>');
-  showInfoModal(`👥 ${type==='listen'?'朗读':'曝光'}此文章的用户 (${data.length} 人)`, html || '暂无');
-}
-
-async function showUserNewsDetails(userIdEnc, type){
-  const userId = decodeURIComponent(userIdEnc);
-  const typeText = type === 'listen' ? '朗读' : '曝光';
-  const data = await api(`/admin/api/news/user_details?user_id=${encodeURIComponent(userId)}&type=${type}`);
-  if(!data) return;
-  
-  if(data.length === 0) {
-    showInfoModal(`👥 用户 ${typeText} 明细`, '暂无记录');
-    return;
-  }
-  
-  // 1. 按新闻日期 (article_date, 格式如 yyMMdd) 进行前端分组
-  const groups = {};
-  data.forEach(item => {
-    // 格式化日期显示，如 "26-05-31" 或保持 "260531"
-    let dateStr = item.article_date || '未知日期';
-    if (dateStr.length === 6) {
-      dateStr = `20${dateStr.substring(0,2)}-${dateStr.substring(2,4)}-${dateStr.substring(4,6)}`;
-    }
-    if (!groups[dateStr]) {
-      groups[dateStr] = [];
-    }
-    groups[dateStr].push(item);
-  });
-  
-  // 2. 拼接 HTML 结构
-  let html = `<div style="text-align:left; max-height:60vh; overflow-y:auto; font-size:13px; color:#cbd5e1;">`;
-  
-  // 降序遍历日期组
-  const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
-  
-  sortedDates.forEach(date => {
-    html += `<div style="margin-bottom: 16px; border-bottom: 1px solid #334155; padding-bottom: 8px;">`;
-    html += `  <div style="font-weight: bold; color: #60a5fa; font-size: 14px; margin-bottom: 6px;">📅 ${date}</div>`;
-    html += `  <ul style="list-style-type: none; padding-left: 4px;">`;
-    
-    groups[date].forEach(art => {
-      const sourceBadge = art.source_id ? `<span class="pill pill-orange" style="margin-right:6px; font-size:10px; padding:1px 4px;">${art.source_id}</span>` : '';
-      const countBadge = art.click_count > 1 ? `<span class="pill pill-blue" style="margin-left:6px; font-size:10px; padding:1px 4px;">${art.click_count}次</span>` : '';
-      html += `    <li style="margin-bottom: 6px; line-height: 1.4;">`;
-      html += `      ${sourceBadge}<strong>${art.article_topic || '无标题'}</strong>${countBadge}`;
-      html += `    </li>`;
-    });
-    
-    html += `  </ul>`;
-    html += `</div>`;
-  });
-  
-  html += `</div>`;
-  
-  showInfoModal(`👥 用户 [${userId.substring(0,10)}...] 的${typeText}历史`, html);
-}
-
-function switchSourcePeriod(el,p){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');sourcePeriod=p;loadTopSources(p);
-}
-function switchArticleType(el,t){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');articleType=t;loadTopArticles(t,articlePeriod);
-}
-function switchArticlePeriod(el,p){
-  el.parentNode.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  el.classList.add('active');articlePeriod=p;loadTopArticles(articleType,p);
-}
-
-// ============ 通用弹窗 ============
-function showInfoModal(title, htmlBody){
-  document.getElementById('modalTitle').innerText = title;
-  document.getElementById('modalMsg').innerHTML = htmlBody;
-  const btn = document.getElementById('modalConfirmBtn');
-  btn.innerText = "关闭";
-  btn.onclick = closeModal;
-  document.getElementById('confirmModal').style.display = 'flex';
-}
-
-// ============ 危险操作 ============
-function triggerClear(type) {
-  pendingClearType = type;
-  let targetName = "";
-  if(type === 'analytics') targetName = "【全部行为统计数据（视频+新闻）】";
-  if(type === 'users') targetName = "【所有注册用户账号及订阅权限数据】";
-  if(type === 'all') targetName = "【全部数据】";
-  document.getElementById('modalTitle').innerText = "⚠️ 第一次安全确认";
-  document.getElementById('modalMsg').innerText = `您正在尝试清空 ${targetName}。此操作不可恢复！`;
-  const btn = document.getElementById('modalConfirmBtn');
-  btn.innerText = "继续下一步";
-  btn.onclick = secondConfirm;
-  document.getElementById('confirmModal').style.display = 'flex';
-}
-
-function secondConfirm() {
-  document.getElementById('modalTitle').innerText = "🚨 终极核对确认";
-  document.getElementById('modalMsg').innerText = `请再次确认！如果您十分确定，请点击下方按钮。`;
-  const btn = document.getElementById('modalConfirmBtn');
-  btn.innerText = "彻底清空并执行";
-  btn.onclick = executeClear;
-}
-
-async function executeClear() {
-  const result = await api('/admin/api/clear_db', 'POST', { type: pendingClearType });
-  closeModal();
-  if (result && result.status === 'success') {
-    loadCurrentModule();
-    setTimeout(()=>showInfoModal("✅ 操作成功", result.message), 300);
-  } else {
-    setTimeout(()=>showInfoModal("❌ 操作失败", (result && result.error) ? result.error : "未知错误"), 300);
-  }
-}
-
-function closeModal() {
-  document.getElementById('confirmModal').style.display = 'none';
-}
-
-if(TOKEN) showDashboard();
-</script>
-</body>
-</html>
-'''
-
-# --- 服务器启动 ---
-if __name__ == '__main__':
-    # 【新增】在启动时初始化数据库
-    init_user_db()
-    init_analytics_db()
-    supported_apps_str = ", ".join(ALLOWED_APPS)
-    print("多应用服务器正在启动...")
-    print(f"支持的应用: {supported_apps_str}")
-    print(f"资源目录被定位在: {BASE_RESOURCES_DIR}")
-    host_ip = '0.0.0.0'
-    port = 5001
-    print("请确保您的手机和电脑连接到同一个Wi-Fi网络")
-    print(f"在iOS App中请使用 http://{host_ip}:{port}/api/ONews/... 访问")
-    app.run(host=host_ip, port=port, debug=False)
+if __name__ == "__main__":
+    main()
