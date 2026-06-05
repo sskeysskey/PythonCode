@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版 + 防休眠）
+6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版 + 防休眠 + 国产地区过滤）
 - 支持 OVideos.json 多 URL 格式 (url, url1, url2...)
 - 跨分类全局 Name 唯一性校验 + URL 存在性双重校验
 - 智能 6vdy 渠道插入与更新机制
 - 智能 info 字段集数对比更新（不更新 update 字段）
 - 升级版分类判定规则（支持自动分流至 Anime）
+- 新增规则：过滤产地/地区包含 “中国”、“大陆”、“内地” 的资源并记录日志
 """
 
 import os
@@ -55,6 +56,9 @@ PLAYLIST_NAME = "6vdy"         # 6vdy 专有播放列表名称
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0           # 每次抓取子页面后的休眠时间（秒）
 BLACKLIST_NAMES = ["乘风2026"] 
+
+# 地区过滤关键字（包含以下任一关键字的资源将被跳过）
+FILTER_REGIONS = ["中国", "大陆", "内地"]
 
 HEADERS = {
     "User-Agent": (
@@ -831,6 +835,15 @@ def process_tab_unified(data, tab_index, tab_name):
             rec = parse_subpage(url, name, info)
             real_name = rec["name"]
             
+            # ==================== 新增规则：国产地区过滤 ====================
+            region = rec.get("地区", "")
+            # 检查地区/产地是否包含 “中国”、“大陆”、“内地” 中的任意一个
+            if any(keyword in region for keyword in FILTER_REGIONS):
+                print(f"    ! 过滤跳过：检测到该资源产地/地区为「{region}」，包含过滤词 {FILTER_REGIONS}，不予抓取。")
+                ok += 1  # 视为正常处理完的一条，防止计入失败
+                time.sleep(SLEEP_BETWEEN)
+                continue
+
             # 提取 6vdy 播放列表
             new_6vdy_eps = {}
             for pl in rec.get("playlist", []):
@@ -932,7 +945,6 @@ def main():
     
     print("\n====================================")
     print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
-    # print(f"统计: 电影 成功 {m_ok}/失败 {m_fail}, 剧集 成功 {d_ok}/失败 {d_fail}, 推荐 成功 {r_ok}/失败 {r_fail}")
 
 
 if __name__ == "__main__":

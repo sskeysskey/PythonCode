@@ -184,9 +184,9 @@ DRAMA_MAX_EPISODES_LIMIT = 50  # 电视剧分类最大剧集限制（超过则�
 ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳过不抓）
 
 # ==========================================
-# 【新增】：电视剧分类（Drama）允许抓取的地区过滤集合
+#  Drama / Anime 共用允许抓取的地区（只抓这些）
 # ==========================================
-DRAMA_ALLOWED_REGIONS = {"美国", "韩国", "英国", "日本", "泰国"}
+ALLOWED_REGIONS = {"美国", "韩国", "英国", "日本", "泰国"}
 
 # ==========================================
 # 黑名单播放源配置，遇到这些源将直接跳过不抓取
@@ -887,8 +887,16 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 if item["score"] < MIN_SCORE_LIMIT:
                     log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
                     continue
-                if item["region"] not in DRAMA_ALLOWED_REGIONS:
+                if item["region"] not in ALLOWED_REGIONS:
                     log(f"  ({idx_i}/{len(items)}) [跳过-地区不符] {item['name']} (地区: '{item['region']}' 不在允许列表中)")
+                    continue
+            elif cat_name == "Anime":
+                # 动漫也过滤地区：只抓美国、韩国、英国、日本、泰国
+                if item["score"] < MIN_SCORE_LIMIT:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-评分过低] {item['name']} (评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                    continue
+                if item["region"] not in ALLOWED_REGIONS:
+                    log(f"  ({idx_i}/{len(items)}) [跳过-地区不符] {item['name']} (地区: '{item['region']}' 不在允许列表)")
                     continue
             else:
                 # 电影、动漫分类：沿用原本的 7.0 评分过滤
