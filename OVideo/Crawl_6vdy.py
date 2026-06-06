@@ -58,7 +58,7 @@ SLEEP_BETWEEN  = 1.0           # 每次抓取子页面后的休眠时间（秒�
 BLACKLIST_NAMES = ["乘风2026"] 
 
 # 地区过滤关键字（包含以下任一关键字的资源将被跳过）
-FILTER_REGIONS = ["中国", "大陆", "内地"]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地"]
 
 HEADERS = {
     "User-Agent": (
@@ -168,7 +168,8 @@ def split_name_info(raw_title):
 
     # 1. 尝试匹配中括号（兼容半角 [ ] 和全角 ［ ］）
     # 匹配格式如： 浪漫的绝对值［全集］ 或 纸钞屋：柏林［第1-2季全］
-    bracket_match = re.search(r"^(.*?)[[［](.*?)[\］]]$", raw_title)
+    bracket_match = re.search(r"^(.*?)[[［](.*?)[\]］]$", raw_title)
+    # bracket_match = re.search(r"^(.*?)[[［](.*?)[\]\uFF3D]$", raw_title)
     if bracket_match:
         base_name = bracket_match.group(1).strip()
         base_info = bracket_match.group(2).strip()
@@ -838,8 +839,8 @@ def process_tab_unified(data, tab_index, tab_name):
             # ==================== 新增规则：国产地区过滤 ====================
             region = rec.get("地区", "")
             # 检查地区/产地是否包含 “中国”、“大陆”、“内地” 中的任意一个
-            if any(keyword in region for keyword in FILTER_REGIONS):
-                print(f"    ! 过滤跳过：检测到该资源产地/地区为「{region}」，包含过滤词 {FILTER_REGIONS}，不予抓取。")
+            if any(keyword == region.strip() for keyword in FILTER_REGIONS):
+                # print(f"    ! 过滤跳过：检测到该资源产地/地区为「{region}」，包含过滤词 {FILTER_REGIONS}，不予抓取。")
                 ok += 1  # 视为正常处理完的一条，防止计入失败
                 time.sleep(SLEEP_BETWEEN)
                 continue
@@ -853,7 +854,7 @@ def process_tab_unified(data, tab_index, tab_name):
 
             # 如果抓取到的 6vdy 播放列表为空，则直接跳过，不下载图片
             if not new_6vdy_eps:
-                print("    ! 忽略跳过：该记录未抓取到任何 6vdy 播放列表")
+                # print("    ! 忽略跳过：该记录未抓取到任何 6vdy 播放列表")
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
@@ -873,7 +874,7 @@ def process_tab_unified(data, tab_index, tab_name):
                     save_json(data)
                     ok += 1
                 elif status == "no_change":
-                    print(f"    - 无更新({matched_group})：6vdy 渠道内容及条数无变化")
+                    # print(f"    - 无更新({matched_group})：6vdy 渠道内容及条数无变化")
                     ok += 1
                 elif status == "decreased":
                     print(f"    - 忽略({matched_group})：抓取集数少于已有集数")
