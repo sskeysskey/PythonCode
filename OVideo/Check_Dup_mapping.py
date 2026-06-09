@@ -21,8 +21,13 @@ for key, value in data.items():
     if not value or not isinstance(value, list) or len(value) < 2:
         continue
     
-    video_url = value[0]  # 视频URL
-    title = value[1]      # 标题
+    # 修复点1：安全提取视频URL，处理嵌套列表的情况
+    video_url = value[0]
+    # 如果是列表，自动取第一个元素
+    while isinstance(video_url, list) and video_url:
+        video_url = video_url[0]
+    
+    title = value[1]
     
     # 从key中提取系列前缀
     # 模式: .../py/数字-数字-数字.html
@@ -47,6 +52,9 @@ for series_prefix, episodes in series_groups.items():
     # 检查是否有重复的视频URL
     url_to_episodes = defaultdict(list)
     for key, video_url, title in episodes_sorted:
+        # 修复点2：跳过无效的URL（空值/非字符串）
+        if not isinstance(video_url, str) or not video_url:
+            continue
         url_to_episodes[video_url].append((key, title))
     
     for video_url, ep_list in url_to_episodes.items():

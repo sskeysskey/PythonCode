@@ -450,26 +450,26 @@ def main():
     bb_backup_path    = os.path.join(NEWS_BACKUP_SITE_DIR, "bloomberg.html")
     rt_backup_path    = os.path.join(NEWS_BACKUP_SITE_DIR, "reuters.html")
 
-    # # 1. FT
-    # print("\n[Task 1/5] Processing FT...")
-    # open_webpage_and_monitor_ft()
-    # process_news_source("FT", ft_backup_path, today_html_path)
+    # 1. FT
+    print("\n[Task 1/5] Processing FT...")
+    open_webpage_and_monitor_ft()
+    process_news_source("FT", ft_backup_path, today_html_path)
 
-    # # 2. WSJ (English)
-    # print("\n[Task 2/5] Processing WSJ (Eng)...")
-    # open_webpage_and_monitor_wsj()
-    # process_news_source("WSJ", wsj_backup_path, today_html_path)
+    # 2. WSJ (English)
+    print("\n[Task 2/5] Processing WSJ (Eng)...")
+    open_webpage_and_monitor_wsj()
+    process_news_source("WSJ", wsj_backup_path, today_html_path)
 
-    # # 3. cn.WSJ (Chinese) —— 新增
-    # print("\n[Task 3/5] Processing cn.WSJ (CN)...")
-    # open_webpage_and_monitor_cnwsj()
-    # process_news_source(
-    #     "cnwsj",
-    #     cnwsj_backup_path,
-    #     today_wsjcn_path,          # ← 写入 today_wsjcn.html 而不是 today_eng.html
-    #     file_prefix="cnwsj",
-    #     display_name="WSJCN",      # ← 第一列显示 WSJCN，与老 selenium 行为一致
-    # )
+    # 3. cn.WSJ (Chinese) —— 新增
+    print("\n[Task 3/5] Processing cn.WSJ (CN)...")
+    open_webpage_and_monitor_cnwsj()
+    process_news_source(
+        "cnwsj",
+        cnwsj_backup_path,
+        today_wsjcn_path,          # ← 写入 today_wsjcn.html 而不是 today_eng.html
+        file_prefix="cnwsj",
+        display_name="WSJCN",      # ← 第一列显示 WSJCN，与老 selenium 行为一致
+    )
 
     # 4. Bloomberg
     print("\n[Task 4/5] Processing Bloomberg...")
