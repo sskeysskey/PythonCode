@@ -2145,11 +2145,25 @@ function extractAndCopy() {
     if (specialReportContainer) {
       imagesFoundForDownload = true;
 
-      // 1. 提取文本 (从 .scrollytelling-body 下的 p 标签提取)
-      // 过滤掉类似 "@", "®" 或空内容的杂项
-      const contentNodes = document.querySelectorAll('.scrollytelling-body p');
-      textContent = Array.from(contentNodes)
+      // 1. 提取文本
+      // 兼容两种结构：
+      //   - scrollytelling-body 下的 <p>（旧的滚动叙事页面）
+      //   - special-report-article-container 下的 <p class="article-paragraph">（本次新页面）
+      let contentNodes = Array.from(
+        specialReportContainer.querySelectorAll(
+          'p.article-paragraph, .scrollytelling-body p, h2.article-heading, h2'
+        )
+      );
+
+      // 兜底：如果上面都没抓到，就抓容器内所有 <p>
+      if (contentNodes.length === 0) {
+        contentNodes = Array.from(specialReportContainer.querySelectorAll('p'));
+      }
+
+      textContent = contentNodes
         .map(node => node.textContent.trim())
+        // 去掉段落首尾被引号包裹的情况（本页面正文带有 "…" 包裹）
+        .map(text => text.replace(/^[“"']+|[”"']+$/g, '').trim())
         .filter(text => text.length > 1 && !['@', '•', '®'].includes(text))
         .join('\n\n');
 
