@@ -58,7 +58,8 @@ SLEEP_BETWEEN  = 1.0           # 每次抓取子页面后的休眠时间（秒�
 BLACKLIST_NAMES = ["乘风2026"] 
 
 # 地区过滤关键字（包含以下任一关键字的资源将被跳过）
-FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地"]
+# FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地"]
+FILTER_REGIONS = ["测试"]
 
 HEADERS = {
     "User-Agent": (

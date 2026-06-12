@@ -6,8 +6,8 @@ import pyperclip
 SKIP_CATEGORIES = set()
 
 # ===== 新增：读取顺序与数量配置 =====
-REVERSE_SCAN = False              # 开关：True 表示每个分类倒着读取，False 表示原样正序读取
-SCAN_LIMIT_PER_CATEGORY = 15000       # 数量配置：每个分类最多读取的项目数（例如 5 表示只抓最后5个/最前5个；设为 0 或 None 表示不限制）
+REVERSE_SCAN = True              # 开关：True 表示每个分类倒着读取，False 表示原样正序读取
+SCAN_LIMIT_PER_CATEGORY = 17000       # 数量配置：每个分类最多读取的项目数（例如 5 表示只抓最后5个/最前5个；设为 0 或 None 表示不限制）
 
 # 需要执行"地区过滤"的分类集合；以后想加就往里加，例如 {'Drama', 'Show'}
 # 属于模糊匹配，命中任一关键字就跳过该项目
