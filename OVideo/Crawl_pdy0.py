@@ -54,19 +54,19 @@ def get_year_config(year: str):
         "year": year,
         "categories": {
             "Movie": {"id": 1, "enabled": True,  "pages": 0},
-            "Drama": {"id": 2, "enabled": True,  "pages": 5},
+            "Drama": {"id": 2, "enabled": True,  "pages": 1},
             "Show":  {"id": 3, "enabled": True,  "pages": 0},
             "Anime": {"id": 4, "enabled": True,  "pages": 0},
         }
     }
 
-historical_jobs = [get_year_config(str(y)) for y in range(2014, 2010, -1)]
+historical_jobs = [get_year_config(str(y)) for y in range(1990, 1985, -1)]
 
 # 3. 组装 TASKS
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -91,7 +91,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -105,7 +105,7 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -175,7 +175,7 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 7.0
+MIN_SCORE_LIMIT = 8
 
 # ==========================================
 # 【新增】：剧集数量限制配置
@@ -184,8 +184,8 @@ DRAMA_MAX_EPISODES_LIMIT = 50  # 电视剧分类最大剧集限制（超过则�
 ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳过不抓）
 
 # Drama / Anime 黑名单地区：只要精准匹配这些，就跳过不抓取
-# FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地"}
-FILTER_REGIONS = {"测试"}
+FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地"}
+# FILTER_REGIONS = {"测试"}
 
 # ==========================================
 # 黑名单播放源配置，遇到这些源将直接跳过不抓取
