@@ -25,6 +25,13 @@ def get_match_key(item):
             
     return ('无备选字段', 'None')
 
+# 新增：清理名称，去掉所有空格（半角+全角）
+def clean_name(name):
+    if not name:
+        return ""
+    # 替换 英文空格 和 中文全角空格 为空
+    return name.replace(" ", "").replace("　", "").strip()
+
 def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output_file_path_b):
     # 1. 读取 JSON 文件
     try:
@@ -44,29 +51,32 @@ def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output
             for item in data[category]:
                 item_with_category = item.copy()
                 item_with_category['_category'] = category
+                # 提前存储清理后的名字，方便后续使用
+                item_with_category['_clean_name'] = clean_name(item.get('name', ''))
                 all_items.append(item_with_category)
 
-    # 3. 使用字典按 (name, match_key) 联合分组
+    # 3. 使用字典按 (clean_name, match_key) 联合分组 ✅ 核心修改
     grouped_items = defaultdict(list)
     for item in all_items:
-        name = item.get('name')
-        if name:
+        clean_name_val = item.get('_clean_name')
+        if clean_name_val:
             # 获取该项目的匹配特征
             match_key = get_match_key(item)
-            # 使用 (名字, 特征) 作为字典的键
-            grouped_items[(name, match_key)].append(item)
+            # 使用 (清理后的名字, 特征) 作为字典的键
+            grouped_items[(clean_name_val, match_key)].append(item)
 
     # 4. 筛选出符合条件的项目：数量 > 1 且 url 不完全相同
     duplicate_groups = {}
-    for (name, match_key), items in grouped_items.items():
+    for (clean_name_val, match_key), items in grouped_items.items():
         if len(items) > 1:
             # 提取该组内所有不同的 URL
             urls = set(str(item.get('url', '')) for item in items)
             
             # 只有当存在不同的 URL 时，才认为是我们要找的重复项
             if len(urls) > 1:
-                # 构造一个新的展示名称，方便在 Markdown 中查看匹配依据
-                display_name = f"{name} [相同{match_key[0]}: {match_key[1]}]"
+                # 取原始第一个名字展示，避免输出无空格版本
+                original_name = items[0].get('name', clean_name_val)
+                display_name = f"{original_name} [相同{match_key[0]}: {match_key[1]}]"
                 duplicate_groups[display_name] = items
     
     # 确保输出目录存在
@@ -84,7 +94,9 @@ def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output
                 f.write(f"### [{i}] 来源类别: {category}\n")
                 f.write("```json\n")
                 temp_item = item.copy()
-                if '_category' in temp_item: del temp_item['_category']
+                for key in ['_category', '_clean_name']:
+                    if key in temp_item:
+                        del temp_item[key]
                 f.write(json.dumps(temp_item, ensure_ascii=False, indent=4))
                 f.write("\n```\n\n")
             f.write("---\n\n")
@@ -106,8 +118,8 @@ def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output
     # 7. 在终端输出统计结果
     print(f"处理完成！")
     print(f"一共找到了 {len(duplicate_groups)} 组符合条件的重复项目。")
-    print(f"详细报告已保存至: {output_file_path_a}")
-    print(f"名称列表已保存至: {output_file_path_b}")
+    print(f"详细报告已保存至: {output_path_a}")
+    print(f"名称列表已保存至: {output_path_b}")
 
 # --- 配置路径 ---
 input_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
