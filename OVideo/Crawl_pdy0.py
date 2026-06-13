@@ -66,7 +66,7 @@ historical_jobs = [get_year_config(str(y)) for y in range(1990, 1985, -1)]
 TASKS = [
     {
         "sort_type": "score",
-        "enabled": True,
+        "enabled": False,
         "jobs": [
             # 拼接刚才生成的历史年份
             *historical_jobs, 
@@ -91,7 +91,7 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
@@ -105,7 +105,7 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {

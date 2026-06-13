@@ -113,6 +113,15 @@ def perform_click(location, shape):
     pyautogui.click(logic_center_x, logic_center_y)
     return logic_center_x, logic_center_y
 
+def refresh_page_mac():
+    """
+    使用 AppleScript 模拟 Command + R 刷新页面
+    """
+    apple_script = """
+    osascript -e 'tell application "System Events" to key code 15 using command down'
+    """
+    os.system(apple_script)
+
 def main():
     # ==== 新增：获取命令行参数 ====
     # 默认阈值为 50
@@ -126,35 +135,44 @@ def main():
         except ValueError:
             print("参数格式错误，使用默认阈值 50")
 
-    # ==== 1. 加载 Copy 和 Forbidden 模板 ====
+    # ==== 1. 加载所有模板 ====
     template_copy_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_copy.png")
     template_forbidden_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_forbidden.png")
+    template_retry_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_retry.png")
+    template_timeout_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_timeout.png")
     
-    if not os.path.exists(template_copy_path):
-        print(f"错误：找不到模板文件 {template_copy_path}")
-        sys.exit(3) # 模板缺失错误
-        
-    if not os.path.exists(template_forbidden_path):
-        print(f"错误：找不到模板文件 {template_forbidden_path}")
-        sys.exit(3) # 模板缺失错误
+    # 检查所有必需的模板文件是否存在
+    required_templates = [
+        ("copy", template_copy_path),
+        ("forbidden", template_forbidden_path),
+        ("retry", template_retry_path),
+        ("timeout", template_timeout_path)
+    ]
+    
+    for name, path in required_templates:
+        if not os.path.exists(path):
+            print(f"错误：找不到模板文件 {path}")
+            sys.exit(3) # 模板缺失错误
     
     template_copy = cv2.imread(template_copy_path, cv2.IMREAD_COLOR)
     template_forbidden = cv2.imread(template_forbidden_path, cv2.IMREAD_COLOR)
+    template_retry = cv2.imread(template_retry_path, cv2.IMREAD_COLOR)
+    template_timeout = cv2.imread(template_timeout_path, cv2.IMREAD_COLOR)
     
     max_attempts = 3
     current_attempt = 1
     timeout_duration = 120 
     start_time = time.time()
     
-    print(f"开始监控豆包内容（最多尝试3次，汉字阈值：{target_threshold}）...")
+    print(f"开始监控内容（最多尝试3次，汉字阈值：{target_threshold}）...")
     
     while current_attempt <= max_attempts:
         # 检查总时间是否超时
         if time.time() - start_time > timeout_duration:
-            print("寻找超时：未能在规定时间内找到复制按钮")
+            print("寻找超时：未能在规定时间内完成任务")
             sys.exit(2) # 状态码 2：超时退出
             
-        # 截取当前屏幕，供后续两个模板共用，提高匹配效率
+        # 截取当前屏幕，供后续所有模板共用，提高匹配效率
         current_screen = capture_screen()
         
         # 1. 优先寻找 Forbidden 按钮
@@ -163,7 +181,24 @@ def main():
             print("检测到 qianwen_forbidden 图片，触发拒答机制，跳过当前文章。")
             sys.exit(4)
             
-        # 2. 寻找 Copy 按钮 (触发条件)
+        # 2. 寻找 Retry 和 Timeout 按钮
+        retry_loc, _ = find_image_on_screen(template_retry, screen=current_screen)
+        timeout_loc, _ = find_image_on_screen(template_timeout, screen=current_screen)
+        
+        if retry_loc or timeout_loc:
+            matched_name = "retry" if retry_loc else "timeout"
+            print(f"检测到 {matched_name} 图片，等待 15 秒后刷新页面...")
+            sleep(15)
+            print("执行 Command + R 刷新页面...")
+            refresh_page_mac()
+            
+            # 刷新后等待几秒钟让页面加载，然后再继续下一轮寻找
+            sleep(5) 
+            # 注意：这里使用 continue 跳过本次循环，重新开始截图并寻找。
+            # 刷新页面不算作 current_attempt 的消耗。
+            continue
+            
+        # 3. 寻找 Copy 按钮 (触发条件)
         location, shape = find_image_on_screen(template_copy, screen=current_screen)
         
         if location:
@@ -200,9 +235,6 @@ def main():
                 print(f"第 {current_attempt} 次尝试失败：内容不合格。")
                 current_attempt += 1
                 if current_attempt <= max_attempts:
-                    # ==================================================
-                    # 【修改点】：将光标移动到 709, 749，然后执行向下滚屏
-                    # ==================================================
                     print("内容不合格，移动光标到 (709, 749) 并向下滚屏...")
                     pyautogui.moveTo(709, 749)
                     pyautogui.scroll(SCROLL_AMOUNT)
@@ -211,7 +243,7 @@ def main():
                     print("已达到最大尝试次数，内容均不合格。")
                     sys.exit(1)
         else:
-            # 没找到 Copy 按钮也没有 Forbidden 按钮，滚动屏幕继续寻找
+            # 没找到 Copy、Retry、Timeout 也没有 Forbidden 按钮，滚动屏幕继续寻找
             pyautogui.scroll(SCROLL_AMOUNT)
             sleep(1)
             

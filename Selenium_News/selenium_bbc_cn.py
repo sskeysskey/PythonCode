@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
 import platform
 
 # ================= 配置区域 (BBC 专用) =================
@@ -77,6 +77,13 @@ def main():
     current_datetime = datetime.now()
     formatted_datetime = current_datetime.strftime("%Y_%m_%d_%H")
 
+    # 提前初始化变量，防止异常跳出时变量未定义
+    old_file_list = []
+    new_rows = []
+    new_rows1 = []
+    old_content = []
+    scrape_success = False # 用于标记是否抓取成功
+
     # ================= 1. 初始化 Selenium =================
     print(f"正在初始化 Chrome 驱动 (OS: {platform.system()})...")
     
@@ -112,24 +119,37 @@ def main():
         print(f"Selenium 启动失败: {e}")
         return
 
-    new_rows = []
-    new_rows1 = []
-    old_content = []
-
     try:
-        # 打开 BBC 中文网站 (繁体/简体均可，这里以繁体为例，根据你的 HTML 包含 /trad)
-        print("正在访问 BBC 中文网...")
-        driver.get("https://www.bbc.com/zhongwen/trad")
-        time.sleep(2) # 给一点时间加载 DOM
+        # ================= 2. 访问页面与重试机制 =================
+        max_retries = 3
+        page_loaded = False
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"正在访问 BBC 中文网 (第 {attempt + 1}/{max_retries} 次尝试)...")
+                driver.get("https://www.bbc.com/zhongwen/trad")
+                time.sleep(3) # 给一点时间加载 DOM
+                page_loaded = True
+                break # 成功则跳出循环
+            except WebDriverException as e:
+                print(f"网络请求失败: {e}")
+                if attempt < max_retries - 1:
+                    print("等待 5 秒后重试...")
+                    time.sleep(5)
+                else:
+                    print("达到最大重试次数，放弃本次抓取。请检查网络或代理设置。")
+        
+        if not page_loaded:
+            return # 如果页面没加载成功，直接退出，不执行后续文件操作
 
-        # ================= 2. 滚动加载 =================
+        # ================= 3. 滚动加载 =================
         print("开始滚动页面...")
         for i in range(4):
             driver.execute_script("window.scrollBy(0, 800);")
             time.sleep(0.5)
         print("滚动完成。")
 
-        # ================= 3. 读取旧文件逻辑 =================
+        # ================= 4. 读取旧文件逻辑 =================
         old_file_list = glob.glob(OLD_FILE_PATTERN)
         if old_file_list:
             old_file_path = old_file_list[0]
@@ -157,7 +177,7 @@ def main():
             except OSError as e:
                 print(f"读取旧文件时出错: {e}")
 
-        # ================= 4. 抓取新内容 (Snapshot 策略) =================
+        # ================= 5. 抓取新内容 (Snapshot 策略) =================
         all_links = [old_link for _, _, old_link in old_content]
         
         # BBC 专用选择器：寻找包含 promo-text 的 div 下的 a 标签，或者直接找 h3 下的 a 标签
@@ -192,22 +212,13 @@ def main():
 
         print(f"成功提取了 {len(raw_data_list)} 条原始数据，开始过滤...")
 
-        # --- 步骤 C: 逻辑过滤 (针对 BBC 修改) ---
+        # --- 步骤 C: 逻辑过滤 ---
         for href, title_text in raw_data_list:
             # 1. 域名和路径检查
             if 'bbc.com' not in href: continue
-            
-            # 2. URL 格式校验: 必须是文章页 (包含 /articles/)
-            if '/articles/' not in href:
-                continue
-            
-            # --- 新增过滤逻辑 ---
-            # 过滤掉以 "視頻," 开头的标题
-            if title_text.startswith("視頻,"):
-                continue
-            # -------------------
+            if '/articles/' not in href: continue
+            if title_text.startswith("視頻,"): continue
 
-            # 3. 重复检查
             is_duplicate = False
             if any(is_similar(href, old_link) for _, _, old_link in old_content):
                 is_duplicate = True
@@ -216,8 +227,10 @@ def main():
             
             if not is_duplicate:
                 new_rows.append([formatted_datetime, title_text, href])
-                new_rows1.append(["BBC", title_text, href]) # 标记为 BBC
+                new_rows1.append(["BBC", title_text, href])
                 all_links.append(href)
+
+        scrape_success = True # 标记抓取流程完整走完
 
         print("-" * 40)
         if new_rows:
@@ -232,7 +245,12 @@ def main():
     finally:
         driver.quit()
 
-    # ================= 5. 文件写入操作 =================
+    # 如果抓取过程发生严重异常（未成功），则不执行写入操作，保护旧数据
+    if not scrape_success:
+        print("❌ 抓取流程未成功完成，跳过文件写入以保护原有数据。")
+        return
+
+    # ================= 6. 文件写入操作 =================
     
     os.makedirs(os.path.dirname(NEW_HTML_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(TODAY_HTML_PATH), exist_ok=True)
