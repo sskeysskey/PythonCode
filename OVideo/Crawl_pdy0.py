@@ -103,11 +103,11 @@ TASKS = [
     # 按播放量和按更新日期抓取
     {
         "sort_type": "hits",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 1},
+                "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": True},
                 "Drama": {"id": 2, "enabled": True, "pages": 1},
                 "Show": {"id": 3, "enabled": True, "pages": 1},
                 "Anime": {"id": 4, "enabled": True, "pages": 1}
@@ -208,7 +208,7 @@ LIST_BASE_URL = "https://www.pys2.com"
 # 详情页所在域名
 DETAIL_BASE_URL = "https://www.pys2.com"
 # 【新增】：首页推荐所在域名（列表页与详情页同域）
-INDEX_BASE_URL = "https://www.pdy0.com"
+INDEX_BASE_URL = "https://www.pys2.com"
 # 输出 JSON 文件路径
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 # 封面图片保存目录
@@ -217,7 +217,7 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 7
+MIN_SCORE_LIMIT = 8
 
 
 # ==========================================
@@ -1311,7 +1311,6 @@ def crawl_category(cat_name: str, cat_cfg: dict,
     new_count = 0
     updated_count = 0
 
-
     for page in range(1, cat_cfg["pages"] + 1):
         list_url = build_list_url(cat_cfg["id"], page, year, sort_type)
         log(f"\n[列表页] {list_url}", force=True)
@@ -1320,23 +1319,20 @@ def crawl_category(cat_name: str, cat_cfg: dict,
         if not html:
             continue
 
-
         items = parse_list_page(html)
         log(f"  -> 共找到 {len(items)} 部", force=True)
-
 
         for idx_i, item in enumerate(items, 1):
             result = process_item(
                 item, cat_name, all_data, global_index,
                 detail_base_url=DETAIL_BASE_URL,
-                skip_score_filter=False,
+                skip_score_filter=cat_cfg.get("skip_score_filter", False),
                 idx_i=idx_i, total=len(items)
             )
             if result == "new":
                 new_count += 1
             elif result == "updated":
                 updated_count += 1
-
 
     return new_count, updated_count
 

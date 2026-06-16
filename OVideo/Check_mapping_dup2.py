@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from collections import defaultdict
 
 # 定义输入和输出路径
-input_path = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blacklist_url.json"
+input_path = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping.json"
 output_path = "/Users/yanzhang/Downloads/a.txt"
 
 def analyze_mapping():

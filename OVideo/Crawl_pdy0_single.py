@@ -371,7 +371,8 @@ def main():
     match = None
     key = None
     for k, v in idx.items():
-        if k[1] == path or k[0] == detail["name"]:
+        # 只按URL路径去重，取消片名相等就匹配
+        if k[1] == path:
             match = v
             key = k
             break
