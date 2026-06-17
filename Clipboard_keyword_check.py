@@ -14,9 +14,11 @@ from datetime import datetime
 BLOCKED_KEYWORDS = [
     "天安门",
     "六四",
-    "中国共产党",
     "民运",
     "反共",
+    "反送中",
+    "反修例",
+    "挺台",
     "入侵台湾",
     "中華民族",
     "国安法",
