@@ -2,8 +2,8 @@ import json
 import argparse
 import pyperclip
 
-# SKIP_CATEGORIES = {'Movie', 'Drama'}
-SKIP_CATEGORIES = set()
+SKIP_CATEGORIES = {'Drama'}
+# SKIP_CATEGORIES = set()
 
 # ===== 新增：读取顺序与数量配置 =====
 REVERSE_SCAN = True              # 开关：True 表示每个分类倒着读取，False 表示原样正序读取
