@@ -30,7 +30,7 @@ def show_warning(msg):
 
 def check_info_has_blacklist_keyword(target_url, keywords):
     """
-    修改版：在 OVideos.json 中查找 target_url 是否存在于 playlist 的 episodes 中
+    修复版：在 OVideos.json 中查找 target_url 是否存在于 playlist 的 episodes 中
     """
     if not os.path.exists(OVIDEOS_FILE):
         print(f"⚠️  OVideos.json 文件不存在，跳过二次判断")
@@ -49,15 +49,23 @@ def check_info_has_blacklist_keyword(target_url, keywords):
         for item in items:
             if not isinstance(item, dict): continue
             
-            # --- 核心修改：检查 playlist ---
+            # --- 修复核心逻辑：检查 playlist ---
             playlist = item.get('playlist', [])
             found_in_episodes = False
             
             for source in playlist:
-                episodes = source.get('episodes', [])
-                if target_url in episodes:
-                    found_in_episodes = True
-                    break
+                episodes = source.get('episodes', {})
+                # 修复：episodes 可能是字典（key=url形式）或列表（直接url形式）
+                if isinstance(episodes, dict):
+                    # 如果是字典，检查值中是否包含目标URL
+                    if target_url in episodes.values():
+                        found_in_episodes = True
+                        break
+                elif isinstance(episodes, list):
+                    # 如果是列表，直接检查是否包含目标URL
+                    if target_url in episodes:
+                        found_in_episodes = True
+                        break
             
             if found_in_episodes:
                 # 找到了链接，现在检查 info

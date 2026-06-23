@@ -49,19 +49,19 @@ PLAYLIST_NAME = "chnland"
 SITE_KEY      = "chnland"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
-BLACKLIST_NAMES = []
+BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵"]
 
 # 分类页 -> 分组（分组由 URL 直接决定，无需 detect_group）
 LIST_PAGES = [
-    # ("https://www.chnland.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
+    ("https://www.chnland.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
+    ("https://www.chnland.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
     ("https://www.chnland.com/vodshow/35--time---------2026.html", "Movie", "电影(35)"),
-    # ("https://www.chnland.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
-    # ("https://www.chnland.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
-    # ("https://www.chnland.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
+    ("https://www.chnland.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
+    ("https://www.chnland.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
+    
 ]
 
-# FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地"]
-FILTER_REGIONS = ["测试"]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
 
 # 视为"空值"的占位文案
 EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
@@ -91,7 +91,7 @@ def fetch(url, is_binary=False):
 
 def _re_class(base):
     """
-    把单下划线写法的类名转成兼容“单/双下划线”的正则。
+    把单下划线写法的类名转成兼容"单/双下划线"的正则。
     例如 "stui-content_detail" -> 同时匹配 stui-content_detail 和 stui-content__detail
     """
     return re.compile(r"^" + base.replace("_", "_+") + r"$")
@@ -202,6 +202,14 @@ def download_and_localize_image(img_url):
             return ""
     return fn
 
+def extract_info_date(info):
+    """从 info 文本中提取 8 位日期数字 (YYYYMMDD)，找不到返回 None"""
+    if not info:
+        return None
+    m = re.search(r"(20\d{6})", info)
+    if m:
+        return m.group(1)
+    return None
 
 def is_valid_episode_name(name):
     """判断集名是否有效（过滤非正式集名）"""
@@ -499,13 +507,16 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
     if episodes:
         playlist.append({"name": PLAYLIST_NAME, "episodes": episodes})
 
+    # 将导演列表转换为 " / " 分隔的字符串，若为空则保持空字符串
+    director_str = " / ".join(fields["导演"]) if fields["导演"] else ""
+
     return {
         "name":   real_name,
         "url":    sub_url,
         "info":   info,
         "update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "image":  img_url,
-        "导演":   fields["导演"],
+        "导演":   director_str,        # <--- 改为字符串
         "编剧":   [],
         "主演":   fields["主演"],
         "类型":   fields["类型"],
@@ -533,18 +544,24 @@ def save_json(data):
 
 
 def find_existing_global(data, name, sub_url):
+    # 1. 优先跨分类按 URL 全局检索
+    if sub_url:
+        for group in ["Movie", "Drama", "Show", "Anime"]:
+            for item in data.get(group, []):
+                existing_urls = {item.get(k) for k in item.keys()
+                                 if k == "url" or re.match(r"^url\d+$", k)}
+                if sub_url in existing_urls:
+                    if item.get("name") != name:
+                        print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
+                              f"(URL: {sub_url}, 已有:「{item.get('name')}」, "
+                              f"抓取:「{name}」, 所在分类:{group})")
+                    return group, item
+
+    # 2. 再按名称全局检索
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             if item.get("name") == name:
                 return group, item
-
-    if sub_url:
-        for group in ["Movie", "Drama", "Show", "Anime"]:
-            for item in data.get(group, []):
-                existing_urls = {item.get(k) for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)}
-                if sub_url in existing_urls:
-                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
-                    return group, item
 
     return None, None
 
@@ -670,10 +687,19 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
 
         print(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并将播放源插入至第一位")
 
-        # 用抓取到的 info 更新（仅当现有 info 为空时）
-        if new_scraped_info and not existing.get("info", ""):
-            existing["info"] = new_scraped_info
-            print(f"      [info更新] 补充 info: 「{new_scraped_info}」")
+        # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新时都更新
+        if new_scraped_info:
+            old_info = existing.get("info", "")
+            old_date = extract_info_date(old_info)
+            new_date = extract_info_date(new_scraped_info)
+            should_update = False
+            if not old_info:
+                should_update = True
+            elif new_date and (not old_date or new_date > old_date):
+                should_update = True
+            if should_update and new_scraped_info != old_info:
+                existing["info"] = new_scraped_info
+                print(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
 
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return "channel_added"
@@ -700,12 +726,7 @@ def process_list_page(data, list_url, group, page_name):
             rec = parse_subpage(url, name, info, list_img=img)
             real_name = rec["name"]
 
-            region = rec.get("地区", "")
-            if any(keyword == region.strip() for keyword in FILTER_REGIONS):
-                ok += 1
-                time.sleep(SLEEP_BETWEEN)
-                continue
-
+            # 先解析播放源
             new_eps = {}
             for pl in rec.get("playlist", []):
                 if pl.get("name") == PLAYLIST_NAME:
@@ -718,7 +739,30 @@ def process_list_page(data, list_url, group, page_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
+            # ===== 先跨分类按 URL 全局检索（再按名称）=====
             matched_group, existing = find_existing_global(data, real_name, url)
+
+            # 生效分类：命中已有记录则以其所在分类为准，否则用当前抓取分类
+            effective_group = matched_group if existing else group
+            if existing and matched_group != group:
+                print(f"    * 该资源已存在于「{matched_group}」分类，"
+                      f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
+
+            # ===== 地区过滤：按生效分类，非综艺才过滤 =====
+            region = rec.get("地区", "")
+            if effective_group != "Show":
+                if any(keyword == region.strip() for keyword in FILTER_REGIONS):
+                    print(f"    - 跳过：地区包含禁用关键词（{region}）")
+                    ok += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
+
+            # ===== 电视剧/动漫集数超过 30 则跳过：按生效分类 =====
+            if effective_group in ("Drama", "Anime") and len(new_eps) > 30:
+                print(f"    - 跳过：{effective_group} 集数为 {len(new_eps)} 集，超过 30 集上限")
+                ok += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
 
             if existing:
                 status = process_existing_record(existing, new_eps, url, rec)
@@ -731,6 +775,7 @@ def process_list_page(data, list_url, group, page_name):
                     save_json(data)
                     ok += 1
                 elif status == "no_change":
+                    print(f"    - 无变化({matched_group})：集数与已有内容一致，无需更新")
                     ok += 1
                 elif status == "decreased":
                     print(f"    - 忽略({matched_group})：抓取集数少于已有集数")
@@ -739,10 +784,11 @@ def process_list_page(data, list_url, group, page_name):
                     print(f"    ! 忽略({matched_group})：未成功更新")
                     fail += 1
             else:
-                # 新增记录
+                # 新增记录（用当前抓取分类）
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(group, []).append(rec)
-                print(f"    ✓ 新增 -> {group} (共 {len(new_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
+                print(f"    ✓ 新增 -> {group} (共 {len(new_eps)} 集) "
+                      f"[真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
 

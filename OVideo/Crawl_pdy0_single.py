@@ -11,7 +11,7 @@ import ssl
 from urllib3.util.ssl_ import create_urllib3_context
 from urllib.parse import urljoin, urlparse
 
-# ===================== 配置（和你原代码完全一致） =====================
+# ===================== 配置（和原代码一致） =====================
 VERBOSE_LOG = False
 PROTECTED_SOURCES = {"xb6v", "6vdy"}
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
@@ -111,7 +111,7 @@ def fetch(url: str) -> str | None:
             time.sleep(2)
     return None
 
-# ===================== 封面下载（完全和原代码一致） =====================
+# ===================== 封面下载（和原代码一致） =====================
 def download_cover(img_url: str, video_id: str) -> str:
     if not img_url:
         return ""
@@ -173,7 +173,6 @@ def download_cover(img_url: str, video_id: str) -> str:
 
 # ===================== 播放列表解析 =====================
 def parse_playlist(soup):
-    playlist = []
     online = soup.select_one("#url-content1")
     if not online:
         return []
@@ -216,31 +215,36 @@ def _find_span_by_label(block, label):
             return s
     return None
 
-def parse_detail_page(html, name, url, info=""):
+def parse_detail_page(html, url, name="", info=""):
     soup = BeautifulSoup(html, "html.parser")
     playlist = parse_playlist(soup)
     if not playlist:
         print("[警告] 无播放源")
         return None
 
-    # ===================== 【修复：自动提取 name】 =====================
+    # ===================== 自动提取 name =====================
     h3_tag = soup.select_one(".vod-info .info h3 a")
     if h3_tag:
-        name = clean_ws(h3_tag.get_text(strip=True))  # 提取：短途旅游
+        name = clean_ws(h3_tag.get_text(strip=True))
 
-    # ===================== 【修复：自动提取 info（HD/TC/抢先等）】 =====================
+    # ===================== 自动提取 info（HD/TC/抢先等） =====================
     info = ""
-    otherbox = soup.select_one(".vod-info .otherbox")
+    otherbox = soup.select_one(".vod-info .otherbox") or soup.select_one(".otherbox")
     if otherbox:
         em_tag = otherbox.find("em")
         if em_tag:
-            info = clean_ws(em_tag.get_text(strip=True))  # 提取：HD
+            info = clean_ws(em_tag.get_text(strip=True))
 
-    # 最后更新时间
+    # ===================== 最后更新时间（对齐主程序逻辑） =====================
     update = ""
-    em_list = otherbox.find_all("em") if otherbox else []
-    if len(em_list) >= 2:
-        update = clean_ws(em_list[1].get_text(strip=True))
+    if otherbox:
+        ems = otherbox.find_all("em")
+        if ems:
+            last_text = clean_ws(ems[-1].get_text(strip=True))
+            if re.search(r"\d{4}-\d{2}-\d{2}", last_text):
+                update = last_text
+            elif len(ems) >= 2:
+                update = clean_ws(ems[-1].get_text(strip=True))
 
     data = {
         "name": name, "url": url, "info": info,
@@ -297,6 +301,8 @@ def parse_detail_page(html, name, url, info=""):
             m = re.search(r"(豆瓣|IMDB)\s*([0-9.]+|--)", t, re.I)
             if m:
                 p = m.group(1)
+                if p.upper() == "IMDB":
+                    p = "IMDB"
                 sc = m.group(2)
                 if sc != "--":
                     data["评分"][p] = sc
@@ -320,20 +326,41 @@ def load_existing(path):
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"[警告] 读取已有 JSON 失败：{e}")
+    return {}
 
-def build_index(data):
+def build_index(existing: dict) -> dict:
+    """
+    构建跨分类全局索引（与主程序一致）。
+    结构: {(name, path): {"info","update","image","real_name","real_path","category","list_idx"}}
+    """
     idx = {}
-    for cat, lst in data.items():
-        if isinstance(lst, list):
-            for i, it in enumerate(lst):
+    for cat, items in existing.items():
+        if isinstance(items, list):
+            for list_idx, it in enumerate(items):
                 name = it.get("name", "")
-                urls = [it[k] for k in it if k.startswith("url")]
-                for u in urls:
-                    p = get_url_path(u)
-                    idx[(name, p)] = {"cat": cat, "idx": i, "item": it}
+                info = it.get("info", "")
+                update = it.get("update", "")
+                image = it.get("image", "")
+                if name:
+                    url_keys = [k for k in it.keys() if k == "url" or (k.startswith("url") and k[3:].isdigit())]
+                    for key_name in url_keys:
+                        url_val = it.get(key_name, "")
+                        if url_val:
+                            path = get_url_path(url_val)
+                            idx[(name, path)] = {
+                                "info": info,
+                                "update": update,
+                                "image": image,
+                                "real_name": name,
+                                "real_path": path,
+                                "category": cat,
+                                "list_idx": list_idx
+                            }
     return idx
 
 def save_data(data):
@@ -342,85 +369,264 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
     os.replace(tmp, OUTPUT_FILE)
 
-# ===================== 主逻辑 =====================
+# ===================== 主逻辑（移植主程序完整更新规则） =====================
 def main():
     print("===== 单独详情页抓取工具 =====")
     url = input("请输入详情页URL：").strip()
-    cat = input("请输入分类（Movie/Drama/Show/Anime）：").strip()
+    cat_name = input("请输入分类（Movie/Drama/Show/Anime）：").strip()
 
-    if not url or not cat:
+    if not url or not cat_name:
         print("输入不能为空")
         return
 
-    data = load_existing(OUTPUT_FILE)
-    idx = build_index(data)
-    path = get_url_path(url)
+    all_data = load_existing(OUTPUT_FILE)
+    global_index = build_index(all_data)
 
     print(f"正在抓取：{url}")
-    html = fetch(url)
-    if not html:
+    detail_html = fetch(url)
+    if not detail_html:
         print("抓取失败")
         return
 
-    # 这里修复了变量顺序错误！
-    detail = parse_detail_page(html, "临时名称", url, info="")
+    detail = parse_detail_page(detail_html, url)
     if not detail:
         return
 
-    # 去重匹配
-    match = None
-    key = None
-    for k, v in idx.items():
-        # 只按URL路径去重，取消片名相等就匹配
-        if k[1] == path:
-            match = v
-            key = k
-            break
+    item_name = detail["name"]
+    item_info = detail["info"]
+    item_path = get_url_path(url)
 
-    if cat not in data:
-        data[cat] = []
+    # =============================================================
+    # 跨分类多维度去重判定（移植自主程序 process_item）
+    # 注意：single 是手动强制抓取，不做"跳过/过滤"判定
+    # =============================================================
+    key = (item_name, item_path)
+    old_data = global_index.get(key)
+    matched_by_path_only = False
+    is_special_6vdy_update = False
+    special_update_target = None
 
-    if match:
-        old = match["item"]
-        detail["name"] = old["name"]
-        detail["url"] = old["url"]
-        for k in old:
-            if k.startswith("url") and k != "url":
-                detail[k] = old[k]
+    # 1. 跨分类全局 path 查找
+    if old_data is None:
+        for idx_key, idx_val in global_index.items():
+            if idx_val.get("real_path") == item_path:
+                old_data = idx_val
+                key = idx_key
+                matched_by_path_only = True
+                break
 
-        # 保留受保护播放源
-        old_pl = old.get("playlist", [])
-        protect = [p for p in old_pl if p.get("name") in PROTECTED_SOURCES]
-        new_pl = [p for p in detail["playlist"] if p.get("name") not in PROTECTED_SOURCES]
-        final_pl = []
-        vdy = next((x for x in protect if x["name"] == "6vdy"), None)
-        if vdy:
-            final_pl.append(vdy)
-        for p in protect:
-            if p != vdy:
-                final_pl.append(p)
-        final_pl += new_pl
-        detail["playlist"] = final_pl
+    # 2. 跨分类同名特殊占位更新规则（6vdy / chnland）
+    if old_data is None:
+        for cat, existing_list in all_data.items():
+            if not isinstance(existing_list, list):
+                continue
+            for list_idx, existing_item in enumerate(existing_list):
+                if existing_item.get("name") == item_name:
+                    all_urls = {k: v for k, v in existing_item.items()
+                                if k == "url" or (k.startswith("url") and k[3:].isdigit())}
 
-        # 字段合并规则
-        detail["update"] = old.get("update", "")
-        for f in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
-            if old.get(f) and not detail.get(f):
-                detail[f] = old[f]
-        if old.get("date") and len(old["date"]) >= len(detail.get("date", "")):
-            detail["date"] = old["date"]
-        for p in ["豆瓣", "IMDB"]:
-            if old["评分"].get(p) and not detail["评分"].get(p):
-                detail["评分"][p] = old["评分"][p]
+                    target_key = None      # 新 URL 要写入的字段
+                    base_url_val = None    # 用于计算 path 身份的基准 url
 
-        data[match["cat"]].pop(match["idx"])
-        print(f"[更新] {detail['name']}")
+                    # 情况A：只有一个 url，且含 6vdy.org 或 chnland.com -> 新 URL 写入 url1
+                    if len(all_urls) == 1 and "url" in all_urls:
+                        old_url_val = all_urls["url"]
+                        if "6vdy.org" in old_url_val or "chnland.com" in old_url_val:
+                            target_key = "url1"
+                            base_url_val = old_url_val
+
+                    # 情况B：恰好两个 url（url + url1），分别含 6vdy.org 与 chnland.com -> 新 URL 写入 url2
+                    elif len(all_urls) == 2 and "url" in all_urls and "url1" in all_urls:
+                        combined = all_urls["url"] + " " + all_urls["url1"]
+                        if "6vdy.org" in combined and "chnland.com" in combined:
+                            target_key = "url2"
+                            base_url_val = all_urls["url"]
+
+                    if target_key:
+                        is_special_6vdy_update = True
+                        special_update_target = target_key
+                        old_data = {
+                            "info": existing_item.get("info", ""),
+                            "update": existing_item.get("update", ""),
+                            "image": existing_item.get("image", ""),
+                            "real_name": existing_item.get("name"),
+                            "real_path": get_url_path(base_url_val),
+                            "category": cat,
+                            "list_idx": list_idx
+                        }
+                        key = (existing_item.get("name"), get_url_path(base_url_val))
+                        break
+            if is_special_6vdy_update:
+                break
+
+    is_update = (old_data is not None) or is_special_6vdy_update
+
+    # tag 判定
+    if is_update:
+        if is_special_6vdy_update:
+            tag = f"[特殊占位更新→{special_update_target}]"
+        elif matched_by_path_only:
+            tag = "[更名更新]"
+        elif old_data.get("info") != item_info:
+            tag = "[Info更新]"
+        elif not old_data.get("update"):
+            tag = "[补update]"
+        elif not old_data.get("image"):
+            tag = "[补图]"
+        else:
+            tag = "[更新]"
     else:
-        print(f"[新增] {detail['name']}")
+        tag = "[新增]"
 
-    data[cat].append(detail)
-    save_data(data)
-    print(f"✅ 已写入 {cat} 分类 → {OUTPUT_FILE}")
+    print(f"{tag} {item_name}  {url}  info={item_info}")
+
+    # ===== 任何更新 name 不要改 =====
+    if is_update:
+        detail["name"] = key[0]
+
+    # 获取旧分类和旧条目
+    old_entry = None
+    old_category = None
+    target_list_idx = None
+    if is_update:
+        old_category = old_data.get("category")
+        target_list_idx = old_data.get("list_idx")
+        if old_category and old_category in all_data:
+            existing_list = all_data[old_category]
+            if target_list_idx is not None and target_list_idx < len(existing_list):
+                old_entry = existing_list[target_list_idx]
+
+    # 合并受保护源
+    if old_entry:
+        old_playlist = old_entry.get("playlist", [])
+        protected_in_old = [p for p in old_playlist if p.get("name") in PROTECTED_SOURCES]
+        if protected_in_old:
+            new_playlist = [p for p in detail.get("playlist", []) if p.get("name") not in PROTECTED_SOURCES]
+            final_playlist = []
+            vdy_source = next((p for p in protected_in_old if p.get("name") == "6vdy"), None)
+            if vdy_source:
+                final_playlist.append(vdy_source)
+            for p in protected_in_old:
+                if p.get("name") != "6vdy":
+                    final_playlist.append(p)
+            final_playlist.extend(new_playlist)
+            detail["playlist"] = final_playlist
+            kept_names = [p.get("name") for p in protected_in_old]
+            print(f"     [保留受保护源] {kept_names} (已置顶 6vdy)")
+
+        if matched_by_path_only:
+            print(f"     [更名同步] {key[0]} -> {item_name} (已强行保留旧名 {key[0]})")
+
+    # 细粒度字段合并与更新
+    if is_update and old_entry:
+        detail["update"] = old_entry.get("update", "")
+
+        for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
+            old_val = old_entry.get(field)
+            new_val = detail.get(field)
+            if not old_val and new_val:
+                print(f"     [补全字段] {field}: (空) -> {new_val}")
+            else:
+                detail[field] = old_val
+
+        old_date = old_entry.get("date", "")
+        new_date = detail.get("date", "")
+        if new_date and (not old_date or len(new_date) > len(old_date)):
+            print(f"     [更新日期] date: {old_date or '(空)'} -> {new_date}")
+        else:
+            detail["date"] = old_date
+
+        old_rating = old_entry.get("评分", {})
+        if not isinstance(old_rating, dict):
+            old_rating = {"豆瓣": "", "IMDB": ""}
+        new_rating = detail.get("评分", {})
+        final_rating = {}
+        for platform in ["豆瓣", "IMDB"]:
+            old_score = old_rating.get(platform, "")
+            new_score = new_rating.get(platform, "")
+            if not old_score and new_score:
+                final_rating[platform] = new_score
+                print(f"     [补全评分] {platform}: (空) -> {new_score}")
+            else:
+                final_rating[platform] = old_score
+        detail["评分"] = final_rating
+
+    # ===== 字段排序重构 =====
+    ordered_detail = {}
+    ordered_detail["name"] = detail["name"]
+
+    if is_update and old_entry:
+        ordered_detail["url"] = old_entry.get("url", "")
+    else:
+        ordered_detail["url"] = detail["url"]
+
+    if is_special_6vdy_update and old_entry:
+        # 先保留旧条目里已有的附加 url 字段（如 url1），再把新 URL 写入目标槽位
+        for k, v in old_entry.items():
+            if k.startswith("url") and k != "url":
+                ordered_detail[k] = v
+        ordered_detail[special_update_target] = detail["url"]
+        print(f"     [特殊占位合并] 已将新抓取的 URL 写入为 {special_update_target}: {detail['url']}")
+    elif old_entry:
+        for k, v in old_entry.items():
+            if k.startswith("url") and k != "url":
+                ordered_detail[k] = v
+
+    if "info" in detail:
+        ordered_detail["info"] = detail["info"]
+    if "update" in detail:
+        ordered_detail["update"] = detail["update"]
+    ordered_detail["update_pk"] = detail.get("update_pk", "")
+
+    for k, v in detail.items():
+        if k not in ordered_detail:
+            ordered_detail[k] = v
+    detail = ordered_detail
+
+    # update_pk 变化提示
+    if is_update and old_entry:
+        old_upk = old_entry.get("update_pk", "")
+        new_upk = detail.get("update_pk", "")
+        if old_upk != new_upk:
+            if not old_upk:
+                print(f"     [新增 update_pk 并更新] -> {new_upk}")
+            else:
+                print(f"     [update_pk 变化] {old_upk} → {new_upk}")
+
+    # =============================================================
+    # 跨分类数据写入
+    # =============================================================
+    if is_update:
+        if old_category != cat_name:
+            print(f"     [跨分类移动] 检测到分类漂移: {old_category} ➔ {cat_name}")
+            if old_category in all_data and target_list_idx is not None:
+                if target_list_idx < len(all_data[old_category]):
+                    all_data[old_category].pop(target_list_idx)
+            if cat_name not in all_data:
+                all_data[cat_name] = []
+            all_data[cat_name].append(detail)
+        else:
+            if target_list_idx is not None and target_list_idx < len(all_data[cat_name]):
+                all_data[cat_name][target_list_idx] = detail
+            else:
+                replaced = False
+                for i, old in enumerate(all_data[cat_name]):
+                    old_path = get_url_path(old.get("url", ""))
+                    if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
+                        all_data[cat_name][i] = detail
+                        replaced = True
+                        break
+                if not replaced:
+                    all_data[cat_name].append(detail)
+        print(f"[更新完成] {detail['name']}")
+    else:
+        if cat_name not in all_data:
+            all_data[cat_name] = []
+        all_data[cat_name].append(detail)
+        print(f"[新增完成] {detail['name']}")
+
+    save_data(all_data)
+    print(f"✅ 已写入 {cat_name} 分类 → {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()

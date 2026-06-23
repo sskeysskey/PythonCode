@@ -55,8 +55,7 @@ REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["乘风2026"]
 
-# FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地"]
-FILTER_REGIONS = ["测试"]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
 
 HEADERS = {
     "User-Agent": (

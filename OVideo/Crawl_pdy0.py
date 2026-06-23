@@ -33,7 +33,7 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 # 当条目重新抓取时，这些源会从旧数据中保留下来，
 # 只更新这个集合之外的源。后续要新增其它外部源，直接加进来即可。
 # 【修改】：将 "6vdy" 也加入受保护源，防止在更新时被覆盖或删除
-PROTECTED_SOURCES = {"xb6v", "6vdy"}
+PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
 
 
 # ==========================================
@@ -228,8 +228,7 @@ ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳�
 
 
 # Drama / Anime 黑名单地区：只要精准匹配这些，就跳过不抓取
-# FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地"}
-FILTER_REGIONS = {"测试"}
+FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"}
 
 
 # ==========================================
@@ -1143,7 +1142,7 @@ def process_item(item: dict, cat_name: str,
                 final_playlist.extend(new_playlist)
                 detail["playlist"] = final_playlist
                 kept_names = [p.get("name") for p in protected_in_old]
-                print(f"     [保留受保护源] {kept_names} (已置顶 6vdy)")
+                print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland)")
 
 
             if is_update and old_entry:

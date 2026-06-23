@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "豆瓣抓取助手",
+  "version": "1.0",
+  "description": "抓取豆瓣电影页面的上映日期/首播日期、豆瓣评分和短评，下载为 json",
+  "permissions": [
+    "scripting",
+    "downloads",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.douban.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "scrape-douban": {
+      "suggested_key": {
+        "default": "Alt+N",
+        "mac": "Alt+N"
+      },
+      "description": "抓取当前豆瓣页面"
+    }
+  }
+}

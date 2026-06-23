@@ -7,7 +7,7 @@ def is_short_line_to_remove(line):
     1. 以"以下是"开头
     2. 且该行中文字符数少于 10 个
     """
-    # 检查是否以“以下是”开头
+    # 检查是否以"以下是"开头
     if line.strip().startswith("以下是"):
         # 统计中文字符数 (使用正则表达式匹配中文字符)
         chinese_chars = re.findall(r'[\u4e00-\u9fa5]', line)
@@ -70,9 +70,28 @@ def remove_bloomberg_tail(content):
     return "\n\n".join(paragraphs).rstrip() + "\n"
 
 
+def remove_rfi_youtube_content(content, url):
+    """
+    针对 RFI.fr 页面：如果剪贴板内容包含"若要显此YouTube 内容，您需要授权受众测量和广告 Cookies"，
+    则将该句和其后的所有内容清除
+    """
+    if "rfi.fr" in url.lower():
+        target_text = "若要显此YouTube 内容，您需要授权受众测量和广告 Cookies"
+        index = content.find(target_text)
+        if index != -1:
+            # 截取到该句子之前的内容
+            cleaned_content = content[:index].rstrip()
+            print("[RFI.fr] 已移除 YouTube Cookie 提示及后续内容。")
+            return cleaned_content
+    return content
+
+
 def clean_clipboard():
     # 获取剪贴板内容
     clipboard_content = pyperclip.paste()
+
+    # 获取当前页面 URL
+    current_url = get_current_url()
 
     # 1. 移除"更多阅读 / 延伸阅读 / 相关阅读 / 拓展阅读"等开头行
     pattern = r'^(?:更多阅读|延伸阅读|相关阅读|拓展阅读).*(?:\r?\n|$)'
@@ -84,12 +103,14 @@ def clean_clipboard():
     final_content = "\n".join(final_lines)
 
     # 3. 【新增】如果当前页面是 Bloomberg，进一步剔除末尾的 newsletter / podcast 推广段
-    current_url = get_current_url().lower()
-    if "bloomberg.com" in current_url:
+    if "bloomberg.com" in current_url.lower():
         before_len = len(final_content)
         final_content = remove_bloomberg_tail(final_content)
         if len(final_content) != before_len:
             print("[Bloomberg] 已剔除末尾的 newsletter/podcast 推广段落。")
+
+    # 4. 【新增】如果当前页面是 RFI.fr，检查并移除 YouTube Cookie 提示内容
+    final_content = remove_rfi_youtube_content(final_content, current_url)
 
     # 写回剪贴板
     pyperclip.copy(final_content)
@@ -101,5 +122,6 @@ if __name__ == "__main__":
         clean_clipboard()
         print("剪贴板内容已清理完成！")
         print("已移除\"更多阅读\"等相关行，以及\"以下是...\"且中文少于10字的行。")
+        print("如适用，还移除了 Bloomberg 推广段落和 RFI YouTube Cookie 提示内容。")
     except Exception as e:
         print(f"发生错误: {str(e)}")
