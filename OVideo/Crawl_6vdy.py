@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-6vdy.org 最新剧集、最新电影、小编推荐爬取脚本（升级版 + 防休眠 + 国产地区过滤 + 新格式兼容 + 补全模式）
+6vdy.org / xb6v.com 最新剧集、最新电影、小编推荐、首页 爬取脚本
+（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + xb6v首页抓取）
 
 新增能力：
-1. 自动识别“新格式详情页”（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
+1. 自动识别"新格式详情页"（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
 2. 提供补全模式 backfill：python 脚本.py backfill
    - 扫描 JSON 中所有来自 6vdy 且字段缺失的记录，用新方法重抓并只补空字段（已有/正确的不动）。
+3. 新增 xb6v.com 首页抓取。
+4. 过滤规则变更：仅当【地区命中过滤名单】且【6vdy渠道为分集剧集(键名含"集")】时才跳过。
 """
 
 import os
@@ -17,7 +20,7 @@ import requests
 import platform
 import subprocess
 import atexit
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -48,6 +51,7 @@ atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
 BASE_URL    = "https://www.6vdy.org/qian50m.html"
+HOME_URL_XB6V = "https://www.xb6v.com/"          # 新增：xb6v 首页
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "6vdy"
@@ -56,6 +60,10 @@ SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["乘风2026"]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
+
+# ============== 镜像站识别（同源不同域名）==============
+MIRROR_DOMAINS = ("6vdy", "xb6v")
+
 
 HEADERS = {
     "User-Agent": (
@@ -206,7 +214,7 @@ def safe_filename(url):
 
 
 # ============== 播放列表提取 ==============
-def extract_episodes(soup):
+def extract_episodes(soup, base_url=BASE_URL):
     for widget in soup.select("div.widget.box.row"):
         h3 = widget.find("h3")
         if h3 and "播放地址（无需安装插件" in h3.get_text():
@@ -216,7 +224,7 @@ def extract_episodes(soup):
                 if "DownSys/play" in href:
                     ep_name = a.get_text(strip=True) or a.get("title", "").strip()
                     if ep_name:
-                        eps[ep_name] = urljoin(BASE_URL, href)
+                        eps[ep_name] = urljoin(base_url, href)
             return eps
     return {}
 
@@ -338,7 +346,7 @@ INTRO_STOP_RE = re.compile(
 
 
 def parse_people_line(value):
-    """将“A / B / C”形式的人名拆成去重列表"""
+    """将"A / B / C"形式的人名拆成去重列表"""
     parts = re.split(r"[/、]", value)
     out, seen = [], set()
     for p in parts:
@@ -460,7 +468,7 @@ def parse_new_format(lines, h1_name):
             title_found = True
             continue
 
-    # alias 决策：优先“又名”，否则用标题外文名
+    # alias 决策：优先"又名"，否则用标题外文名
     if youming:
         result["alias"] = youming
     elif title_alias:
@@ -583,7 +591,8 @@ def parse_subpage(sub_url, default_name, default_info):
         if not rating.get("IMDB") and nf["评分"].get("IMDB"):
             rating["IMDB"] = nf["评分"]["IMDB"]
 
-    episodes = extract_episodes(soup)
+    # 用当前详情页 URL 作为播放链接拼接基准，兼容 xb6v 站内相对链接
+    episodes = extract_episodes(soup, base_url=sub_url)
     playlist = []
     if episodes:
         playlist.append({"name": PLAYLIST_NAME, "episodes": episodes})
@@ -621,19 +630,66 @@ def save_json(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
+def _url_path(url):
+    """提取 URL 的纯路径部分（去掉协议、域名、尾部斜杠，统一小写）"""
+    if not url:
+        return ""
+    try:
+        p = urlparse(url).path
+    except Exception:
+        return ""
+    return p.rstrip("/").lower()
+
+
+def _is_mirror(url):
+    """判断该 URL 是否属于 6v 系同源镜像站"""
+    if not url:
+        return False
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(d in host for d in MIRROR_DOMAINS)
+
+
 def find_existing_global(data, name, sub_url):
+    # ---- 1) 名称精确匹配 ----
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             if item.get("name") == name:
                 return group, item
 
     if sub_url:
+        sub_path = _url_path(sub_url)
+        sub_is_mirror = _is_mirror(sub_url)
+
+        # ---- 2) URL 完全一致匹配 ----
         for group in ["Movie", "Drama", "Show", "Anime"]:
             for item in data.get(group, []):
-                existing_urls = {item.get(k) for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)}
+                existing_urls = {
+                    item.get(k) for k in item.keys()
+                    if k == "url" or re.match(r"^url\d+$", k)
+                }
                 if sub_url in existing_urls:
-                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 (URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
+                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
+                          f"(URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
                     return group, item
+
+        # ---- 3) 同源镜像站「路径一致」匹配 ----
+        #     6vdy.org 与 xb6v.com 等为同一站点的不同域名，
+        #     其详情页路径(如 /dianshiju/oumeiju/28772.html)完全相同，
+        #     故仅当双方都是镜像域名且 path 相同时判定为同一资源。
+        if sub_is_mirror and sub_path:
+            for group in ["Movie", "Drama", "Show", "Anime"]:
+                for item in data.get(group, []):
+                    for k in item.keys():
+                        if k == "url" or re.match(r"^url\d+$", k):
+                            u = item.get(k, "")
+                            if _is_mirror(u) and _url_path(u) == sub_path:
+                                print(f"      [镜像路径去重] 发现同源镜像路径一致的记录 "
+                                      f"(路径: {sub_path}, 已有:「{item.get('name')}」@{u}, "
+                                      f"抓取:「{name}」@{sub_url})")
+                                return group, item
 
     return None, None
 
@@ -776,7 +832,23 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if old_6vdy_idx != -1:
             playlist[old_6vdy_idx] = new_pl
         else:
-            playlist.insert(0, new_pl)
+            # ==============================================
+            # 【关键修改】找到 chnland 并放在它后面
+            # ==============================================
+            chnland_idx = -1
+            for i, item in enumerate(playlist):
+                if item.get("name") == "chnland":
+                    chnland_idx = i
+                    break
+
+            if chnland_idx != -1:
+                # 有 chnland → 放在它后面
+                insert_pos = chnland_idx + 1
+                playlist.insert(insert_pos, new_pl)
+                print(f"      [排序规则] 检测到 chnland，6vdy 已放在它后面")
+            else:
+                # 没有 chnland → 放在第一个
+                playlist.insert(0, new_pl)
 
         info_updated = update_info_field_if_needed(existing, playlist)
         movie_info_updated = False
@@ -878,33 +950,69 @@ def get_list_by_tab(tab_index):
     return items
 
 
-def process_tab_unified(data, tab_index, tab_name):
-    print(f"\n[抓取] {tab_name} ...")
-    items = get_list_by_tab(tab_index)
-    print(f"  共发现 {len(items)} 条")
+def get_homepage_list_xb6v():
+    """抓取 xb6v.com 首页 #post_container 中的所有条目"""
+    html = fetch(HOME_URL_XB6V)
+    soup = BeautifulSoup(html, "lxml")
+    container = soup.select_one("#post_container")
+    if not container:
+        raise RuntimeError("找不到 #post_container（xb6v 首页）")
+
+    items = []
+    seen = set()
+    for li in container.select("li.post"):
+        h2 = li.find("h2")
+        a = h2.find("a", href=True) if h2 else None
+        if not a:
+            # 退而求其次：取缩略图链接
+            a = li.select_one("a.zoom[href]")
+        if not a:
+            continue
+        title = (a.get("title") or "").strip() or a.get_text(strip=True)
+        href = a.get("href", "").strip()
+        if not title or not href:
+            continue
+        full_url = urljoin(HOME_URL_XB6V, href)
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        name, info = split_name_info(title)
+        items.append((name, info, full_url))
+    return items
+
+
+# ============== 公共逐条处理逻辑（三个列表页 + xb6v 首页 共用） ==============
+def process_items(data, items, tab_name):
+    total = len(items)
     ok, fail = 0, 0
 
     for idx, (name, info, url) in enumerate(items, 1):
         if name in BLACKLIST_NAMES:
-            print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            print(f"  ({idx}/{total}) {name} [在黑名单中，跳过]")
             continue
 
-        print(f"  ({idx}/{len(items)}) {name}  [{info}]")
+        print(f"  ({idx}/{total}) {name}  [{info}]")
         try:
             rec = parse_subpage(url, name, info)
             real_name = rec["name"]
-
-            region = rec.get("地区", "")
-            if any(keyword == region.strip() for keyword in FILTER_REGIONS):
-                ok += 1
-                time.sleep(SLEEP_BETWEEN)
-                continue
 
             new_6vdy_eps = {}
             for pl in rec.get("playlist", []):
                 if pl.get("name") == PLAYLIST_NAME:
                     new_6vdy_eps = pl.get("episodes", {})
                     break
+
+            # ============ 过滤规则（变更后）============
+            # 仅当【地区精准命中过滤名单】且【6vdy渠道episodes键名含"集"】时才跳过
+            region = rec.get("地区", "")
+            region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
+            has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
+
+            if region_match and has_episode_keyword:
+                print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
+                ok += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
 
             if not new_6vdy_eps:
                 fail += 1
@@ -938,8 +1046,8 @@ def process_tab_unified(data, tab_index, tab_name):
                 group = detect_group(new_6vdy_eps, rec.get("主演", []), rec.get("类型", []))
 
                 if group in ["Drama", "Anime"] and new_6vdy_eps:
-                    has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
-                    if has_episode_keyword:
+                    has_ep_kw = any("集" in str(k) for k in new_6vdy_eps.keys())
+                    if has_ep_kw:
                         episode_count = len(new_6vdy_eps)
                         rec["info"] = f"更新至第{episode_count}集"
                         print(f"      [新增剧集info初始化] 自动写入 info: 「更新至第{episode_count}集」")
@@ -950,8 +1058,6 @@ def process_tab_unified(data, tab_index, tab_name):
                             rec["info"] = first_ep_name
                             print(f"      [新增无集数剧集info初始化] 自动写入 info: 「{first_ep_name}」")
                 else:
-                    # 针对 Movie：仅在 info 为空时才写入播放源名
-                    # （新格式电影 info 已是年份，不应被覆盖）
                     if new_6vdy_eps and not rec.get("info"):
                         first_ep_name = list(new_6vdy_eps.keys())[0]
                         rec["info"] = first_ep_name
@@ -968,6 +1074,20 @@ def process_tab_unified(data, tab_index, tab_name):
         time.sleep(SLEEP_BETWEEN)
 
     return ok, fail
+
+
+def process_tab_unified(data, tab_index, tab_name):
+    print(f"\n[抓取] {tab_name} ...")
+    items = get_list_by_tab(tab_index)
+    print(f"  共发现 {len(items)} 条")
+    return process_items(data, items, tab_name)
+
+
+def process_homepage_xb6v(data):
+    print(f"\n[抓取] xb6v 首页 ...")
+    items = get_homepage_list_xb6v()
+    print(f"  共发现 {len(items)} 条")
+    return process_items(data, items, "xb6v首页")
 
 
 # ============== 补全模式（用新方法补全已有记录的缺失字段） ==============
@@ -1081,6 +1201,9 @@ def main():
     m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
     d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
     r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
+
+    # 新增：xb6v 首页抓取
+    h_ok, h_fail = process_homepage_xb6v(data)
 
     print("\n====================================")
     print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
