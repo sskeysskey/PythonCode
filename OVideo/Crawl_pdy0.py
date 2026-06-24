@@ -35,6 +35,42 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 # 【修改】：将 "6vdy" 也加入受保护源，防止在更新时被覆盖或删除
 PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
 
+# 受保护域名（用于"同名且 URL 仅来自这些域名"的特殊合并规则）
+PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org")
+
+
+def get_all_url_keys(item: dict) -> list[str]:
+    """返回条目中所有 url 相关的 key，按 url, url1, url2... 顺序排列。"""
+    keys = [k for k in item.keys()
+            if k == "url" or (k.startswith("url") and k[3:].isdigit())]
+
+    def _sort_key(k):
+        return -1 if k == "url" else int(k[3:])
+
+    return sorted(keys, key=_sort_key)
+
+
+def is_all_urls_protected(item: dict) -> bool:
+    """
+    判断一个条目的所有 url（url/url1/url2...）是否仅来自受保护域名
+    （chnland.com 或 6vdy.org）。
+      - 至少要有一个有效（非空）url
+      - 任意一个 url 不属于受保护域名，则返回 False
+    场景：同名且 url 只有 chnland、只有 6vdy、或两者都有但仅此两者。
+    """
+    url_keys = get_all_url_keys(item)
+    if not url_keys:
+        return False
+    has_valid = False
+    for k in url_keys:
+        val = item.get(k, "")
+        if not val:
+            continue
+        has_valid = True
+        if not any(dom in val for dom in PROTECTED_URL_DOMAINS):
+            return False
+    return has_valid
+
 
 # ==========================================
 # 日志配置
@@ -976,9 +1012,7 @@ def process_item(item: dict, cat_name: str,
             log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
             return "skipped"
 
-
     item_path = get_url_path(item["url"])
-
 
     # =============================================================
     # 跨分类多维度去重判定
@@ -987,7 +1021,6 @@ def process_item(item: dict, cat_name: str,
     old_data = global_index.get(key)
     matched_by_path_only = False
     is_special_6vdy_update = False
-
 
     # 1. 跨分类全局 path 查找
     if old_data is None:
@@ -998,33 +1031,32 @@ def process_item(item: dict, cat_name: str,
                 matched_by_path_only = True
                 break
 
-
-    # 2. 跨分类全局同名 6vdy 规则判定
+    # 2. 【改动】跨分类全局同名"URL 仅含受保护域名"规则判定
+    #    原逻辑：仅当只有一个 url 且为 6vdy.org 时触发。
+    #    新逻辑：同名，且全部 url 仅来自 chnland.com / 6vdy.org（其一或两者）时触发。
     if old_data is None:
         for cat, existing_list in all_data.items():
             if not isinstance(existing_list, list):
                 continue
             for list_idx, existing_item in enumerate(existing_list):
                 if existing_item.get("name") == item["name"]:
-                    all_urls = {k: v for k, v in existing_item.items() if k == "url" or (k.startswith("url") and k[3:].isdigit())}
-                    if len(all_urls) == 1 and "url" in all_urls:
-                        old_url_val = all_urls["url"]
-                        if "6vdy.org" in old_url_val:
-                            is_special_6vdy_update = True
-                            old_data = {
-                                "info": existing_item.get("info", ""),
-                                "update": existing_item.get("update", ""),
-                                "image": existing_item.get("image", ""),
-                                "real_name": existing_item.get("name"),
-                                "real_path": get_url_path(old_url_val),
-                                "category": cat,
-                                "list_idx": list_idx
-                            }
-                            key = (existing_item.get("name"), get_url_path(old_url_val))
-                            break
+                    if is_all_urls_protected(existing_item):
+                        is_special_6vdy_update = True
+                        old_url_keys = get_all_url_keys(existing_item)
+                        first_url_val = existing_item.get(old_url_keys[0], "")
+                        old_data = {
+                            "info": existing_item.get("info", ""),
+                            "update": existing_item.get("update", ""),
+                            "image": existing_item.get("image", ""),
+                            "real_name": existing_item.get("name"),
+                            "real_path": get_url_path(first_url_val),
+                            "category": cat,
+                            "list_idx": list_idx
+                        }
+                        key = (existing_item.get("name"), get_url_path(first_url_val))
+                        break
             if is_special_6vdy_update:
                 break
-
 
     # 3. 拦截未更新、抢先版、集数未增加
     if old_data is not None and not is_special_6vdy_update:
@@ -1032,11 +1064,9 @@ def process_item(item: dict, cat_name: str,
         old_update = old_data.get("update", "")
         old_image  = old_data.get("image", "")
 
-
         if old_image and old_update and (old_info == item["info"]):
             log(f"  ({idx_i}/{total}) [跳过-未更新] {item['name']} (info一致)")
             return "skipped"
-
 
         if old_image and old_update and (old_info != item["info"]):
             block_keywords = ['TC', 'TS', '抢先', 'HC']
@@ -1048,12 +1078,11 @@ def process_item(item: dict, cat_name: str,
                 log(f"  ({idx_i}/{total}) [跳过-集数未增加] {item['name']} (旧info '{old_info}' -> 新info '{item['info']}'，集数未增加)")
                 return "skipped"
 
-
-    # 判定本次是新增 / 补图 / 补update / 普通更新 / 6vdy特殊更新
+    # 判定本次是新增 / 补图 / 补update / 普通更新 / 受保护源特殊更新
     is_update = (old_data is not None) or is_special_6vdy_update
     if is_update:
         if is_special_6vdy_update:
-            tag = "[6vdy特殊更新]"
+            tag = "[受保护源特殊更新]"   # 【改动】更名，含义更通用
         elif matched_by_path_only:
             tag = "[更名更新]"
         elif old_data.get("info") != item["info"]:
@@ -1067,28 +1096,24 @@ def process_item(item: dict, cat_name: str,
     else:
         tag = "[新增]"
 
-
     detail_html = fetch(item["url"])
     time.sleep(SLEEP_BETWEEN_REQUESTS)
     if not detail_html:
         return "skipped"
 
-
     try:
         detail = parse_detail_page(detail_html, item["name"], item["url"],
                                    info=item["info"], base_url=detail_base_url)
 
-
         if detail is None:
             return "skipped"
-
 
         # =============================================================
         # 针对 Drama 和 Anime 的最大剧集数限制过滤
         # =============================================================
         if detail.get("playlist"):
             max_episodes = max(len(p.get("episodes", {})) for p in detail["playlist"])
-            
+
             if cat_name == "Drama" and max_episodes > DRAMA_MAX_EPISODES_LIMIT:
                 log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {DRAMA_MAX_EPISODES_LIMIT})", force=True)
                 return "skipped"
@@ -1096,20 +1121,17 @@ def process_item(item: dict, cat_name: str,
                 log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {ANIME_MAX_EPISODES_LIMIT})", force=True)
                 return "skipped"
 
-
         log(f"  ({idx_i}/{total}) {tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
-
 
         # ===== 任何更新名字 name 不要改 =====
         if is_update:
             detail["name"] = key[0]
 
-
         # 获取旧分类和旧条目
         old_entry = None
         old_category = None
         target_list_idx = None
-        
+
         if is_update:
             old_category = old_data.get("category")
             target_list_idx = old_data.get("list_idx")
@@ -1118,8 +1140,7 @@ def process_item(item: dict, cat_name: str,
                 if target_list_idx is not None and target_list_idx < len(existing_list):
                     old_entry = existing_list[target_list_idx]
 
-
-        # 合并受保护源
+        # 合并受保护源（新源会被追加到 6vdy/chnland 等受保护源之后）
         if old_entry:
             old_playlist = old_entry.get("playlist", [])
             protected_in_old = [
@@ -1131,7 +1152,7 @@ def process_item(item: dict, cat_name: str,
                     p for p in detail.get("playlist", [])
                     if p.get("name") not in PROTECTED_SOURCES
                 ]
-                
+
                 final_playlist = []
                 vdy_source = next((p for p in protected_in_old if p.get("name") == "6vdy"), None)
                 if vdy_source:
@@ -1142,8 +1163,7 @@ def process_item(item: dict, cat_name: str,
                 final_playlist.extend(new_playlist)
                 detail["playlist"] = final_playlist
                 kept_names = [p.get("name") for p in protected_in_old]
-                print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland)")
-
+                print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland，新源追加在后)")
 
             if is_update and old_entry:
                 old_info = old_entry.get("info", "")
@@ -1153,17 +1173,14 @@ def process_item(item: dict, cat_name: str,
                 if old_info != new_info and old_pl != new_pl:
                     print(f"     [Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
 
-
             if matched_by_path_only:
                 print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
-
 
         # ==========================================
         # 细粒度字段合并与更新
         # ==========================================
         if is_update and old_entry:
             detail["update"] = old_entry.get("update", "")
-
 
             for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
                 old_val = old_entry.get(field)
@@ -1173,7 +1190,6 @@ def process_item(item: dict, cat_name: str,
                 else:
                     detail[field] = old_val
 
-
             old_date = old_entry.get("date", "")
             new_date = detail.get("date", "")
             if new_date and (not old_date or len(new_date) > len(old_date)):
@@ -1181,12 +1197,11 @@ def process_item(item: dict, cat_name: str,
             else:
                 detail["date"] = old_date
 
-
             old_rating = old_entry.get("评分", {})
             if not isinstance(old_rating, dict):
                 old_rating = {"豆瓣": "", "IMDB": ""}
             new_rating = detail.get("评分", {})
-            
+
             final_rating = {}
             for platform in ["豆瓣", "IMDB"]:
                 old_score = old_rating.get(platform, "")
@@ -1198,39 +1213,50 @@ def process_item(item: dict, cat_name: str,
                     final_rating[platform] = old_score
             detail["评分"] = final_rating
 
-
         # ===== 字段排序重构 =====
         ordered_detail = {}
         ordered_detail["name"] = detail["name"]
-        
+
         if is_update and old_entry:
             ordered_detail["url"] = old_entry.get("url", "")
         else:
             ordered_detail["url"] = detail["url"]
-        
+
+        # 【改动】受保护源特殊更新：保留旧条目所有 urlX，新 url 自动顺延追加
         if is_special_6vdy_update and old_entry:
-            ordered_detail["url1"] = detail["url"]
-            print(f"     [6vdy特殊合并] 已将新抓取的 URL 写入为 url1: {detail['url']}")
+            old_url_keys = get_all_url_keys(old_entry)
+            existing_url_vals = []
+            max_idx = 0
+            for k in old_url_keys:
+                v = old_entry.get(k, "")
+                existing_url_vals.append(v)
+                if k != "url":  # "url" 已在上面写入
+                    ordered_detail[k] = v
+                    max_idx = max(max_idx, int(k[3:]))
+            new_url = detail["url"]
+            if new_url and new_url not in existing_url_vals:
+                next_key = f"url{max_idx + 1}"
+                ordered_detail[next_key] = new_url
+                print(f"     [受保护源特殊合并] 已将新抓取的 URL 写入为 {next_key}: {new_url}")
+            else:
+                print(f"     [受保护源特殊合并] 新 URL 已存在于旧条目，跳过追加")
         elif old_entry:
             for k, v in old_entry.items():
                 if k.startswith("url") and k != "url":
                     ordered_detail[k] = v
-        
+
         if "info" in detail:
             ordered_detail["info"] = detail["info"]
-
 
         if "update" in detail:
             ordered_detail["update"] = detail["update"]
         ordered_detail["update_pk"] = detail.get("update_pk", "")
 
-
         for k, v in detail.items():
             if k not in ordered_detail:
                 ordered_detail[k] = v
-        
-        detail = ordered_detail
 
+        detail = ordered_detail
 
         # update_pk 变化提示
         if is_update and old_entry:
@@ -1241,7 +1267,6 @@ def process_item(item: dict, cat_name: str,
                     print(f"     [新增 update_pk 并更新] -> {new_upk}")
                 else:
                     print(f"     [update_pk 变化] {old_upk} → {new_upk}")
-
 
         # =============================================================
         # 跨分类数据写入与索引重构
@@ -1256,7 +1281,7 @@ def process_item(item: dict, cat_name: str,
                 if cat_name not in all_data:
                     all_data[cat_name] = []
                 all_data[cat_name].append(detail)
-                
+
                 global_index.clear()
                 global_index.update(build_index(all_data))
             else:
@@ -1279,13 +1304,11 @@ def process_item(item: dict, cat_name: str,
             all_data[cat_name].append(detail)
             result = "new"
 
-
         if matched_by_path_only and key in global_index:
             del global_index[key]
-        
+
         global_index.clear()
         global_index.update(build_index(all_data))
-
 
         save_data(all_data)
         log(f"     [已实时保存到磁盘]", force=True)

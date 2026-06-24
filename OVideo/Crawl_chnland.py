@@ -543,7 +543,7 @@ def save_json(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-def find_existing_global(data, name, sub_url):
+def find_existing_global(data, name, sub_url, log=print):
     # 1. 优先跨分类按 URL 全局检索
     if sub_url:
         for group in ["Movie", "Drama", "Show", "Anime"]:
@@ -552,9 +552,9 @@ def find_existing_global(data, name, sub_url):
                                  if k == "url" or re.match(r"^url\d+$", k)}
                 if sub_url in existing_urls:
                     if item.get("name") != name:
-                        print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
-                              f"(URL: {sub_url}, 已有:「{item.get('name')}」, "
-                              f"抓取:「{name}」, 所在分类:{group})")
+                        log(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
+                            f"(URL: {sub_url}, 已有:「{item.get('name')}」, "
+                            f"抓取:「{name}」, 所在分类:{group})")
                     return group, item
 
     # 2. 再按名称全局检索
@@ -566,7 +566,7 @@ def find_existing_global(data, name, sub_url):
     return None, None
 
 
-def process_existing_record(existing, new_episodes, sub_url, rec):
+def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
     """处理已存在的记录：合并字段、更新播放源和 info"""
     # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
@@ -578,7 +578,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
         if (not old_val) and new_val:
             existing[field] = new_val
             fields_updated = True
-            print(f"      [字段更新] 补充缺失字段「{field}」: {new_val}")
+            log(f"      [字段更新] 补充缺失字段「{field}」: {new_val}")
 
     old_date = existing.get("date", "")
     new_date = rec.get("date", "")
@@ -586,7 +586,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
         if not old_date or len(str(new_date)) > len(str(old_date)):
             existing["date"] = new_date
             fields_updated = True
-            print(f"      [字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
+            log(f"      [字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
 
     old_rating = existing.setdefault("评分", {})
     new_rating = rec.get("评分", {})
@@ -597,7 +597,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
             if not old_rate_val and new_rate_val:
                 old_rating[rate_key] = new_rate_val
                 fields_updated = True
-                print(f"      [字段更新] 补充评分「{rate_key}」: {new_rate_val}")
+                log(f"      [字段更新] 补充评分「{rate_key}」: {new_rate_val}")
 
     # ==================== 2. 播放源与URL更新逻辑 ====================
     if not new_episodes:
@@ -633,7 +633,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
                 old_info = existing.get("info", "")
                 existing["info"] = new_scraped_info
                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
                 return "updated"
             return "updated" if fields_updated else "no_change"
 
@@ -651,7 +651,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
         if new_scraped_info and new_scraped_info != existing.get("info", ""):
             old_info = existing.get("info", "")
             existing["info"] = new_scraped_info
-            print(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+            log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
 
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return "updated"
@@ -685,7 +685,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
         playlist.insert(0, new_pl)
 
-        print(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并将播放源插入至第一位")
+        log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并将播放源插入至第一位")
 
         # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新时都更新
         if new_scraped_info:
@@ -699,7 +699,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec):
                 should_update = True
             if should_update and new_scraped_info != old_info:
                 existing["info"] = new_scraped_info
-                print(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
 
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return "channel_added"
@@ -721,7 +721,16 @@ def process_list_page(data, list_url, group, page_name):
             print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
             continue
 
-        print(f"  ({idx}/{len(items)}) {name}  [{info}]")
+        # 该条记录的所有日志先暂存到 buf，最后再决定是否打印
+        header = f"  ({idx}/{len(items)}) {name}  [{info}]"
+        buf = []
+
+        def flush():
+            """把表头和缓冲日志真正打印出来"""
+            print(header)
+            for line in buf:
+                print(line)
+
         try:
             rec = parse_subpage(url, name, info, list_img=img)
             real_name = rec["name"]
@@ -734,57 +743,64 @@ def process_list_page(data, list_url, group, page_name):
                     break
 
             if not new_eps:
+                flush()
                 print("    ! 无播放源，跳过")
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
             # ===== 先跨分类按 URL 全局检索（再按名称）=====
-            matched_group, existing = find_existing_global(data, real_name, url)
+            matched_group, existing = find_existing_global(data, real_name, url, buf.append)
 
             # 生效分类：命中已有记录则以其所在分类为准，否则用当前抓取分类
             effective_group = matched_group if existing else group
             if existing and matched_group != group:
-                print(f"    * 该资源已存在于「{matched_group}」分类，"
-                      f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
+                buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
+                           f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
 
             # ===== 地区过滤：按生效分类，非综艺才过滤 =====
+            # 【屏蔽】命中禁用地区关键词时，整条记录（含表头）都不显示
             region = rec.get("地区", "")
             if effective_group != "Show":
                 if any(keyword == region.strip() for keyword in FILTER_REGIONS):
-                    print(f"    - 跳过：地区包含禁用关键词（{region}）")
                     ok += 1
                     time.sleep(SLEEP_BETWEEN)
                     continue
 
             # ===== 电视剧/动漫集数超过 30 则跳过：按生效分类 =====
             if effective_group in ("Drama", "Anime") and len(new_eps) > 30:
+                flush()
                 print(f"    - 跳过：{effective_group} 集数为 {len(new_eps)} 集，超过 30 集上限")
                 ok += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
             if existing:
-                status = process_existing_record(existing, new_eps, url, rec)
+                status = process_existing_record(existing, new_eps, url, rec, buf.append)
                 if status == "updated":
-                    print(f"    ✓ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
+                    buf.append(f"    ✓ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
                     save_json(data)
+                    flush()
                     ok += 1
                 elif status == "channel_added":
-                    print(f"    ✓ 更新({matched_group})：成功作为新渠道插入到 playlist 第一位")
+                    buf.append(f"    ✓ 更新({matched_group})：成功作为新渠道插入到 playlist 第一位")
                     save_json(data)
+                    flush()
                     ok += 1
                 elif status == "no_change":
-                    print(f"    - 无变化({matched_group})：集数与已有内容一致，无需更新")
+                    # 【屏蔽】集数与已有内容一致，整条记录（含表头）都不显示
                     ok += 1
                 elif status == "decreased":
+                    flush()
                     print(f"    - 忽略({matched_group})：抓取集数少于已有集数")
                     ok += 1
                 else:
+                    flush()
                     print(f"    ! 忽略({matched_group})：未成功更新")
                     fail += 1
             else:
                 # 新增记录（用当前抓取分类）
+                flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(group, []).append(rec)
                 print(f"    ✓ 新增 -> {group} (共 {len(new_eps)} 集) "
@@ -793,6 +809,7 @@ def process_list_page(data, list_url, group, page_name):
                 ok += 1
 
         except Exception as e:
+            flush()
             print(f"    ✗ 抓取失败: {e}")
             fail += 1
         time.sleep(SLEEP_BETWEEN)

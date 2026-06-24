@@ -25,10 +25,14 @@ OVIDEOS_JSON     = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.
 DOWNLOADS_DIR    = Path.home() / 'Downloads'
 STOP_FILE        = Path.home() / 'Desktop' / 'stop_scpt.txt'
 DOUBAN_INPUT_IMG = 'douban_input.png'        # 位于 Resource 目录里的模板图
+# ================= 新增配置 =================
+DOUBAN_POPUP_IMG = '/Users/yanzhang/Coding/python_code/Resource/douban_popup.png'  # 弹窗模板图路径
+# ============================================
 DOWNLOAD_GLOB    = 'douban_result*.json'      # 插件下载的文件名模式
 
 # —— 各种等待时间（秒），按你机器/网速调整 ——
 WAIT_AFTER_PASTE      = 2     # 粘贴名字后等待联想下拉出现
+WAIT_POPUP_APPEAR     = 20     # 等待弹窗图片出现的时间
 WAIT_PAGE_LOAD        = 4     # 点击搜索结果后等待页面加载
 WAIT_DOWNLOAD_TIMEOUT = 30    # 等待插件下载 json 的最长时间
 SECOND_CLICK_Y_OFFSET = 50    # 第二次点击相对图片中心的 Y 偏移（逻辑像素）
@@ -63,7 +67,7 @@ def save_json(path, data):
 
 
 def find_next_empty_date(data, processed):
-    """顺序查找第一个 date 只有年份（4位纯数字）、且本轮未处理过的项目。"""
+    """顺序查找第一个 date = 2026、且本轮未处理过的项目。"""
     for category, items in data.items():
         if not isinstance(items, list):
             continue
@@ -73,11 +77,11 @@ def find_next_empty_date(data, processed):
             if (category, idx) in processed:
                 continue
             
-            # ============== 这里是修改核心 ==============
+            # ============== 【修改后：只匹配 date = 2026】 ==============
             date_val = str(item.get('date', '')).strip()
             
-            # 规则：只匹配 4 位纯数字（2025 / 2026 / 2024 等）
-            if len(date_val) == 4 and date_val.isdigit():
+            # 规则：严格匹配字符串 "2026"
+            if date_val == "2026":
                 return category, idx, item
     return None, None, None
 
@@ -151,15 +155,97 @@ def update_item(item, scraped) -> bool:
     return changed
 
 
+# ====================== 【新增：自动激活Chrome + 切换到豆瓣标签页】 ======================
+def activate_chrome_and_switch_to_douban():
+    """
+    Mac 自动：
+    1. 激活 Google Chrome
+    2. 遍历所有窗口+所有标签，切换到 url 包含 douban.com 的标签页
+    修复原脚本无法切换标签的问题，增加强制置顶、日志输出
+    """
+    print("\n===== 开始激活Chrome并查找豆瓣标签 =====")
+
+    script = '''
+    set foundTab to missing value
+    set targetWin to missing value
+    set targetTabIdx to 0
+
+    tell application "Google Chrome"
+        activate
+        delay 0.3
+        -- 遍历所有窗口
+        repeat with w in every window
+            set tabCount to count of tabs of w
+            -- 遍历当前窗口所有标签
+            repeat with tIdx from 1 to tabCount
+                set t to tab tIdx of w
+                set tabUrl to URL of t as string
+                if tabUrl contains "douban.com" and tabUrl is not "" then
+                    set foundTab to t
+                    set targetWin to w
+                    set targetTabIdx to tIdx
+                    exit repeat
+                end if
+            end repeat
+            if foundTab is not missing value then exit repeat
+        end repeat
+
+        -- 如果找到豆瓣标签，切换窗口+标签
+        if foundTab is not missing value then
+            set index of targetWin to 1
+            set active tab index of targetWin to targetTabIdx
+            delay 0.2
+        end if
+    end tell
+
+    -- 强制系统把Chrome窗口置顶（关键修复，原脚本缺失）
+    tell application "System Events"
+        tell application process "Google Chrome"
+            perform action "AXRaise" of front window
+        end tell
+    end tell
+
+    -- 返回是否找到标签，给python捕获输出
+    if foundTab is not missing value then
+        return "FOUND"
+    else
+        return "NOT_FOUND"
+    end if
+    '''
+
+    # 执行脚本并捕获返回结果
+    proc = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        encoding="utf-8"
+    )
+    result = proc.stdout.strip()
+    time.sleep(1.8)  # 加长等待，保证页面渲染完成
+
+    if result == "FOUND":
+        print("✅ 成功切换到豆瓣标签页，Chrome窗口已置顶\n")
+    else:
+        print("⚠️ 未找到任何包含 douban.com 的标签，请手动打开豆瓣页面后重启脚本\n")
+
+
 def process_one(detector, name):
     """完成一次：点击搜索框 -> 粘贴名字 -> 点结果 -> 触发插件 -> 拿下载结果。"""
     # 1. 名字复制到剪贴板
     copy_to_clipboard(name)
 
-    # 2. 找到 douban_input.png
-    tname, location, shape = detector.find_images_on_screen(threshold=0.9)
+    # 2. 循环等待查找 douban_input.png，最长等待 WAIT_POPUP_APPEAR 秒（20s）
+    tname, location, shape = None, None, None
+    start_input_wait = time.time()
+    print(f"开始等待 douban_input.png 输入框，最长等待 {WAIT_POPUP_APPEAR} 秒...")
+    while time.time() - start_input_wait < WAIT_POPUP_APPEAR:
+        tname, location, shape = detector.find_images_on_screen(threshold=0.9)
+        if location:
+            print("✅ 成功识别 douban_input.png 搜索框")
+            break
+        time.sleep(0.5)
+    # 等待超时仍未找到，直接跳过本条
     if not location:
-        print("未找到 douban_input.png，本项目跳过。")
+        print(f"❌ 等待{WAIT_POPUP_APPEAR}秒仍未找到 douban_input.png，本项目跳过。")
         return None
 
     # 3. 第一次点击：聚焦搜索框
@@ -172,6 +258,26 @@ def process_one(detector, name):
 
     # 5. 等待 2 秒，让联想结果出现
     time.sleep(WAIT_AFTER_PASTE)
+
+    # ====================== 侦测弹窗图片 ======================
+    print("开始侦测 douban_popup.png 弹窗...")
+    # 临时创建弹窗检测器（用你指定的绝对路径图片）
+    popup_detector = ScreenDetector(template_names=DOUBAN_POPUP_IMG, clickValue='left')
+    popup_found = False
+    # 等待并检测弹窗（最多等 WAIT_POPUP_APPEAR 秒）
+    start_wait = time.time()
+    while time.time() - start_wait < WAIT_POPUP_APPEAR:
+        _, popup_loc, popup_shape = popup_detector.find_images_on_screen(threshold=0.9)
+        if popup_loc:
+            popup_found = True
+            print("✅ 成功找到 douban_popup.png 弹窗，准备点击联想结果")
+            break
+        time.sleep(0.3)
+
+    if not popup_found:
+        print(f"❌ 等待{WAIT_POPUP_APPEAR}秒未找到 douban_popup.png 弹窗，跳过本次点击，直接结束本条处理")
+        return None
+    # ======================================================================
 
     # 6. 第二次点击：图片 Y+50（第一个联想结果）
     click_image_center(detector, location, shape, y_offset=SECOND_CLICK_Y_OFFSET)
@@ -203,6 +309,11 @@ def process_one(detector, name):
 
 def main():
     print("=== 豆瓣自动抓取主控启动 ===")
+
+    # ====================== 【关键：程序一开始先执行！】 ======================
+    # 第一步：自动激活 Chrome 并切换到豆瓣页面
+    activate_chrome_and_switch_to_douban()
+
     detector = ScreenDetector(template_names=DOUBAN_INPUT_IMG, clickValue='left')
 
     processed = set()  # 本轮已处理（含没抓到日期的），避免死循环

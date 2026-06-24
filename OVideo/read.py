@@ -46,7 +46,7 @@ def get_scan_episodes(episodes, category, show_last_n):
     """
     根据分类返回"本次实际要扫描的 url 列表"。
     - episodes 是字典 {"第01集": "url1", ...}，需要先取 values。
-    - Show 且集数 > 20：默认只取末尾 5 条（或 show_last_n 指定的条数）。
+    - Show 且集数 > 10：默认只取末尾 5 条（或 show_last_n 指定的条数）。
     - 其他情况：返回全部 url。
     """
     if not episodes:
@@ -56,7 +56,7 @@ def get_scan_episodes(episodes, category, show_last_n):
     total_count = len(urls_list)
 
     if category == 'Show':
-        if total_count > 20:
+        if total_count > 10:
             limit = show_last_n if show_last_n > 0 else 5
             return urls_list[-limit:]
         else:
@@ -152,7 +152,7 @@ def pick_playlists_to_scan(playlists, blacklist_url, required_count,
             continue
 
         viable.append((pl, scan_episodes))
-        if category == 'Show' and len(episodes_all) > 20:
+        if category == 'Show' and len(episodes_all) > 10:
             print(f"  [采用 {len(viable)}/{required_count}] {item_label} 渠道「{name}」"
                   f"(Show 末尾 {len(scan_episodes)} 条，原共 {len(episodes_all)} 集)")
         else:
@@ -288,7 +288,7 @@ def main():
     print(f"[剧集要求] 集数<= {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_SHORT} 个完整渠道 | "
           f"集数> {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_LONG} 个完整渠道")
     print(f"[Show 裁剪] 每个渠道只扫末尾 {SHOW_LAST_N} 条"
-          if SHOW_LAST_N > 0 else "[Show 裁剪] 默认（>20 集时取末尾 5 条）")
+          if SHOW_LAST_N > 0 else "[Show 裁剪] 默认（>10 集时取末尾 5 条）")
     print(f"[评分过滤] 豆瓣或 IMDB 任一 >= {rating_threshold} 才处理（当前已屏蔽）")
 
     order_desc = "倒序读取" if REVERSE_SCAN else "正序（从上到下）读取"
