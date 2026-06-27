@@ -1170,6 +1170,29 @@ def process_item(item: dict, cat_name: str,
                 detail["playlist"] = final_playlist
                 kept_names = [p.get("name") for p in protected_in_old]
                 print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland，新源追加在后)")
+                
+                # ==========================================
+                # 【新增】：info 更新前，比较"自己渠道"与"受保护渠道"的集数
+                #   - own_max_ep：本次抓到的自己渠道(非受保护源)最大集数
+                #   - protected_max_ep：受保护源(6vdy/chnland等)最大集数
+                #   - 若 own_max_ep <= protected_max_ep，只更新内容(playlist)，不更新 info
+                # ==========================================
+                protected_max_ep = max(
+                    (len(p.get("episodes", {})) for p in protected_in_old),
+                    default=0
+                )
+                own_max_ep = max(
+                    (len(p.get("episodes", {})) for p in new_playlist),
+                    default=0
+                )
+                old_info_val = old_entry.get("info", "")
+                if own_max_ep <= protected_max_ep:
+                    if detail.get("info") != old_info_val:
+                        print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
+                              f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
+                    detail["info"] = old_info_val
+                else:
+                    print(f"     [Info可更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
 
             if is_update and old_entry:
                 old_info = old_entry.get("info", "")

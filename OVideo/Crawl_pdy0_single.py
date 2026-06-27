@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 # ===================== 配置（和原代码一致） =====================
 VERBOSE_LOG = False
-PROTECTED_SOURCES = {"xb6v", "6vdy"}
+PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}  # 从 pdy0.py 引入 chnland
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
 DETAIL_BASE_URL = "https://www.pys2.com"
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
@@ -110,6 +110,37 @@ def fetch(url: str) -> str | None:
             print(f"[Error {i+1}] {url} -> {e}")
             time.sleep(2)
     return None
+
+def get_all_url_keys(item: dict) -> list[str]:
+    """返回条目中所有 url 相关的 key，按 url, url1, url2... 顺序排列。"""
+    keys = [k for k in item.keys()
+            if k == "url" or (k.startswith("url") and k[3:].isdigit())]
+
+    def _sort_key(k):
+        return -1 if k == "url" else int(k[3:])
+
+    return sorted(keys, key=_sort_key)
+
+def is_all_urls_protected(item: dict) -> bool:
+    """
+    判断一个条目的所有 url（url/url1/url2...）是否仅来自受保护域名
+    （chnland.com 或 6vdy.org）。
+      - 至少要有一个有效（非空）url
+      - 任意一个 url 不属于受保护域名，则返回 False
+    """
+    PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org")
+    url_keys = get_all_url_keys(item)
+    if not url_keys:
+        return False
+    has_valid = False
+    for k in url_keys:
+        val = item.get(k, "")
+        if not val:
+            continue
+        has_valid = True
+        if not any(dom in val for dom in PROTECTED_URL_DOMAINS):
+            return False
+    return has_valid
 
 # ===================== 封面下载（和原代码一致） =====================
 def download_cover(img_url: str, video_id: str) -> str:
@@ -422,39 +453,21 @@ def main():
                 continue
             for list_idx, existing_item in enumerate(existing_list):
                 if existing_item.get("name") == item_name:
-                    all_urls = {k: v for k, v in existing_item.items()
-                                if k == "url" or (k.startswith("url") and k[3:].isdigit())}
-
-                    target_key = None      # 新 URL 要写入的字段
-                    base_url_val = None    # 用于计算 path 身份的基准 url
-
-                    # 情况A：只有一个 url，且含 6vdy.org 或 chnland.com -> 新 URL 写入 url1
-                    if len(all_urls) == 1 and "url" in all_urls:
-                        old_url_val = all_urls["url"]
-                        if "6vdy.org" in old_url_val or "chnland.com" in old_url_val:
-                            target_key = "url1"
-                            base_url_val = old_url_val
-
-                    # 情况B：恰好两个 url（url + url1），分别含 6vdy.org 与 chnland.com -> 新 URL 写入 url2
-                    elif len(all_urls) == 2 and "url" in all_urls and "url1" in all_urls:
-                        combined = all_urls["url"] + " " + all_urls["url1"]
-                        if "6vdy.org" in combined and "chnland.com" in combined:
-                            target_key = "url2"
-                            base_url_val = all_urls["url"]
-
-                    if target_key:
+                    # 使用 pdy0.py 中的逻辑：判断是否所有 URL 都是受保护域名
+                    if is_all_urls_protected(existing_item):
                         is_special_6vdy_update = True
-                        special_update_target = target_key
+                        old_url_keys = get_all_url_keys(existing_item)
+                        first_url_val = existing_item.get(old_url_keys[0], "")
                         old_data = {
                             "info": existing_item.get("info", ""),
                             "update": existing_item.get("update", ""),
                             "image": existing_item.get("image", ""),
                             "real_name": existing_item.get("name"),
-                            "real_path": get_url_path(base_url_val),
+                            "real_path": get_url_path(first_url_val),
                             "category": cat,
                             "list_idx": list_idx
                         }
-                        key = (existing_item.get("name"), get_url_path(base_url_val))
+                        key = (existing_item.get("name"), get_url_path(first_url_val))
                         break
             if is_special_6vdy_update:
                 break
@@ -464,7 +477,7 @@ def main():
     # tag 判定
     if is_update:
         if is_special_6vdy_update:
-            tag = f"[特殊占位更新→{special_update_target}]"
+            tag = f"[特殊占位更新→受保护源]"
         elif matched_by_path_only:
             tag = "[更名更新]"
         elif old_data.get("info") != item_info:
@@ -512,7 +525,25 @@ def main():
             final_playlist.extend(new_playlist)
             detail["playlist"] = final_playlist
             kept_names = [p.get("name") for p in protected_in_old]
-            print(f"     [保留受保护源] {kept_names} (已置顶 6vdy)")
+            print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland)")
+
+            # 根据 pdy0.py 逻辑，比较受保护源与新源的集数
+            protected_max_ep = max(
+                (len(p.get("episodes", {})) for p in protected_in_old),
+                default=0
+            )
+            own_max_ep = max(
+                (len(p.get("episodes", {})) for p in new_playlist),
+                default=0
+            )
+            old_info_val = old_entry.get("info", "")
+            if own_max_ep <= protected_max_ep:
+                if detail.get("info") != old_info_val:
+                    print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
+                          f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
+                detail["info"] = old_info_val
+            else:
+                print(f"     [Info可更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
 
         if matched_by_path_only:
             print(f"     [更名同步] {key[0]} -> {item_name} (已强行保留旧名 {key[0]})")
@@ -562,11 +593,22 @@ def main():
 
     if is_special_6vdy_update and old_entry:
         # 先保留旧条目里已有的附加 url 字段（如 url1），再把新 URL 写入目标槽位
-        for k, v in old_entry.items():
-            if k.startswith("url") and k != "url":
+        old_url_keys = get_all_url_keys(old_entry)
+        existing_url_vals = []
+        max_idx = 0
+        for k in old_url_keys:
+            v = old_entry.get(k, "")
+            existing_url_vals.append(v)
+            if k != "url":  # "url" 已在上面写入
                 ordered_detail[k] = v
-        ordered_detail[special_update_target] = detail["url"]
-        print(f"     [特殊占位合并] 已将新抓取的 URL 写入为 {special_update_target}: {detail['url']}")
+                max_idx = max(max_idx, int(k[3:]))
+        new_url = detail["url"]
+        if new_url and new_url not in existing_url_vals:
+            next_key = f"url{max_idx + 1}"
+            ordered_detail[next_key] = new_url
+            print(f"     [特殊占位合并] 已将新抓取的 URL 写入为 {next_key}: {new_url}")
+        else:
+            print(f"     [特殊占位合并] 新 URL 已存在于旧条目，跳过追加")
     elif old_entry:
         for k, v in old_entry.items():
             if k.startswith("url") and k != "url":

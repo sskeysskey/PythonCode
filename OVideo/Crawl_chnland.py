@@ -62,6 +62,17 @@ LIST_PAGES = [
 ]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
+# 针对特定列表页的地区过滤覆盖（key = 列表页 URL，value = 该页要屏蔽的地区名单）
+# 未在此字典中的页面，仍使用上面默认的 FILTER_REGIONS
+FILTER_REGIONS_OVERRIDE = {
+    # 电影(35)：放开「日本」，其余保持屏蔽
+    "https://www.chnland.com/vodshow/35--time---------2026.html":
+        ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
+
+    # 电影(1)：只屏蔽「泰国」，其余地区全部放开
+    "https://www.chnland.com/vodshow/1--time---------2026.html":
+        ["泰国"],
+}
 
 # 视为"空值"的占位文案
 EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
@@ -730,6 +741,8 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 # ============== 处理单个分类页 ==============
 def process_list_page(data, list_url, group, page_name):
     print(f"\n[抓取] {page_name} -> {group}  ({list_url})")
+    # 取出当前列表页对应的地区过滤名单（有覆盖用覆盖，没有则用默认）
+    filter_regions = FILTER_REGIONS_OVERRIDE.get(list_url, FILTER_REGIONS)
     try:
         items = get_list(list_url)
     except Exception as e:
@@ -780,9 +793,9 @@ def process_list_page(data, list_url, group, page_name):
                 buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
                            f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
 
-            # ===== 地区过滤：现在对所有分类都进行过滤 =====
+            # ===== 地区过滤：按当前列表页的过滤名单进行过滤 =====
             region = rec.get("地区", "")
-            if any(keyword == region.strip() for keyword in FILTER_REGIONS):
+            if any(keyword == region.strip() for keyword in filter_regions):
                 flush()
                 print(f"    - 跳过：地区为「{region}」，在过滤列表中")
                 ok += 1
