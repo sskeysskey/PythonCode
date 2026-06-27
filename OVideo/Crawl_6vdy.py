@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-6vdy.org / xb6v.com 最新剧集、最新电影、小编推荐、首页 爬取脚本
-（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + xb6v首页抓取）
+6vdy.org 最新剧集、最新电影、小编推荐、首页 爬取脚本
+（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取）
 
 新增能力：
 1. 自动识别"新格式详情页"（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
 2. 提供补全模式 backfill：python 脚本.py backfill
    - 扫描 JSON 中所有来自 6vdy 且字段缺失的记录，用新方法重抓并只补空字段（已有/正确的不动）。
-3. 新增 xb6v.com 首页抓取。
+3. 新增 6vdy.org 首页抓取。
 4. 过滤规则变更：仅当【地区命中过滤名单】且【6vdy渠道为分集剧集(键名含"集")】时才跳过。
 """
 
@@ -51,7 +51,7 @@ atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
 BASE_URL    = "https://www.6vdy.org/qian50m.html"
-HOME_URL_XB6V = "https://www.xb6v.com/"          # 新增：xb6v 首页
+HOME_URL_6VDY = "https://www.6vdy.org/"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "6vdy"
@@ -756,6 +756,24 @@ def update_info_field_if_needed(existing, new_playlist):
         return False
 
 
+def insert_6vdy_playlist(playlist, new_pl):
+    """
+    将 6vdy 播放源插入到 playlist：
+      - 若已存在 chnland 渠道，则紧跟在它后面；
+      - 否则插入到第一位。
+    """
+    chnland_idx = -1
+    for i, item in enumerate(playlist):
+        if item.get("name") == "chnland":
+            chnland_idx = i
+            break
+    if chnland_idx != -1:
+        playlist.insert(chnland_idx + 1, new_pl)
+        print(f"      [排序规则] 检测到 chnland，6vdy 已放在它后面")
+    else:
+        playlist.insert(0, new_pl)
+        print(f"      [排序规则] 未检测到 chnland，6vdy 已放在第一位")
+
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
@@ -830,25 +848,11 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         if old_6vdy_idx != -1:
+            # 已存在 6vdy 播放源 → 原地覆盖，保持原有位置
             playlist[old_6vdy_idx] = new_pl
         else:
-            # ==============================================
-            # 【关键修改】找到 chnland 并放在它后面
-            # ==============================================
-            chnland_idx = -1
-            for i, item in enumerate(playlist):
-                if item.get("name") == "chnland":
-                    chnland_idx = i
-                    break
-
-            if chnland_idx != -1:
-                # 有 chnland → 放在它后面
-                insert_pos = chnland_idx + 1
-                playlist.insert(insert_pos, new_pl)
-                print(f"      [排序规则] 检测到 chnland，6vdy 已放在它后面")
-            else:
-                # 没有 chnland → 放在第一个
-                playlist.insert(0, new_pl)
+            # 有 6vdy 的 URL 但 playlist 里没有 6vdy 源 → 按 chnland 规则插入
+            insert_6vdy_playlist(playlist, new_pl)
 
         info_updated = update_info_field_if_needed(existing, playlist)
         movie_info_updated = False
@@ -887,10 +891,11 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         existing.clear()
         existing.update(new_ordered_dict)
 
+        # 注意：playlist 变量仍指向原 list 对象，existing.clear() 后引用依然有效
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
-        playlist.insert(0, new_pl)
+        insert_6vdy_playlist(playlist, new_pl)
 
-        print(f"      [新增渠道] 已将 6vdy 写入 {new_url_key}，并将播放源插入至第一位")
+        print(f"      [新增渠道] 已将 6vdy 写入 {new_url_key}")
 
         info_updated = update_info_field_if_needed(existing, playlist)
         movie_info_updated = False
@@ -950,13 +955,13 @@ def get_list_by_tab(tab_index):
     return items
 
 
-def get_homepage_list_xb6v():
-    """抓取 xb6v.com 首页 #post_container 中的所有条目"""
-    html = fetch(HOME_URL_XB6V)
+def get_homepage_list_6vdy():
+    """抓取 6vdy.org 首页 #post_container 中的所有条目"""
+    html = fetch(HOME_URL_6VDY)
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one("#post_container")
     if not container:
-        raise RuntimeError("找不到 #post_container（xb6v 首页）")
+        raise RuntimeError("找不到 #post_container（6vdy 首页）")
 
     items = []
     seen = set()
@@ -972,7 +977,7 @@ def get_homepage_list_xb6v():
         href = a.get("href", "").strip()
         if not title or not href:
             continue
-        full_url = urljoin(HOME_URL_XB6V, href)
+        full_url = urljoin(HOME_URL_6VDY, href)
         if full_url in seen:
             continue
         seen.add(full_url)
@@ -981,7 +986,7 @@ def get_homepage_list_xb6v():
     return items
 
 
-# ============== 公共逐条处理逻辑（三个列表页 + xb6v 首页 共用） ==============
+# ============== 公共逐条处理逻辑（三个列表页 + 6vdy 首页 共用） ==============
 def process_items(data, items, tab_name):
     total = len(items)
     ok, fail = 0, 0
@@ -1083,11 +1088,11 @@ def process_tab_unified(data, tab_index, tab_name):
     return process_items(data, items, tab_name)
 
 
-def process_homepage_xb6v(data):
-    print(f"\n[抓取] xb6v 首页 ...")
-    items = get_homepage_list_xb6v()
+def process_homepage_6vdy(data):
+    print(f"\n[抓取] 6vdy 首页 ...")
+    items = get_homepage_list_6vdy()
     print(f"  共发现 {len(items)} 条")
-    return process_items(data, items, "xb6v首页")
+    return process_items(data, items, "6vdy首页")
 
 
 # ============== 补全模式（用新方法补全已有记录的缺失字段） ==============
@@ -1202,8 +1207,8 @@ def main():
     d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
     r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
 
-    # 新增：xb6v 首页抓取
-    h_ok, h_fail = process_homepage_xb6v(data)
+    # 新增：6vdy 首页抓取
+    h_ok, h_fail = process_homepage_6vdy(data)
 
     print("\n====================================")
     print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")

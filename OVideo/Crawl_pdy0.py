@@ -254,6 +254,8 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
 MIN_SCORE_LIMIT = 8
+# 当前年份（综艺 Show 分类只抓当年内容，跨年自动跟随，无需改代码）
+CURRENT_YEAR = str(time.localtime().tm_year)
 
 
 # ==========================================
@@ -263,7 +265,7 @@ DRAMA_MAX_EPISODES_LIMIT = 50  # 电视剧分类最大剧集限制（超过则�
 ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳过不抓）
 
 
-# Drama / Anime 黑名单地区：只要精准匹配这些，就跳过不抓取
+# Drama / Anime / Show 黑名单地区：只要精准匹配这些，就跳过不抓取
 FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"}
 
 
@@ -337,7 +339,7 @@ def format_date_str(date_str: str) -> str:
 def should_skip_info_update(old_info: str, new_info: str) -> bool:
     """
     判断是否应该跳过 info 的更新。
-    如果新旧 info 均包含“第X集”或“X集”，且新集数 <= 旧集数，则返回 True（跳过更新，维持原样）。
+    如果新旧 info 均包含"第X集"或"X集"，且新集数 <= 旧集数，则返回 True（跳过更新，维持原样）。
     """
     if not old_info or not new_info:
         return False
@@ -988,9 +990,13 @@ def process_item(item: dict, cat_name: str,
     # 分类过滤逻辑分流
     # =============================================================
     if cat_name == "Show":
-        # 综艺分类：不看评分，只看年份是否为 2026
-        if item["year"] not in ("2025", "2026"):
-            log(f"  ({idx_i}/{total}) [跳过-年份不符] {item['name']} (年份: '{item['year']}' != '2026')")
+        # 综艺分类：不看评分，只抓当前年份（如 2026），跨年自动跟随
+        if item["year"] != CURRENT_YEAR:
+            log(f"  ({idx_i}/{total}) [跳过-年份不符] {item['name']} (年份: '{item['year']}' != '{CURRENT_YEAR}')")
+            return "skipped"
+        # 添加地区过滤逻辑
+        if item["region"] in FILTER_REGIONS:
+            log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
             return "skipped"
     elif cat_name == "Drama":
         if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:

@@ -211,6 +211,24 @@ def extract_info_date(info):
         return m.group(1)
     return None
 
+def extract_episode_count_from_info(info):
+    """
+    从 info 文本中提取已更新的集数。
+    例如 '更新至08期' -> 8, '更新至第10集' -> 10, '全12集' -> 12
+    找不到返回 None
+    """
+    if not info:
+        return None
+    # 优先匹配 '更新至...数字'
+    m = re.search(r"更新[至到]\D*?(\d+)", info)
+    if m:
+        return int(m.group(1))
+    # 兜底：匹配结尾的 '数字 + 集/期/话'
+    m = re.search(r"(\d+)\s*[集期话話]\s*$", info)
+    if m:
+        return int(m.group(1))
+    return None
+
 def is_valid_episode_name(name):
     """判断集名是否有效（过滤非正式集名）"""
     if not name:
@@ -687,15 +705,19 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 
         log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并将播放源插入至第一位")
 
-        # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新时都更新
+        # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新、或新抓取集数更多时都更新
         if new_scraped_info:
             old_info = existing.get("info", "")
             old_date = extract_info_date(old_info)
             new_date = extract_info_date(new_scraped_info)
+            old_ep_count = extract_episode_count_from_info(old_info)
             should_update = False
             if not old_info:
                 should_update = True
             elif new_date and (not old_date or new_date > old_date):
+                should_update = True
+            elif old_ep_count is not None and len(new_episodes) > old_ep_count:
+                # 新抓取的集数超过原 info 中标注的集数，更新 info
                 should_update = True
             if should_update and new_scraped_info != old_info:
                 existing["info"] = new_scraped_info
@@ -758,14 +780,14 @@ def process_list_page(data, list_url, group, page_name):
                 buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
                            f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
 
-            # ===== 地区过滤：按生效分类，非综艺才过滤 =====
-            # 【屏蔽】命中禁用地区关键词时，整条记录（含表头）都不显示
+            # ===== 地区过滤：现在对所有分类都进行过滤 =====
             region = rec.get("地区", "")
-            if effective_group != "Show":
-                if any(keyword == region.strip() for keyword in FILTER_REGIONS):
-                    ok += 1
-                    time.sleep(SLEEP_BETWEEN)
-                    continue
+            if any(keyword == region.strip() for keyword in FILTER_REGIONS):
+                flush()
+                print(f"    - 跳过：地区为「{region}」，在过滤列表中")
+                ok += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
 
             # ===== 电视剧/动漫集数超过 30 则跳过：按生效分类 =====
             if effective_group in ("Drama", "Anime") and len(new_eps) > 30:

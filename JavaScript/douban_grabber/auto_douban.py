@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -127,31 +128,66 @@ def click_image_center(detector, location, shape, y_offset=0):
     print(f"点击(逻辑坐标): ({logic_x}, {logic_y})  y_offset={y_offset}")
 
 
+def is_valid_2026_date(date_str: str) -> bool:
+    """
+    校验抓取到的日期是否合格：
+    - 必须以 '2026' 开头
+    - '2026' 后面必须还有数字（即带月/日，例如 2026-05-20、2026年5月20日）
+    只有 '2026'、'2026年'、空字符串等都算不合格。
+    """
+    s = str(date_str).strip()
+    if not s.startswith("2026"):
+        return False
+    rest = s[4:]                       # 去掉开头的 2026
+    return bool(re.search(r'\d', rest))  # 后面还得有数字才算带月日
+
 def update_item(item, scraped) -> bool:
-    """把抓取到的数据写回 item，返回是否有变化。"""
+    """
+    把抓取到的数据写回 item，返回是否有变化。
+    规则：只有 date 是 2026 开头且带月日时才写入；否则整条跳过，不写入。
+    """
+    date   = str(scraped.get('date', '')).strip()
+    douban = str(scraped.get('douban_rating', '')).strip()
+
+    # ============ 日期校验：不合格则整条跳过 ============
+    if not is_valid_2026_date(date):
+        print("  ┌────────────── ⚠️ 跳过本条，未写入 ──────────────")
+        print(f"  │ 原因：抓取到的日期不合格 ->「{date or '空'}」")
+        print(f"  │ 要求：必须 2026 开头且带月日（如 2026-05-20）")
+        print(f"  │ 一并放弃的豆瓣评分 ->「{douban or '空'}」")
+        print("  └──────────────────────────────────────────────")
+        return False
+    # =================================================
+
     changed = False
 
-    date = str(scraped.get('date', '')).strip()
-    if date:
-        item['date'] = date
-        changed = True
-        print(f"  -> 写入 date: {date}")
-    else:
-        print("  -> 页面未找到日期，date 保持为空")
+    # —— 写入日期 ——
+    item['date'] = date
+    changed = True
 
-    douban = str(scraped.get('douban_rating', '')).strip()
+    # —— 写入豆瓣评分（IMDB 不动）——
+    old = ''
     if douban:
         rating = item.get('评分')
         if not isinstance(rating, dict):
             rating = {}
             item['评分'] = rating
         old = str(rating.get('豆瓣', '')).strip()
-        if old != douban:
-            rating['豆瓣'] = douban
-            changed = True
-            print(f"  -> 更新豆瓣评分: {old or '空'} -> {douban}（IMDB 不动）")
+        rating['豆瓣'] = douban
+        changed = True
+
+    # —— 成功写入日志（一眼能看明白）——
+    print("  ┌────────────── ✅ 写入成功 ──────────────")
+    print(f"  │ 日期 date     : {date}")
+    if douban:
+        if old and old != douban:
+            print(f"  │ 豆瓣评分      : {old} -> {douban}")
         else:
-            print(f"  -> 豆瓣评分未变化 ({douban})")
+            print(f"  │ 豆瓣评分      : {douban}")
+    else:
+        print(f"  │ 豆瓣评分      : 页面未抓到，保持原样")
+    print("  └─────────────────────────────────────────")
+
     return changed
 
 
@@ -161,7 +197,7 @@ def activate_chrome_and_switch_to_douban():
     Mac 自动：
     1. 激活 Google Chrome
     2. 遍历所有窗口+所有标签，切换到 url 包含 douban.com 的标签页
-    修复原脚本无法切换标签的问题，增加强制置顶、日志输出
+    3. 如果找到豆瓣页面则继续，如果未找到则打开新标签并访问指定豆瓣电影页面
     """
     print("\n===== 开始激活Chrome并查找豆瓣标签 =====")
 
@@ -169,6 +205,7 @@ def activate_chrome_and_switch_to_douban():
     set foundTab to missing value
     set targetWin to missing value
     set targetTabIdx to 0
+    set targetUrl to "https://movie.douban.com/subject/1837856/"
 
     tell application "Google Chrome"
         activate
@@ -195,22 +232,18 @@ def activate_chrome_and_switch_to_douban():
             set index of targetWin to 1
             set active tab index of targetWin to targetTabIdx
             delay 0.2
+            return "FOUND"
+        else
+            tell application "System Events"
+                keystroke "t" using command down
+                delay 0.5
+                keystroke "https://movie.douban.com/subject/1837856/"
+                delay 0.5
+                key code 36
+            end tell
+            return "NOT_FOUND_OPENED"
         end if
     end tell
-
-    -- 强制系统把Chrome窗口置顶（关键修复，原脚本缺失）
-    tell application "System Events"
-        tell application process "Google Chrome"
-            perform action "AXRaise" of front window
-        end tell
-    end tell
-
-    -- 返回是否找到标签，给python捕获输出
-    if foundTab is not missing value then
-        return "FOUND"
-    else
-        return "NOT_FOUND"
-    end if
     '''
 
     # 执行脚本并捕获返回结果
@@ -224,8 +257,10 @@ def activate_chrome_and_switch_to_douban():
 
     if result == "FOUND":
         print("✅ 成功切换到豆瓣标签页，Chrome窗口已置顶\n")
+    elif result == "NOT_FOUND_OPENED":
+        print("✅ 未找到豆瓣标签页，已打开新的豆瓣电影页面: https://movie.douban.com/subject/1837856/\n")
     else:
-        print("⚠️ 未找到任何包含 douban.com 的标签，请手动打开豆瓣页面后重启脚本\n")
+        print("⚠️ 操作完成，但返回状态异常\n")
 
 
 def process_one(detector, name):
