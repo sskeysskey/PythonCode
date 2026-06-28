@@ -30,6 +30,7 @@ DOUBAN_INPUT_IMG = 'douban_input.png'        # 位于 Resource 目录里的模�
 DOUBAN_POPUP_IMG = '/Users/yanzhang/Coding/python_code/Resource/douban_popup.png'  # 弹窗模板图路径
 # ============================================
 DOWNLOAD_GLOB    = 'douban_result*.json'      # 插件下载的文件名模式
+RATING_LOG = Path('/Users/yanzhang/Coding/LocalServer/Resources/OVideo/rating.txt')  # 评分为空的片名记录
 
 # —— 各种等待时间（秒），按你机器/网速调整 ——
 WAIT_AFTER_PASTE      = 2     # 粘贴名字后等待联想下拉出现
@@ -43,6 +44,26 @@ TYPE_NAME_INTO_SEARCH = True  # 是否把 name 粘贴进搜索框；不需要可
 
 pyautogui.FAILSAFE = True
 
+
+def get_douban_value(item) -> str:
+    """从 item 里取出当前的豆瓣评分（取不到返回空字符串）。"""
+    rating = item.get('评分')
+    if isinstance(rating, dict):
+        return str(rating.get('豆瓣', '')).strip()
+    return ''
+
+
+def save_rating_name(name: str):
+    """把豆瓣评分为空的片名追加写入 rating.txt，单独一行。"""
+    name_stripped = name.strip()
+    if not name_stripped:
+        return
+    try:
+        with open(RATING_LOG, 'a', encoding='utf-8') as f:
+            f.write(name_stripped + "\n")
+        print(f"📝 当前项目与抓取结果豆瓣评分均为空，已记录片名「{name_stripped}」到 rating.txt")
+    except Exception as e:
+        print(f"写入 rating.txt 失败: {e}")
 
 def check_stop_file() -> bool:
     """检测桌面是否有 stop_scpt.txt，有则删除并返回 True。"""
@@ -369,6 +390,14 @@ def main():
 
         scraped = process_one(detector, name)
         if scraped:
+            # ====== 新增：判断豆瓣评分是否双双为空 ======
+            current_douban = get_douban_value(item)           # 当前项目豆瓣评分
+            if current_douban == '':                          # 仅当前项目为空时才检查
+                scraped_douban = str(scraped.get('douban_rating', '')).strip()
+                if scraped_douban == '':                      # 抓取结果也为空
+                    save_rating_name(name)
+            # ==========================================
+
             if update_item(item, scraped):
                 save_json(OVIDEOS_JSON, data)
                 print("已写回 OVideos.json。")

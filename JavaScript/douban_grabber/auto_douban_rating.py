@@ -29,7 +29,7 @@ OVIDEOS_JSON     = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.
 DOWNLOADS_DIR    = Path.home() / 'Downloads'
 STOP_FILE        = Path.home() / 'Desktop' / 'stop_scpt.txt'
 DOUBAN_INPUT_IMG = 'douban_input.png'        # 位于 Resource 目录里的模板图
-PROCESSED_LOG    = Path("/Users/yanzhang/Coding/LocalServer/Resources/OVideo/a.txt") # 已处理片名日志
+PROCESSED_LOG    = Path("/Users/yanzhang/Coding/LocalServer/Resources/OVideo/rating.txt") # 已处理片名日志
 # ================= 弹窗配置 =================
 DOUBAN_POPUP_IMG = '/Users/yanzhang/Coding/python_code/Resource/douban_popup.png'  # 弹窗模板图路径
 # ============================================

@@ -62,8 +62,8 @@ WHITELIST_NAMES = [
     "镖人 第二季"
 ]
 
-# FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
-FILTER_REGIONS = ["测试",]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
+# FILTER_REGIONS = ["测试",]
 
 # ============== 镜像站识别（同源不同域名）==============
 MIRROR_DOMAINS = ("6vdy", "xb6v")
@@ -1011,28 +1011,38 @@ def process_items(data, items, tab_name):
                     new_6vdy_eps = pl.get("episodes", {})
                     break
 
-            # ============ 过滤规则（新增白名单优先逻辑）============
-            # 白名单内的影片直接跳过地区过滤，不执行屏蔽逻辑
-            if real_name in WHITELIST_NAMES:
-                print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
-            else:
-                # 不在白名单才执行原有地区分集过滤规则
-                region = rec.get("地区", "")
-                region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
-                has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
-
-                if region_match and has_episode_keyword:
-                    print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
-                    ok += 1
-                    time.sleep(SLEEP_BETWEEN)
-                    continue
-
+            # 无播放源直接判为失败（提前，逻辑不变）
             if not new_6vdy_eps:
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
+            # 先做全局查重，过滤逻辑要依赖"是否已存在"
             matched_group, existing = find_existing_global(data, real_name, url)
+
+            # ============ 过滤规则（地区屏蔽）============
+            # 放行优先级：白名单 > 已存在记录 > Anime 分类；其余才执行地区屏蔽
+            if real_name in WHITELIST_NAMES:
+                print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
+            elif existing is not None:
+                print(f"    ✅ 已存在记录放行（{matched_group}）：跳过地区屏蔽，持续更新")
+            else:
+                # 新增记录：先预判分类，Anime 不做地区屏蔽
+                group_guess = detect_group(
+                    new_6vdy_eps, rec.get("主演", []), rec.get("类型", [])
+                )
+                if group_guess == "Anime":
+                    print(f"    ✅ 动漫/动画分类放行：跳过地区屏蔽校验")
+                else:
+                    region = rec.get("地区", "")
+                    region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
+                    has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
+
+                    if region_match and has_episode_keyword:
+                        print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
+                        ok += 1
+                        time.sleep(SLEEP_BETWEEN)
+                        continue
 
             if existing:
                 status = process_existing_record(existing, new_6vdy_eps, url, rec)

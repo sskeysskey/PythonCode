@@ -253,7 +253,9 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 8
+MIN_SCORE_LIMIT = 7.0
+# 非当前年份的旧片，豆瓣/IMDB 取最高分，低于此值则跳过不抓
+OLD_VIDEO_MIN_SCORE = 5.5
 # 当前年份（综艺 Show 分类只抓当年内容，跨年自动跟随，无需改代码）
 CURRENT_YEAR = str(time.localtime().tm_year)
 
@@ -746,16 +748,15 @@ def _find_span_by_label(info_block, label: str):
 
 
 def parse_detail_page(html: str, name: str, url: str,
-                      info: str = "", base_url: str = DETAIL_BASE_URL) -> dict | None:
+                      info: str = "", base_url: str = DETAIL_BASE_URL,
+                      list_year: str = "") -> dict | None:
     soup = BeautifulSoup(html, "html.parser")
-
 
     # ====== 提取播放列表并校验（前置逻辑） ======
     playlist = parse_playlist(soup, base_url)
     if not playlist:
         log(f"     [警告] 没有有效播放源，跳过该条目: {name}")
         return None
-
 
     # ====== 提取最后更新时间 ======
     update_time = ""
@@ -768,7 +769,6 @@ def parse_detail_page(html: str, name: str, url: str,
                 update_time = last_text
             elif len(ems) >= 2:
                 update_time = clean_ws(ems[-1].get_text(strip=True))
-
 
     data = {
         "name": name,
@@ -792,54 +792,29 @@ def parse_detail_page(html: str, name: str, url: str,
         "playlist": playlist,
     }
 
-
-    # ====== 确认有播放源后，才开始下载封面图 ======
-    img_url = ""
-    pic_img = soup.select_one("div.vod-info .pic img")
-    if pic_img:
-        img_url = (pic_img.get("data-original")
-                   or pic_img.get("data-src")
-                   or pic_img.get("src")
-                   or "").strip()
-        if img_url.startswith("//"):
-            img_url = "https:" + img_url
-
-
-    if img_url:
-        video_id = extract_video_id(url, name)
-        data["image"] = download_cover(img_url, video_id)
-        time.sleep(SLEEP_BETWEEN_REQUESTS)
-
-
     info_block = soup.select_one("div.vod-info .info") or soup
-
 
     span = _find_span_by_label(info_block, "导演：")
     if span:
         directors = _split_by_slash(span)
         data["导演"] = directors[0] if directors else ""
 
-
     span = _find_span_by_label(info_block, "编剧：")
     if span:
         data["编剧"] = _split_by_slash(span)
-
 
     span = info_block.select_one("span.zksq-actor") or _find_span_by_label(info_block, "主演：")
     if span:
         data["主演"] = _split_by_slash(span)
 
-
     span = _find_span_by_label(info_block, "类型：")
     if span:
         data["类型"] = _split_by_slash(span)
-
 
     span = _find_span_by_label(info_block, "地区：")
     if span:
         regions = _split_by_slash(span)
         data["地区"] = regions[0] if regions else ""
-
 
     for span in info_block.find_all("span"):
         text = span.get_text(" ", strip=True)
@@ -852,12 +827,11 @@ def parse_detail_page(html: str, name: str, url: str,
             cleaned = text.replace("又名：", "", 1)
             data["alias"] = clean_ws(cleaned)
 
-
     # ---- 评分（豆瓣 / IMDB） ----
     span = _find_span_by_label(info_block, "评分：")
     if span:
         full_span_text = clean_ws(span.get_text(" ", strip=True))
-        
+
         has_platform_match = False
         for s in span.find_all("span"):
             t = clean_ws(s.get_text(" ", strip=True))
@@ -872,13 +846,58 @@ def parse_detail_page(html: str, name: str, url: str,
                         data["评分"][platform] = score
                         has_platform_match = True
 
-
         if not has_platform_match and full_span_text:
             num_match = re.search(r"评分：\s*([0-9.]+)", full_span_text)
             if num_match:
                 score = num_match.group(1)
                 data["评分"]["豆瓣"] = score
 
+    # =============================================================
+    # 【新增】：旧片评分过滤
+    #   - 取详情页 date 的年份；取不到则回退到列表页年份 list_year
+    #   - 若为当前年份（如 2026）：不要求评分，直接放行
+    #   - 若为 2025 及更早：豆瓣/IMDB 取最高分，低于 OLD_VIDEO_MIN_SCORE 则跳过
+    #     （两个平台都没分则视为不足，同样跳过）
+    #   注意：此过滤在封面下载之前，避免为被丢弃的条目浪费下载。
+    # =============================================================
+    detail_year = ""
+    if data.get("date"):
+        ym = re.match(r"(\d{4})", data["date"])
+        if ym:
+            detail_year = ym.group(1)
+    if not detail_year:
+        detail_year = list_year  # 详情页拿不到年份时，回退用列表页年份
+
+    if detail_year and detail_year != CURRENT_YEAR:
+        candidate_scores = []
+        for platform in ("豆瓣", "IMDB"):
+            val = data["评分"].get(platform, "")
+            if val and val != "--":
+                try:
+                    candidate_scores.append(float(val))
+                except ValueError:
+                    pass
+        max_score = max(candidate_scores) if candidate_scores else 0.0
+        if max_score < OLD_VIDEO_MIN_SCORE:
+            log(f"     [跳过-旧片评分过低] {name} (年份: {detail_year}, "
+                f"豆瓣/IMDB最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
+            return None
+
+    # ====== 通过过滤后，才开始下载封面图 ======
+    img_url = ""
+    pic_img = soup.select_one("div.vod-info .pic img")
+    if pic_img:
+        img_url = (pic_img.get("data-original")
+                   or pic_img.get("data-src")
+                   or pic_img.get("src")
+                   or "").strip()
+        if img_url.startswith("//"):
+            img_url = "https:" + img_url
+
+    if img_url:
+        video_id = extract_video_id(url, name)
+        data["image"] = download_cover(img_url, video_id)
+        time.sleep(SLEEP_BETWEEN_REQUESTS)
 
     # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
@@ -888,7 +907,6 @@ def parse_detail_page(html: str, name: str, url: str,
         intro_text = intro_box.get_text(" ", strip=True)
         intro_text = re.sub(r"^剧情介绍[:：]", "", intro_text)
         data["intro"] = re.sub(r"\s+", "", intro_text)
-
 
     return data
 
@@ -1109,7 +1127,8 @@ def process_item(item: dict, cat_name: str,
 
     try:
         detail = parse_detail_page(detail_html, item["name"], item["url"],
-                                   info=item["info"], base_url=detail_base_url)
+                                   info=item["info"], base_url=detail_base_url,
+                                   list_year=item.get("year", ""))
 
         if detail is None:
             return "skipped"
@@ -1160,16 +1179,28 @@ def process_item(item: dict, cat_name: str,
                 ]
 
                 final_playlist = []
+
+                # 1. chnland 置顶（若存在）
+                chnland_source = next((p for p in protected_in_old if p.get("name") == "chnland"), None)
+                if chnland_source:
+                    final_playlist.append(chnland_source)
+
+                # 2. 6vdy 第二（若存在）
                 vdy_source = next((p for p in protected_in_old if p.get("name") == "6vdy"), None)
                 if vdy_source:
                     final_playlist.append(vdy_source)
+
+                # 3. 其它受保护源（既不是 chnland 也不是 6vdy）按原顺序追加
                 for p in protected_in_old:
-                    if p.get("name") != "6vdy":
+                    if p.get("name") not in ("chnland", "6vdy"):
                         final_playlist.append(p)
+
+                # 4. 新抓取的非受保护源追加在最后
                 final_playlist.extend(new_playlist)
+
                 detail["playlist"] = final_playlist
-                kept_names = [p.get("name") for p in protected_in_old]
-                print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland，新源追加在后)")
+                kept_names = [p.get("name") for p in final_playlist if p.get("name") in PROTECTED_SOURCES]
+                print(f"     [保留受保护源] {kept_names} (已置顶 chnland，其次 6vdy，新源追加在后)")
                 
                 # ==========================================
                 # 【新增】：info 更新前，比较"自己渠道"与"受保护渠道"的集数

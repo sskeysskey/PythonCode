@@ -94,6 +94,20 @@ HEADERS = {
 }
 
 # ============== 工具函数 ==============
+def extract_episode_number(info_text):
+    """
+    从 info 中提取纯数字集数
+    例如：
+    "14集全" → 14
+    "更新至第14集" →14
+    "全24集" →24
+    找不到返回 None
+    """
+    if not info_text:
+        return None
+    match = re.search(r'(\d+)', info_text)
+    return int(match.group(1)) if match else None
+
 def fetch(url, is_binary=False):
     resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
@@ -681,10 +695,26 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
             playlist.insert(0, new_pl)
 
         # 用抓取到的 info 直接更新
+        # ==================== 优化：优质info（全）不被普通info覆盖 ====================
         if new_scraped_info and new_scraped_info != existing.get("info", ""):
             old_info = existing.get("info", "")
-            existing["info"] = new_scraped_info
-            log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+            old_ep = extract_episode_number(old_info)
+            new_ep = extract_episode_number(new_scraped_info)
+
+            # 规则：
+            # 1. 旧info为空 → 更新
+            # 2. 新旧集数都存在 且 新集数 > 旧集数 → 更新
+            # 3. 集数相同 → 不更新（保留优质旧info）
+            if not old_info:
+                existing["info"] = new_scraped_info
+                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+            elif old_ep is not None and new_ep is not None:
+                if new_ep > old_ep:
+                    existing["info"] = new_scraped_info
+                    log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+                else:
+                    log(f"      [info跳过] 集数相同，保留优质原有info：「{old_info}」")
+            # 其他情况（无法提取集数 / 集数相同）都不更新
 
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return "updated"
@@ -800,8 +830,11 @@ def process_list_page(data, list_url, group, page_name):
             # 白名单直接放行，不检查地区
             if real_name in WHITELIST_NAMES:
                 buf.append(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽")
+            # 动漫：若 JSON 中已存在（同 URL 或同名），跳过地区限制，正常更新
+            elif group == "Anime" and existing:
+                buf.append(f"    ✅ 动漫已存在记录，跳过地区屏蔽，继续更新：{real_name}")
             else:
-                # 不在白名单才执行地区过滤
+                # 不在白名单（且非"已存在的动漫"）才执行地区过滤
                 region = rec.get("地区", "")
                 if any(keyword == region.strip() for keyword in filter_regions):
                     flush()
@@ -821,12 +854,12 @@ def process_list_page(data, list_url, group, page_name):
             if existing:
                 status = process_existing_record(existing, new_eps, url, rec, buf.append)
                 if status == "updated":
-                    buf.append(f"    ✓ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
+                    buf.append(f"    ✅ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
                     save_json(data)
                     flush()
                     ok += 1
                 elif status == "channel_added":
-                    buf.append(f"    ✓ 更新({matched_group})：成功作为新渠道插入到 playlist 第一位")
+                    buf.append(f"    ✅ 更新({matched_group})：成功作为新渠道插入到 playlist 第一位")
                     save_json(data)
                     flush()
                     ok += 1
@@ -846,7 +879,7 @@ def process_list_page(data, list_url, group, page_name):
                 flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(group, []).append(rec)
-                print(f"    ✓ 新增 -> {group} (共 {len(new_eps)} 集) "
+                print(f"    ✅ 新增 -> {group} (共 {len(new_eps)} 集) "
                       f"[真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
@@ -926,7 +959,7 @@ def backfill_existing(data):
                     item["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     updated += 1
                     save_json(data)
-                    print(f"    ✓ 已补全 (导演:{item.get('导演')} 类型:{item.get('类型')} 地区:「{item.get('地区')}」)")
+                    print(f"    ✅ 已补全 (导演:{item.get('导演')} 类型:{item.get('类型')} 地区:「{item.get('地区')}」)")
                 else:
                     print("    - 未发现可补全内容")
             except Exception as e:
