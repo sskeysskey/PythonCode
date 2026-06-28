@@ -7,9 +7,7 @@ chnland.com 单个视频详情页抓取脚本
 
 import os
 import re
-import sys
 import json
-import time
 import requests
 import platform
 import subprocess

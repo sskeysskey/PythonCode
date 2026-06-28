@@ -58,8 +58,12 @@ PLAYLIST_NAME = "6vdy"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["乘风2026"]
+WHITELIST_NAMES = [
+    "镖人 第二季"
+]
 
-FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
+# FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
+FILTER_REGIONS = ["测试",]
 
 # ============== 镜像站识别（同源不同域名）==============
 MIRROR_DOMAINS = ("6vdy", "xb6v")
@@ -1007,17 +1011,21 @@ def process_items(data, items, tab_name):
                     new_6vdy_eps = pl.get("episodes", {})
                     break
 
-            # ============ 过滤规则（变更后）============
-            # 仅当【地区精准命中过滤名单】且【6vdy渠道episodes键名含"集"】时才跳过
-            region = rec.get("地区", "")
-            region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
-            has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
+            # ============ 过滤规则（新增白名单优先逻辑）============
+            # 白名单内的影片直接跳过地区过滤，不执行屏蔽逻辑
+            if real_name in WHITELIST_NAMES:
+                print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
+            else:
+                # 不在白名单才执行原有地区分集过滤规则
+                region = rec.get("地区", "")
+                region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
+                has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
 
-            if region_match and has_episode_keyword:
-                print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
-                ok += 1
-                time.sleep(SLEEP_BETWEEN)
-                continue
+                if region_match and has_episode_keyword:
+                    print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
+                    ok += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
 
             if not new_6vdy_eps:
                 fail += 1

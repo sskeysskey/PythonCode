@@ -50,6 +50,10 @@ SITE_KEY      = "chnland"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵"]
+# ===================== 新增：白名单（在这里添加你要放行的名称）
+WHITELIST_NAMES = [
+    "镖人 第二季"
+]
 
 # 分类页 -> 分组（分组由 URL 直接决定，无需 detect_group）
 LIST_PAGES = [
@@ -793,14 +797,18 @@ def process_list_page(data, list_url, group, page_name):
                 buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
                            f"将按「{matched_group}」规则处理（当前抓取分类为「{group}」）")
 
-            # ===== 地区过滤：按当前列表页的过滤名单进行过滤 =====
-            region = rec.get("地区", "")
-            if any(keyword == region.strip() for keyword in filter_regions):
-                flush()
-                print(f"    - 跳过：地区为「{region}」，在过滤列表中")
-                ok += 1
-                time.sleep(SLEEP_BETWEEN)
-                continue
+            # 白名单直接放行，不检查地区
+            if real_name in WHITELIST_NAMES:
+                buf.append(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽")
+            else:
+                # 不在白名单才执行地区过滤
+                region = rec.get("地区", "")
+                if any(keyword == region.strip() for keyword in filter_regions):
+                    flush()
+                    print(f"    - 跳过：地区为「{region}」，在过滤列表中")
+                    ok += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
 
             # ===== 电视剧/动漫集数超过 30 则跳过：按生效分类 =====
             if effective_group in ("Drama", "Anime") and len(new_eps) > 30:

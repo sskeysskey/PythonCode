@@ -5,6 +5,7 @@
 特征：date 以 "2026" 开头（如 2026-01-23 / 2026-06-02），且 评分.豆瓣 为空。
 只抓取并写回豆瓣评分，不处理上映日期/首播。
 依赖: pyautogui, 以及同目录下你已有的 screenshot.py
+新增功能：处理过的片名存入Downloads/a.txt，下次启动自动跳过已处理片名
 """
 
 import os
@@ -28,6 +29,7 @@ OVIDEOS_JSON     = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.
 DOWNLOADS_DIR    = Path.home() / 'Downloads'
 STOP_FILE        = Path.home() / 'Desktop' / 'stop_scpt.txt'
 DOUBAN_INPUT_IMG = 'douban_input.png'        # 位于 Resource 目录里的模板图
+PROCESSED_LOG    = Path("/Users/yanzhang/Coding/LocalServer/Resources/OVideo/a.txt") # 已处理片名日志
 # ================= 弹窗配置 =================
 DOUBAN_POPUP_IMG = '/Users/yanzhang/Coding/python_code/Resource/douban_popup.png'  # 弹窗模板图路径
 # ============================================
@@ -83,11 +85,37 @@ def get_douban_value(item) -> str:
     return ''
 
 
-def find_next_target(data, processed):
+# ====================== 已处理片名日志工具函数（新增） ======================
+def load_processed_names() -> set:
+    """读取a.txt中已处理片名，返回去重集合，文件不存在返回空集合"""
+    if not PROCESSED_LOG.exists():
+        return set()
+    try:
+        with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        return set(lines)
+    except Exception:
+        return set()
+
+def save_processed_name(name: str):
+    """追加写入片名到a.txt，单独一行"""
+    name_stripped = name.strip()
+    if not name_stripped:
+        return
+    try:
+        with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
+            f.write(name_stripped + "\n")
+    except Exception as e:
+        print(f"写入处理日志失败: {e}")
+# ===========================================================================
+
+
+def find_next_target(data, processed, processed_names):
     """
     顺序查找第一个满足条件、且本轮未处理过的项目：
       - date 以 "2026" 开头（2026-01-23 / 2026-06-02 等都算）
       - 评分.豆瓣 为空
+      - 片名不在a.txt已处理列表内
     """
     for category, items in data.items():
         if not isinstance(items, list):
@@ -106,6 +134,11 @@ def find_next_target(data, processed):
             # ============== 条件 2：豆瓣评分为空 ==============
             douban_val = get_douban_value(item)
             if douban_val != '':
+                continue
+
+            # ============== 新增条件：跳过a.txt已记录片名 ==============
+            item_name = str(item.get('name', '')).strip()
+            if item_name in processed_names:
                 continue
 
             return category, idx, item
@@ -349,6 +382,10 @@ def main():
     print("=== 豆瓣评分补全主控启动 ===")
     print("筛选规则：date 以 2026 开头 且 评分.豆瓣 为空\n")
 
+    # 加载已处理片名日志
+    processed_names = load_processed_names()
+    print(f"📋 读取到历史已处理片名：{len(processed_names)} 个")
+
     # 第一步：自动激活 Chrome 并切换到豆瓣页面
     activate_chrome_and_switch_to_douban()
 
@@ -361,14 +398,14 @@ def main():
             break
 
         data = load_json(OVIDEOS_JSON)
-        category, idx, item = find_next_target(data, processed)
+        category, idx, item = find_next_target(data, processed, processed_names)
         if item is None:
-            print("没有更多符合条件（date=2026开头 且 豆瓣评分为空）的项目，全部处理完毕，程序结束。")
+            print("没有更多符合条件（date=2026开头 且 豆瓣评分为空 且未记录在a.txt）的项目，全部处理完毕，程序结束。")
             break
 
         name = item.get('name', '')
         print(f"\n--- 处理 [{category}][{idx}] {name} ---")
-        processed.add((category, idx))   # 标记已处理，即使没抓到评分也不会重复死循环
+        processed.add((category, idx))   # 标记本轮已处理，防止循环重复扫描
 
         scraped = process_one(detector, name)
         if scraped:
@@ -377,6 +414,10 @@ def main():
                 print("已写回 OVideos.json。")
             else:
                 print("无变化，无需写回。")
+
+        # 无论本次是否抓取到评分，都写入a.txt永久标记已处理
+        save_processed_name(name)
+        print(f"📝 片名「{name}」已写入处理日志 a.txt")
 
         # 循环结束再查一次停止文件
         if check_stop_file():
