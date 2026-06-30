@@ -60,16 +60,18 @@ def analyze_mapping():
                     "items": keys_info
                 })
 
+    # ===================== 修改点 =====================
+    # 无匹配数据直接返回，不创建文件
+    if not results:
+        print("分析完成：未发现符合条件的分组，不生成输出文件。")
+        return
+    # ==================================================
+
     # 4. 写入到 a.txt
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     with open(output_path, "w", encoding="utf-8") as out_f:
-        if not results:
-            out_f.write("没有找到符合条件（仅域名不同，但视频源相同）的重复项目。\n")
-            print("分析完成：未发现符合条件的分组。")
-            return
-            
         out_f.write(f"=== 共找到 {len(results)} 组仅域名差异的重复项目 ===\n\n")
         
         for idx, group in enumerate(results, 1):

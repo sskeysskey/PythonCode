@@ -1392,6 +1392,143 @@ function extractAndCopy() {
   // 处理 economist.com
   else if (window.location.hostname.includes("economist.com")) {
 
+    // ===== [新增] 专门适配 The World in Brief（每日要闻速览）页面 =====
+    const handleEconomistWorldInBrief = (() => {
+      try {
+        // 该页面没有 <article>，正文图片都在 main[data-testid="the-world-in-brief-gobbets"] 里
+        const main = document.querySelector('main[data-testid="the-world-in-brief-gobbets"]')
+          || document.querySelector('main#content [data-testid="twib-header"]')?.closest('main');
+        if (!main) return false;
+
+        // 1) 标题
+        const h1 = main.querySelector('h1');
+        const title = h1
+          ? h1.textContent.replace(/\s+/g, ' ').replace(/^["“]|["”]$/g, '').trim()
+          : '';
+
+        // 2) 正文段落（递归取出 <b> <a> <small> 等子节点里的文字）
+        const getText = (node) => {
+          let t = '';
+          node.childNodes.forEach(ch => {
+            if (ch.nodeType === Node.TEXT_NODE) t += ch.textContent;
+            else if (ch.nodeType === Node.ELEMENT_NODE) t += getText(ch);
+          });
+          return t;
+        };
+
+        const paraNodes = Array.from(main.querySelectorAll('p[data-component="paragraph"]'));
+        const paras = paraNodes
+          .map(p => getText(p)
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/[•∞@®]/g, '')
+            .trim())
+          // 过滤掉占位垃圾段落（单字符 ( • ® ∞ . 等）
+          .filter(t => t && t.length > 5 && !/^[.\s•∞@®()]*$/.test(t));
+
+        const bodyText = paras.join('\n\n');
+        const localText = title ? (title + '\n\n' + bodyText) : bodyText;
+
+        // 3) 图片
+        const figures = Array.from(main.querySelectorAll(
+          'figure.css-3mn275, figure[class*="css-3mn275"], figure[class*="e1197rjj0"]'
+        ));
+
+        if (figures.length === 0) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        } else {
+          const processedUrls = new Set();
+          const processedNames = new Set();
+
+          figures.forEach((figure, idx) => {
+            if (figure.closest('.related-content') ||
+              figure.closest('.related-articles') ||
+              figure.closest('aside')) return;
+
+            const img = figure.querySelector('img');
+            if (!img) return;
+
+            // 取最高分辨率
+            let bestUrl = '';
+            if (img.srcset) {
+              const entries = img.srcset.replace(/\s+/g, ' ').split(',')
+                .map(e => e.trim()).filter(Boolean)
+                .map(e => {
+                  const parts = e.split(' ');
+                  return { url: parts[0], w: parseInt((parts[1] || '').replace(/[^\d]/g, ''), 10) || 0 };
+                })
+                .sort((a, b) => b.w - a.w);
+              if (entries.length) bestUrl = entries[0].url;
+            }
+            if (!bestUrl && img.src) bestUrl = img.src;
+            if (!bestUrl) return;
+
+            // 复用 cdn-cgi 高清重建逻辑
+            try {
+              const u = new URL(bestUrl, window.location.href);
+              if (u.pathname.startsWith('/cdn-cgi/image')) {
+                const rebuilt = u.origin + '/cdn-cgi/image/width=1424,quality=80,format=auto' +
+                  u.pathname.replace(/^\/cdn-cgi\/image\/[^/]+/, '').replace(/\/{2,}/g, '/');
+                bestUrl = rebuilt + (u.search || '');
+              } else {
+                bestUrl = u.href;
+              }
+            } catch (e) { }
+
+            if (processedUrls.has(bestUrl)) return;
+            processedUrls.add(bestUrl);
+            imagesFoundForDownload = true;
+
+            let caption = '';
+            const capSpan = figure.querySelector('figcaption span.css-1st60ou')
+              || figure.querySelector('figcaption');
+            if (capSpan && capSpan.textContent) caption = capSpan.textContent.trim();
+            else if (img.alt) caption = img.alt.trim();
+
+            let ext = 'jpg';
+            try {
+              const pathname = new URL(bestUrl, window.location.href).pathname;
+              const m = pathname.match(/\.(jpg|jpeg|png|webp|svg)(?:$|\?)/i);
+              if (m) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+            } catch (_) { }
+
+            const clean = (s) => (s || '')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/[/\\?%*:|"<>+]/g, '-')
+              .replace(/\s+/g, ' ')
+              .trim();
+
+            let baseName = clean(caption) || `economist-twib-${Date.now()}-${idx}`;
+            if (baseName.length > 180) baseName = baseName.slice(0, 180);
+            let filename = `${baseName}.${ext}`;
+            let counter = 1;
+            while (processedNames.has(filename)) filename = `${baseName}(${counter++}).${ext}`;
+            processedNames.add(filename);
+
+            chrome.runtime.sendMessage({ action: 'downloadImage', url: bestUrl, filename });
+          });
+        }
+
+        // 4) 复制正文
+        if (localText) {
+          textContent = localText;
+          const ta = document.createElement('textarea');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.value = textContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          return true;
+        }
+        return false;
+      } catch (err) {
+        console.warn('[Economist World in Brief] failed:', err);
+        return false;
+      }
+    })();
+
     // ===== [新增/优化分支] 专门适配 Economist 1843 杂志等 Svelte 架构页面 =====
     const handleEconomistSvelteOr1843 = (() => {
       try {
@@ -1547,8 +1684,9 @@ function extractAndCopy() {
       }
     })();
 
-    // 如果 1843 分支成功处理，则直接跳出
-    if (handleEconomistSvelteOr1843) {
+    if (handleEconomistWorldInBrief) {
+      // World in Brief 已处理完毕，直接进入收尾
+    } else if (handleEconomistSvelteOr1843) {
       // 已经处理完毕，直接进入收尾
     } else {
       // ===== 新结构优先：Next.js 模板 =====

@@ -41,7 +41,7 @@ if "Anime" not in data: data["Anime"] = []
 def analyze_movies(movies):
     """
     第一阶段：只分析不修改。
-    返回一个“计划列表”，每个元素描述对某个 movie 的处理方案。
+    返回一个"计划列表"，每个元素描述对某个 movie 的处理方案。
     plan 结构: {"action": "keep"/"white"/"move", "movie": <obj>, "target": .., "log": <str>}
     """
     plans = []
@@ -71,6 +71,14 @@ def analyze_movies(movies):
         if max_ep_count >= 4:
             genres = movie.get("类型", [])
             actors = movie.get("主演", [])
+            
+            # ---------- 新增纪录片判断 ----------
+            has_documentary_genre = any("记录" in g or "纪录" in g or "纪录片" in g for g in genres)
+            if has_documentary_genre:
+                log_msg = f"【纪录片保护】项目: 《{movie_name}》 | 类型包含纪录片相关标签，保持在Movie分类 | 类型: {genres}"
+                plans.append({"action": "keep", "movie": movie, "log": log_msg})
+                continue
+            
             has_anime_genre = any("动画" in g or "动漫" in g for g in genres)
             is_actors_empty = not actors
 
@@ -101,6 +109,7 @@ plans = analyze_movies(data["Movie"])
 
 white_logs = [p["log"] for p in plans if p["action"] == "white"]
 move_logs = [p["log"] for p in plans if p["action"] == "move"]
+documentary_protected_logs = [p["log"] for p in plans if p["action"] == "keep" and p["log"] and "纪录片保护" in p["log"]]
 move_to_anime = sum(1 for p in plans if p["action"] == "move" and p["target"] == "Anime")
 move_to_drama = sum(1 for p in plans if p["action"] == "move" and p["target"] == "Drama")
 
@@ -113,6 +122,11 @@ if white_logs:
     for msg in white_logs:
         print(msg)
 
+if documentary_protected_logs:
+    print("\n--- 纪录片保护项目 ---")
+    for msg in documentary_protected_logs:
+        print(msg)
+
 if move_logs:
     print("\n--- 拟移动项目 ---")
     for msg in move_logs:
@@ -120,6 +134,7 @@ if move_logs:
 
 print("\n--- 预览统计 ---")
 print(f"白名单跳过: {len(white_logs)} 个")
+print(f"纪录片保护: {len(documentary_protected_logs)} 个")
 print(f"拟移动到 Anime: {move_to_anime} 个")
 print(f"拟移动到 Drama: {move_to_drama} 个")
 print(f"拟移动总计: {len(move_logs)} 个")
@@ -146,7 +161,7 @@ for p in plans:
     if p["action"] == "move":
         data[p["target"]].append(p["movie"])
     else:
-        # keep 和 white 都保留在 Movie
+        # keep、white 和纪录片保护都保留在 Movie
         movies_to_keep.append(p["movie"])
 
 data["Movie"] = movies_to_keep
@@ -165,17 +180,22 @@ try:
     with open(log_path, 'w', encoding='utf-8') as f:
         total_logs = []
         if white_logs:
+            total_logs.extend(["--- 白名单跳过项目 ---"])
             total_logs.extend(white_logs)
+        if documentary_protected_logs:
+            total_logs.extend(["", "--- 纪录片保护项目 ---"])
+            total_logs.extend(documentary_protected_logs)
         if move_logs:
+            total_logs.extend(["", "--- 移动项目 ---"])
             total_logs.extend(move_logs)
-        total_logs.append("")
-        total_logs.append("--- 执行统计 ---")
+        total_logs.extend(["", "--- 执行统计 ---"])
         total_logs.append(f"白名单跳过: {len(white_logs)} 个")
+        total_logs.append(f"纪录片保护: {len(documentary_protected_logs)} 个")
         total_logs.append(f"移动到 Anime: {move_to_anime} 个")
         total_logs.append(f"移动到 Drama: {move_to_drama} 个")
         total_logs.append(f"移动总计: {len(move_logs)} 个")
 
         f.write("\n".join(total_logs) + "\n")
-    print(f"白名单跳过 {len(white_logs)} 个项目，成功移动 {len(move_logs)} 个项目，日志已输出至: {log_path}")
+    print(f"白名单跳过 {len(white_logs)} 个项目，纪录片保护 {len(documentary_protected_logs)} 个项目，成功移动 {len(move_logs)} 个项目，日志已输出至: {log_path}")
 except Exception as e:
     print(f"写入日志文件失败: {e}")

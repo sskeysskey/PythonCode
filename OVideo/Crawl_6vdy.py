@@ -90,38 +90,38 @@ def fetch(url, is_binary=False):
 
 
 def update_movie_quality_info_if_needed(existing, new_6vdy_episodes):
-    if not new_6vdy_episodes:
-        return False
+    # if not new_6vdy_episodes:
+    #     return False
 
-    old_info = existing.get("info", "")
-    lowered_old_info = old_info.upper()
-    keywords = ['TC', 'TS', '抢先', 'HC']
-    has_low_quality_keyword = any(kw in lowered_old_info for kw in keywords)
+    # old_info = existing.get("info", "")
+    # lowered_old_info = old_info.upper()
+    # keywords = ['TC', 'TS', '抢先', 'HC']
+    # has_low_quality_keyword = any(kw in lowered_old_info for kw in keywords)
 
-    if not has_low_quality_keyword:
-        return False
+    # if not has_low_quality_keyword:
+    #     return False
 
-    target_hd_key = None
-    for ep_name in new_6vdy_episodes.keys():
-        if "HD" in ep_name.upper():
-            target_hd_key = ep_name
-            break
+    # target_hd_key = None
+    # for ep_name in new_6vdy_episodes.keys():
+    #     if "HD" in ep_name.upper():
+    #         target_hd_key = ep_name
+    #         break
 
-    if target_hd_key:
-        existing["info"] = target_hd_key
-        print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
-              f"新源包含高清格式，info 已更新为「{target_hd_key}」")
-        return True
+    # if target_hd_key:
+    #     existing["info"] = target_hd_key
+    #     print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
+    #           f"新源包含高清格式，info 已更新为「{target_hd_key}」")
+    #     return True
 
-    first_new_key = list(new_6vdy_episodes.keys())[0]
-    first_new_key_upper = first_new_key.upper()
-    new_key_is_clean = not any(kw in first_new_key_upper for kw in keywords)
+    # first_new_key = list(new_6vdy_episodes.keys())[0]
+    # first_new_key_upper = first_new_key.upper()
+    # new_key_is_clean = not any(kw in first_new_key_upper for kw in keywords)
 
-    if new_key_is_clean:
-        existing["info"] = first_new_key
-        print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
-              f"新源「{first_new_key}」无抢先标识，info 已更新为「{first_new_key}」")
-        return True
+    # if new_key_is_clean:
+    #     existing["info"] = first_new_key
+    #     print(f"      [画质升级更新] 检测到原 info「{old_info}」为抢先版本，"
+    #           f"新源「{first_new_key}」无抢先标识，info 已更新为「{first_new_key}」")
+    #     return True
 
     return False
 
@@ -735,29 +735,29 @@ def has_episode_concept(episodes):
 
 
 def update_info_field_if_needed(existing, new_playlist):
-    old_info = existing.get("info", "")
-    X = extract_max_episodes_from_info(old_info)
-    Y = calculate_max_episodes_from_playlist(new_playlist)
+    # old_info = existing.get("info", "")
+    # X = extract_max_episodes_from_info(old_info)
+    # Y = calculate_max_episodes_from_playlist(new_playlist)
 
-    if Y > X:
-        has_ep_concept = False
-        for pl in new_playlist:
-            eps = pl.get("episodes", {})
-            if has_episode_concept(eps):
-                has_ep_concept = True
-                break
+    # if Y > X:
+    #     has_ep_concept = False
+    #     for pl in new_playlist:
+    #         eps = pl.get("episodes", {})
+    #         if has_episode_concept(eps):
+    #             has_ep_concept = True
+    #             break
 
-        if has_ep_concept:
-            new_info = f"更新至第{Y}集"
-            existing["info"] = new_info
-            print(f"      [info字段更新] 共有 {Y} 集，info由原来的「{old_info}」更新为「{new_info}」")
-            return True
-        else:
-            print(f"      [info字段跳过] 资源无集数概念，保持原 info「{old_info}」")
-            return False
-    else:
-        print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
-        return False
+    #     if has_ep_concept:
+    #         new_info = f"更新至第{Y}集"
+    #         existing["info"] = new_info
+    #         print(f"      [info字段更新] 共有 {Y} 集，info由原来的「{old_info}」更新为「{new_info}」")
+    #         return True
+    #     else:
+    #         print(f"      [info字段跳过] 资源无集数概念，保持原 info「{old_info}」")
+    #         return False
+    # else:
+    #     print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+    return False
 
 
 def insert_6vdy_playlist(playlist, new_pl):
@@ -777,6 +777,46 @@ def insert_6vdy_playlist(playlist, new_pl):
     else:
         playlist.insert(0, new_pl)
         print(f"      [排序规则] 未检测到 chnland，6vdy 已放在第一位")
+
+def should_touch_update_on_episode_change(playlist, new_6vdy_count):
+    """
+    集数更新场景下，判断是否刷新 update 时间戳（需求3）：
+      - 现有 playlist 中【没有】chnland 渠道                    -> True
+      - 存在 chnland 渠道，且【6vdy 新集数 > chnland 现有集数】 -> True
+      - 其余情况                                               -> False
+    """
+    chnland_count = None
+    for pl in playlist:
+        if pl.get("name") == "chnland":
+            eps = pl.get("episodes", {})
+            chnland_count = len(eps) if isinstance(eps, dict) else 0
+            break
+    if chnland_count is None:
+        return True          # 无 chnland 渠道
+    return new_6vdy_count > chnland_count
+
+
+def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
+                             info_updated, movie_info_updated):
+    """
+    统一的 update 时间戳刷新决策：
+      - 画质 / info 升级（movie_info_updated）→ 始终刷新（需求5）
+      - 集数更新（info_updated）→ 仅当满足 chnland 规则时刷新（需求3）
+    返回是否刷新。
+    """
+    touch = False
+    if movie_info_updated:
+        touch = True
+    elif info_updated:
+        if should_touch_update_on_episode_change(playlist, len(new_6vdy_episodes)):
+            touch = True
+            print("      [时间戳] 集数更新且满足 chnland 规则 → 刷新 update")
+        else:
+            print("      [时间戳] 集数更新但 chnland 集数 ≥ 6vdy → 保持 update 不变")
+    if touch:
+        existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print("      [字段更新] 已同步更新「update」时间戳")
+    return touch
 
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     # ==================== 1. 字段合并与更新逻辑 ====================
@@ -863,10 +903,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
-        if info_updated or movie_info_updated:
-            existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
+                            info_updated, movie_info_updated):
             fields_updated = True
-            print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
 
         return "updated"
 
@@ -906,10 +945,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
-        if info_updated or movie_info_updated:
-            existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
+                            info_updated, movie_info_updated):
             fields_updated = True
-            print(f"      [字段更新] 检测到 info 变化，已同步更新「update」时间戳")
 
         return "channel_added"
 
@@ -1025,7 +1063,7 @@ def process_items(data, items, tab_name):
             if real_name in WHITELIST_NAMES:
                 print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
             elif existing is not None:
-                print(f"    ✅ 已存在记录放行（{matched_group}）：跳过地区屏蔽，持续更新")
+                print(f"    ✓ 已存在记录放行（{matched_group}）：跳过地区屏蔽，持续更新")
             else:
                 # 新增记录：先预判分类，Anime 不做地区屏蔽
                 group_guess = detect_group(
@@ -1194,7 +1232,6 @@ def backfill_existing(data):
                     time.sleep(SLEEP_BETWEEN)
                     continue
                 if fill_empty_fields(item, nf, img_url):
-                    item["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     updated += 1
                     save_json(data)
                     print(f"    ✓ 已补全 (导演:「{item.get('导演')}」 类型:{item.get('类型')} 地区:「{item.get('地区')}」 年份:「{item.get('info')}」)")

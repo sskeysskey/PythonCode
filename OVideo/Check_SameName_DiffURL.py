@@ -79,6 +79,13 @@ def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output
                 display_name = f"{original_name} [相同{match_key[0]}: {match_key[1]}]"
                 duplicate_groups[display_name] = items
     
+    # ====================== 核心修改：判断是否有重复项 ======================
+    if len(duplicate_groups) == 0:
+        print("处理完成！")
+        print("未找到符合条件的重复项目，不生成输出文件。")
+        return  # 直接退出，不执行后面的文件写入逻辑
+    # ======================================================================
+
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_file_path_a), exist_ok=True)
     
@@ -118,8 +125,8 @@ def find_items_with_same_name_to_file(json_file_path, output_file_path_a, output
     # 7. 在终端输出统计结果
     print(f"处理完成！")
     print(f"一共找到了 {len(duplicate_groups)} 组符合条件的重复项目。")
-    print(f"详细报告已保存至: {output_path_a}")
-    print(f"名称列表已保存至: {output_path_b}")
+    print(f"详细报告已保存至: {output_file_path_a}")
+    print(f"名称列表已保存至: {output_file_path_b}")
 
 # --- 配置路径 ---
 input_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'

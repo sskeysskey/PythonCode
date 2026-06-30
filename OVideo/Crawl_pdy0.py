@@ -255,7 +255,7 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
 MIN_SCORE_LIMIT = 7.0
 # 非当前年份的旧片，豆瓣/IMDB 取最高分，低于此值则跳过不抓
-OLD_VIDEO_MIN_SCORE = 5.5
+OLD_VIDEO_MIN_SCORE = 6.0
 # 当前年份（综艺 Show 分类只抓当年内容，跨年自动跟随，无需改代码）
 CURRENT_YEAR = str(time.localtime().tm_year)
 
@@ -1240,7 +1240,8 @@ def process_item(item: dict, cat_name: str,
         # 细粒度字段合并与更新
         # ==========================================
         if is_update and old_entry:
-            detail["update"] = old_entry.get("update", "")
+            # 【固定规则】仅新增时写入 update，更新永远不修改 update
+            detail["update"] = old_entry.get("update", detail.get("update", ""))
 
             for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
                 old_val = old_entry.get(field)
