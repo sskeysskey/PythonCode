@@ -68,17 +68,16 @@ for series_prefix, episodes in series_groups.items():
             errors.append(error_info)
 
 # ========== 输出结果 ==========
-with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-    f.write(f"URL映射错误检测报告\n")
-    f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    f.write(f"扫描文件: {INPUT_FILE}\n")
-    f.write(f"总记录数: {len(data)}\n")
-    f.write(f"发现错误系列数: {len(errors)}\n")
-    f.write("=" * 80 + "\n\n")
-    
-    if not errors:
-        f.write("✅ 未发现错误！所有系列的不同集数都对应不同的视频URL。\n")
-    else:
+if errors:
+    # 只有在发现错误时才写入文件
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        f.write(f"URL映射错误检测报告\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"扫描文件: {INPUT_FILE}\n")
+        f.write(f"总记录数: {len(data)}\n")
+        f.write(f"发现错误系列数: {len(errors)}\n")
+        f.write("=" * 80 + "\n\n")
+        
         for i, err in enumerate(errors, 1):
             f.write(f"【错误 #{i}】系列前缀: {err['series_prefix']}\n")
             f.write(f"  重复的视频URL: {err['video_url']}\n")
@@ -87,9 +86,7 @@ with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
                 f.write(f"    - {key}\n")
                 f.write(f"      标题: {title}\n")
             f.write("\n")
-
-print(f"检测完成！结果已保存到: {OUTPUT_FILE}")
-if errors:
-    print(f"发现 {len(errors)} 处错误，请查看文件详情。")
+    
+    print(f"检测完成！发现 {len(errors)} 处错误，结果已保存到: {OUTPUT_FILE}")
 else:
-    print("未发现错误！")
+    print("检测完成！未发现错误，无需生成报告文件。")
