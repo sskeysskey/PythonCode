@@ -62,7 +62,7 @@ WHITELIST_NAMES = [
     "镖人 第二季"
 ]
 
-FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "China"]
 # FILTER_REGIONS = ["测试",]
 
 # ============== 镜像站识别（同源不同域名）==============
@@ -735,29 +735,43 @@ def has_episode_concept(episodes):
 
 
 def update_info_field_if_needed(existing, new_playlist):
-    # old_info = existing.get("info", "")
-    # X = extract_max_episodes_from_info(old_info)
-    # Y = calculate_max_episodes_from_playlist(new_playlist)
+    """
+    仅当 playlist 中【只有 6vdy 一个渠道】时，才按剧集数量更新 info。
+    其余情况（多渠道 / 唯一渠道非 6vdy）一律保持原 info 不动。
+    """
+    if not new_playlist:
+        return False
 
-    # if Y > X:
-    #     has_ep_concept = False
-    #     for pl in new_playlist:
-    #         eps = pl.get("episodes", {})
-    #         if has_episode_concept(eps):
-    #             has_ep_concept = True
-    #             break
+    # 前置校验：必须是「唯一渠道且为 6vdy」
+    if len(new_playlist) != 1:
+        print(f"      [info字段跳过] playlist 含多个渠道，不按集数更新 info")
+        return False
 
-    #     if has_ep_concept:
-    #         new_info = f"更新至第{Y}集"
-    #         existing["info"] = new_info
-    #         print(f"      [info字段更新] 共有 {Y} 集，info由原来的「{old_info}」更新为「{new_info}」")
-    #         return True
-    #     else:
-    #         print(f"      [info字段跳过] 资源无集数概念，保持原 info「{old_info}」")
-    #         return False
-    # else:
-    #     print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
-    return False
+    only_pl = new_playlist[0]
+    if only_pl.get("name") != PLAYLIST_NAME:
+        print(f"      [info字段跳过] 唯一渠道不是 6vdy，不更新 info")
+        return False
+
+    eps = only_pl.get("episodes", {})
+
+    # 无集数概念（如单个电影文件）不更新
+    if not has_episode_concept(eps):
+        print(f"      [info字段跳过] 资源无集数概念，保持原 info「{existing.get('info', '')}」")
+        return False
+
+    old_info = existing.get("info", "")
+    X = extract_max_episodes_from_info(old_info)
+    Y = len(eps)
+
+    if Y > X:
+        new_info = f"更新至第{Y}集"
+        existing["info"] = new_info
+        print(f"      [info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
+              f"info 由「{old_info}」更新为「{new_info}」")
+        return True
+    else:
+        print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+        return False
 
 
 def insert_6vdy_playlist(playlist, new_pl):
@@ -832,7 +846,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if is_old_empty and is_new_not_empty:
             existing[field] = new_val
             fields_updated = True
-            print(f"      [字段更新] 补充缺失字段「{field}」: {new_val}")
+            print(f"      ✅[字段更新] 补充缺失字段「{field}」: {new_val}")
 
     old_date = existing.get("date", "")
     new_date = rec.get("date", "")
@@ -840,7 +854,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if not old_date or len(str(new_date)) > len(str(old_date)):
             existing["date"] = new_date
             fields_updated = True
-            print(f"      [字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
+            print(f"      ✅[字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
 
     old_rating = existing.setdefault("评分", {})
     new_rating = rec.get("评分", {})
@@ -851,7 +865,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             if not old_rate_val and new_rate_val:
                 old_rating[rate_key] = new_rate_val
                 fields_updated = True
-                print(f"      [字段更新] 补充评分「{rate_key}」: {new_rate_val}")
+                print(f"      ✅[字段更新] 补充评分「{rate_key}」: {new_rate_val}")
 
     # ==================== 2. 播放源与URL更新逻辑 ====================
     if not new_6vdy_episodes:
@@ -938,7 +952,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         insert_6vdy_playlist(playlist, new_pl)
 
-        print(f"      [新增渠道] 已将 6vdy 写入 {new_url_key}")
+        print(f"      ✅[新增渠道] 已将 6vdy 写入 {new_url_key}")
 
         info_updated = update_info_field_if_needed(existing, playlist)
         movie_info_updated = False
@@ -1070,7 +1084,7 @@ def process_items(data, items, tab_name):
                     new_6vdy_eps, rec.get("主演", []), rec.get("类型", [])
                 )
                 if group_guess == "Anime":
-                    print(f"    ✅ 动漫/动画分类放行：跳过地区屏蔽校验")
+                    print(f"    ✓ 动漫/动画分类放行：跳过地区屏蔽校验")
                 else:
                     region = rec.get("地区", "")
                     region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
@@ -1085,11 +1099,11 @@ def process_items(data, items, tab_name):
             if existing:
                 status = process_existing_record(existing, new_6vdy_eps, url, rec)
                 if status == "updated":
-                    print(f"    ✓ 更新({matched_group})：6vdy 渠道发现新剧集，已覆盖更新")
+                    print(f"    ✅ 更新({matched_group})：6vdy 渠道发现新剧集，已覆盖更新")
                     save_json(data)
                     ok += 1
                 elif status == "channel_added":
-                    print(f"    ✓ 更新({matched_group})：成功作为新渠道插入到 playlist 第一位")
+                    print(f"    ✅ 更新({matched_group})：成功作为新渠道插入到 playlist 里")
                     save_json(data)
                     ok += 1
                 elif status == "no_change":
@@ -1125,7 +1139,7 @@ def process_items(data, items, tab_name):
                         print(f"      [新增电影info初始化] 自动写入 info: 「{first_ep_name}」")
 
                 data.setdefault(group, []).append(rec)
-                print(f"    ✓ 新增 -> {group} (共 {len(new_6vdy_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
+                print(f"    ✅ 新增 -> {group} (共 {len(new_6vdy_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
 

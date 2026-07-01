@@ -879,7 +879,7 @@ def parse_detail_page(html: str, name: str, url: str,
                     pass
         max_score = max(candidate_scores) if candidate_scores else 0.0
         if max_score < OLD_VIDEO_MIN_SCORE:
-            log(f"     [跳过-旧片评分过低] {name} (年份: {detail_year}, "
+            log(f"     ⚠️[跳过-旧片评分过低] {name} (年份: {detail_year}, "
                 f"豆瓣/IMDB最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
             return None
 
