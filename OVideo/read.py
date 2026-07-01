@@ -30,7 +30,7 @@ CHANNEL_PRIORITY = ['chnland', '6vdy']
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
 # ============================================================
 # Movie：至少需要这么多个完整渠道（可改）
-MOVIE_REQUIRED_CHANNELS = 1
+MOVIE_REQUIRED_CHANNELS = 2
 
 # 剧集类分类
 SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
