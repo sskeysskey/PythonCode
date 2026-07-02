@@ -1250,6 +1250,17 @@ function extractAndCopy() {
     const article = document.querySelector('article') || document.getElementById('main-content');
 
     if (article) {
+      // ★★★ 新增：先抓取导语/副标题 .t-content_chapo ★★★
+      let chapoText = '';
+      const chapoEl = article.querySelector('.t-content_chapo, .t-content__chapo');
+      if (chapoEl) {
+        chapoText = chapoEl.textContent
+          .replace(/["""]/g, '')   // 去掉包裹的引号
+          .replace(/[！!]\s*$/, '') // 去掉结尾可能多余的感叹号
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
       // 1. 提取正文
       // 修复点1：兼容 .t-content_body (单下划线) 和 .t-content__body (双下划线)
       const bodyContainer = article.querySelector('.t-content__body, .t-content_body');
@@ -1296,6 +1307,11 @@ function extractAndCopy() {
             return t.replace(/^＜p>/, '').trim();
           })
           .join('\n\n');
+
+        // ★★★ 新增：把导语拼接到正文最前面 ★★★
+        if (chapoText) {
+          textContent = chapoText + '\n\n' + textContent;
+        }
       }
 
       // 2. 提取图片
