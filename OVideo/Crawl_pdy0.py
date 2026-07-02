@@ -1219,7 +1219,7 @@ def process_item(item: dict, cat_name: str,
                 old_info_val = old_entry.get("info", "")
                 if own_max_ep <= protected_max_ep:
                     if detail.get("info") != old_info_val:
-                        print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
+                        print(f"     ✅[Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
                               f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
                     detail["info"] = old_info_val
                 else:

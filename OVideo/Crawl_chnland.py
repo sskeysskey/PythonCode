@@ -833,10 +833,10 @@ def process_list_page(data, list_url, group, page_name):
 
             # 白名单直接放行，不检查地区
             if real_name in WHITELIST_NAMES:
-                buf.append(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽")
+                buf.append(f"    白名单放行：{real_name}，跳过地区屏蔽")
             # 动漫：若 JSON 中已存在（同 URL 或同名），跳过地区限制，正常更新
             elif (group == "Anime" or group == "Drama" or group == "Movie") and existing:
-                buf.append(f"    ✅ 已存在记录，跳过地区屏蔽，继续更新：{real_name}")
+                buf.append(f"    已存在记录，跳过地区屏蔽，继续更新：{real_name}")
             else:
                 # 不在白名单（且非"已存在的动漫"）才执行地区过滤
                 region = rec.get("地区", "")

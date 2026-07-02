@@ -736,41 +736,68 @@ def has_episode_concept(episodes):
 
 def update_info_field_if_needed(existing, new_playlist):
     """
-    仅当 playlist 中【只有 6vdy 一个渠道】时，才按剧集数量更新 info。
-    其余情况（多渠道 / 唯一渠道非 6vdy）一律保持原 info 不动。
+    规则：
+      - 唯一渠道且为 6vdy：按原逻辑，与 info 中记录的集数比较。
+      - 多渠道：比较 6vdy 新抓取集数 Y 与「其他渠道中集数最多的那个」max_other，
+                仅当 Y > max_other（严格大于）时才更新 info。
     """
     if not new_playlist:
         return False
 
-    # 前置校验：必须是「唯一渠道且为 6vdy」
-    if len(new_playlist) != 1:
-        print(f"      [info字段跳过] playlist 含多个渠道，不按集数更新 info")
+    # 找到 6vdy 渠道及其集数
+    vdy_pl = None
+    for pl in new_playlist:
+        if pl.get("name") == PLAYLIST_NAME:
+            vdy_pl = pl
+            break
+
+    if vdy_pl is None:
+        print(f"      [info字段跳过] playlist 中不含 6vdy 渠道，不更新 info")
         return False
 
-    only_pl = new_playlist[0]
-    if only_pl.get("name") != PLAYLIST_NAME:
-        print(f"      [info字段跳过] 唯一渠道不是 6vdy，不更新 info")
-        return False
-
-    eps = only_pl.get("episodes", {})
+    eps = vdy_pl.get("episodes", {})
 
     # 无集数概念（如单个电影文件）不更新
     if not has_episode_concept(eps):
         print(f"      [info字段跳过] 资源无集数概念，保持原 info「{existing.get('info', '')}」")
         return False
 
+    Y = len(eps)                       # 6vdy 新抓取集数
     old_info = existing.get("info", "")
     X = extract_max_episodes_from_info(old_info)
-    Y = len(eps)
 
-    if Y > X:
+    # ---- 场景一：唯一渠道且为 6vdy（原逻辑不变）----
+    if len(new_playlist) == 1:
+        if Y > X:
+            new_info = f"更新至第{Y}集"
+            existing["info"] = new_info
+            print(f"      [info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
+                  f"info 由「{old_info}」更新为「{new_info}」")
+            return True
+        else:
+            print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+            return False
+
+    # ---- 场景二：多渠道，比较 6vdy 与其他渠道的最大集数 ----
+    max_other = 0
+    max_other_name = ""
+    for pl in new_playlist:
+        if pl.get("name") == PLAYLIST_NAME:
+            continue
+        cnt = len(pl.get("episodes", {})) if isinstance(pl.get("episodes"), dict) else 0
+        if cnt > max_other:
+            max_other = cnt
+            max_other_name = pl.get("name", "")
+
+    if Y > max_other:
         new_info = f"更新至第{Y}集"
         existing["info"] = new_info
-        print(f"      [info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
-              f"info 由「{old_info}」更新为「{new_info}」")
+        print(f"      [info字段更新] 多渠道场景下 6vdy 新集数 {Y} > 其他渠道最大集数 "
+              f"{max_other}（渠道「{max_other_name}」），info 由「{old_info}」更新为「{new_info}」")
         return True
     else:
-        print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+        print(f"      [info字段跳过] 多渠道场景下 6vdy 新集数 {Y} 未大于其他渠道最大集数 "
+              f"{max_other}（渠道「{max_other_name}」），保持原 info「{old_info}」")
         return False
 
 
