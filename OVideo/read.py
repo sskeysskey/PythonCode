@@ -24,7 +24,7 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 # 未列出的渠道一律排在它们后面，并保持原 JSON 中的顺序。
 # 你新增的 chnland 排第一，6vdy 第二，其它按原序。
 # ============================================================
-CHANNEL_PRIORITY = ['chnland', '6vdy']
+CHANNEL_PRIORITY = ['huxitech', 'chnland', '6vdy']
 
 # ============================================================
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
@@ -35,7 +35,7 @@ MOVIE_REQUIRED_CHANNELS = 2
 # 剧集类分类
 SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
 EPISODE_THRESHOLD = 20          # 集数阈值
-SERIES_REQUIRED_SHORT = 1       # 集数 <= 阈值时，需要的完整渠道数（可改）
+SERIES_REQUIRED_SHORT = 2       # 集数 <= 阈值时，需要的完整渠道数（可改）
 SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改）
 
 # 其它未明确归类的分类，默认需要的完整渠道数
