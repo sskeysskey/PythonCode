@@ -868,20 +868,33 @@ def parse_detail_page(html: str, name: str, url: str,
     if not detail_year:
         detail_year = list_year  # 详情页拿不到年份时，回退用列表页年份
 
-    if detail_year and detail_year != CURRENT_YEAR:
-        candidate_scores = []
-        for platform in ("豆瓣", "IMDB"):
-            val = data["评分"].get(platform, "")
-            if val and val != "--":
-                try:
-                    candidate_scores.append(float(val))
-                except ValueError:
-                    pass
-        max_score = max(candidate_scores) if candidate_scores else 0.0
-        if max_score < OLD_VIDEO_MIN_SCORE:
-            log(f"     ⚠️[跳过-旧片评分过低] {name} (年份: {detail_year}, "
-                f"豆瓣/IMDB最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
-            return None
+        if detail_year and detail_year != CURRENT_YEAR:
+            candidate_scores = []
+            for platform in ("豆瓣", "IMDB"):
+                val = data["评分"].get(platform, "")
+                if val and val != "--":
+                    try:
+                        candidate_scores.append(float(val))
+                    except ValueError:
+                        pass
+            max_score = max(candidate_scores) if candidate_scores else 0.0
+            
+            # ==========================================
+            # 【新增规则】：即使评分低于6.0，只要类型包含“情色”，就不跳过
+            # ==========================================
+            is_erotic = False
+            types = data.get("类型", [])
+            for t in types:
+                if "情色" in t:
+                    is_erotic = True
+                    break
+
+            # 原来的逻辑：评分 < 6.0 就跳过
+            # 现在逻辑：评分 < 6.0 且 不是情色片 → 才跳过
+            if max_score < OLD_VIDEO_MIN_SCORE and not is_erotic:
+                log(f"     ⚠️[跳过-旧片评分过低] {name} (年份: {detail_year}, "
+                    f"豆瓣/IMDB最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
+                return None
 
     # ====== 通过过滤后，才开始下载封面图 ======
     img_url = ""
@@ -1146,7 +1159,7 @@ def process_item(item: dict, cat_name: str,
                 log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {ANIME_MAX_EPISODES_LIMIT})", force=True)
                 return "skipped"
 
-        log(f"  ({idx_i}/{total}) {tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
+        log(f"  ({idx_i}/{total}) {'✅' if tag == '[新增]' else ''}{tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
 
         # ===== 任何更新名字 name 不要改 =====
         if is_update:
@@ -1223,7 +1236,7 @@ def process_item(item: dict, cat_name: str,
                               f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
                     detail["info"] = old_info_val
                 else:
-                    print(f"     [Info可更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
+                    print(f"     ✅[Info可更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
 
             if is_update and old_entry:
                 old_info = old_entry.get("info", "")
@@ -1231,7 +1244,7 @@ def process_item(item: dict, cat_name: str,
                 old_pl = old_entry.get("playlist", [])
                 new_pl = detail.get("playlist", [])
                 if old_info != new_info and old_pl != new_pl:
-                    print(f"     [Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
+                    print(f"     ✅[Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
 
             if matched_by_path_only:
                 print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
@@ -1327,7 +1340,7 @@ def process_item(item: dict, cat_name: str,
                 if not old_upk:
                     print(f"     [新增 update_pk 并更新] -> {new_upk}")
                 else:
-                    print(f"     [update_pk 变化] {old_upk} → {new_upk}")
+                    print(f"     ✅[update_pk 变化] {old_upk} → {new_upk}")
 
         # =============================================================
         # 跨分类数据写入与索引重构

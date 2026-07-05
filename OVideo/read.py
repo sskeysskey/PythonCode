@@ -38,14 +38,20 @@ EPISODE_THRESHOLD = 20          # 集数阈值
 SERIES_REQUIRED_SHORT = 2       # 集数 <= 阈值时，需要的完整渠道数（可改）
 SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改）
 
+# ===== Show 全量抓取白名单 =====
+# 只要项目的 name 在这个集合里，Show 分类就【全量抓取】，忽略"末尾5条"的裁剪。
+SHOW_FULL_SCAN_WHITELIST = {
+    '爱情岛(美国版) 第八季',
+}
+
 # 其它未明确归类的分类，默认需要的完整渠道数
 DEFAULT_REQUIRED_CHANNELS = 1
 
 
-def get_scan_episodes(episodes, category, show_last_n):
+def get_scan_episodes(episodes, category, show_last_n, full_scan=False):
     """
     根据分类返回"本次实际要扫描的 url 列表"。
-    - episodes 是字典 {"第01集": "url1", ...}，需要先取 values。
+    - full_scan=True 时，无论如何都返回全部（用于 Show 白名单）。
     - Show 且集数 > 10：默认只取末尾 5 条（或 show_last_n 指定的条数）。
     - 其他情况：返回全部 url。
     """
@@ -54,6 +60,10 @@ def get_scan_episodes(episodes, category, show_last_n):
 
     urls_list = list(episodes.values())
     total_count = len(urls_list)
+
+    # 命中白名单 -> 直接全量，跳过裁剪逻辑
+    if full_scan:
+        return urls_list
 
     if category == 'Show':
         if total_count > 10:
@@ -126,11 +136,11 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY):
 
 
 def pick_playlists_to_scan(playlists, blacklist_url, required_count,
-                           item_label, category, show_last_n):
+                           item_label, category, show_last_n,
+                           full_scan=False):
     """
-    按优先级顺序收集"完整无黑名单"的渠道，直到凑够 required_count 个，
-    或所有渠道都试完为止。
-    返回列表，每项为 (playlist, scan_episodes)。
+    按优先级顺序收集"完整无黑名单"的渠道……
+    full_scan=True 时，Show 也走全量抓取。
     """
     ordered = sort_playlists_by_priority(playlists)
 
@@ -141,7 +151,9 @@ def pick_playlists_to_scan(playlists, blacklist_url, required_count,
 
         name = pl.get('name') or '未命名渠道'
         episodes_all = pl.get('episodes', {}) or {}
-        scan_episodes = get_scan_episodes(episodes_all, category, show_last_n)
+        scan_episodes = get_scan_episodes(
+            episodes_all, category, show_last_n, full_scan=full_scan
+        )
 
         if not scan_episodes:
             print(f"  [跳过] {item_label} 渠道「{name}」为空")
@@ -152,7 +164,8 @@ def pick_playlists_to_scan(playlists, blacklist_url, required_count,
             continue
 
         viable.append((pl, scan_episodes))
-        if category == 'Show' and len(episodes_all) > 10:
+        # 这里的日志判断也要考虑 full_scan：全量时不该显示"末尾N条"
+        if category == 'Show' and len(episodes_all) > 10 and not full_scan:
             print(f"  [采用 {len(viable)}/{required_count}] {item_label} 渠道「{name}」"
                   f"(Show 末尾 {len(scan_episodes)} 条，原共 {len(episodes_all)} 集)")
         else:
@@ -335,12 +348,24 @@ def main():
             # ====== 计算集数 & 需要的完整渠道数 ======
             episode_count = get_item_episode_count(playlists)
             required_count = get_required_channel_count(category, episode_count)
-            print(f"  [项目] {item_label} 集数≈{episode_count}，需要 {required_count} 个完整渠道")
+
+            # ====== 判断是否命中 Show 全量白名单 ======
+            item_name = item.get('name') or item.get('title') or ''
+            is_full_scan = (category == 'Show'
+                            and item_name in SHOW_FULL_SCAN_WHITELIST)
+
+            if is_full_scan:
+                print(f"  [项目] {item_label} 集数≈{episode_count}，"
+                      f"需要 {required_count} 个完整渠道 [命中白名单→全量抓取]")
+            else:
+                print(f"  [项目] {item_label} 集数≈{episode_count}，"
+                      f"需要 {required_count} 个完整渠道")
 
             # ====== 按优先级收集完整渠道 ======
             playlists_to_scan = pick_playlists_to_scan(
                 playlists, blacklist_url, required_count,
-                item_label, category, SHOW_LAST_N
+                item_label, category, SHOW_LAST_N,
+                full_scan=is_full_scan
             )
 
             if not playlists_to_scan:

@@ -50,7 +50,8 @@ PLAYLIST_NAME = "huxitech"
 SITE_KEY      = "huxitech"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
-BLACKLIST_NAMES = []
+BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
+                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记"]
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
     # "镖人 第二季"
@@ -847,6 +848,16 @@ def process_list_page(data, list_url, group, page_name):
                 current_group = detect_group_by_episodes(new_eps)
                 buf.append(f"    [自动分类] 选集共 {len(new_eps)} 项，判定为「{current_group}」")
 
+            # ===== 集数上限过滤：Drama / Anime 超过 30 集(期) 直接跳过 =====
+            MAX_EPISODES = 30
+            if current_group in ("Drama", "Anime") and len(new_eps) > MAX_EPISODES:
+                flush()
+                print(f"    - 跳过：「{real_name}」属于「{current_group}」，"
+                      f"集数 {len(new_eps)} 超过 {MAX_EPISODES} 集(期) 上限 ")
+                ok += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
+
             # ===== 先跨分类按 URL 全局检索（再按名称）=====
             matched_group, existing = find_existing_global(data, real_name, url, buf.append)
 
@@ -890,27 +901,35 @@ def process_list_page(data, list_url, group, page_name):
                         continue
 
             if existing:
-                status = process_existing_record(existing, new_eps, url, rec, buf.append)
-                if status == "updated":
-                    buf.append(f"    ✅ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
-                    save_json(data)
-                    flush()
-                    ok += 1
-                elif status == "channel_added":
-                    buf.append(f"    ✅ 更新({matched_group})：成功作为新渠道插入到 playlist")
-                    save_json(data)
-                    flush()
-                    ok += 1
-                elif status == "no_change":
-                    ok += 1
-                elif status == "decreased":
-                    flush()
-                    print(f"    - 忽略({matched_group})：抓取集数少于已有集数")
-                    ok += 1
-                else:
-                    flush()
-                    print(f"    ! 忽略({matched_group})：未成功更新")
-                    fail += 1
+                # status = process_existing_record(existing, new_eps, url, rec, buf.append)
+                # if status == "updated":
+                #     buf.append(f"    ✅ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
+                #     save_json(data)
+                #     flush()
+                #     ok += 1
+                # elif status == "channel_added":
+                #     buf.append(f"    ✅ 更新({matched_group})：成功作为新渠道插入到 playlist")
+                #     save_json(data)
+                #     flush()
+                #     ok += 1
+                # elif status == "no_change":
+                #     ok += 1
+                # elif status == "decreased":
+                #     flush()
+                #     print(f"    - 忽略({matched_group})：抓取集数少于已有集数")
+                #     ok += 1
+                # else:
+                #     flush()
+                #     print(f"    ! 忽略({matched_group})：未成功更新")
+                #     fail += 1
+                
+                # ===== 已存在的项目：暂时屏蔽所有更新/插入操作，仅记录跳过 =====
+                # 后续需要恢复更新功能时，把下面这三行删除，
+                # 并还原调用 process_existing_record(...) 的原逻辑即可。
+                flush()
+                print(f"    - 跳过({matched_group})：项目已存在，更新/插入功能已临时屏蔽")
+                ok += 1
+
             else:
                 # 新增记录（用生效分类）
                 flush()

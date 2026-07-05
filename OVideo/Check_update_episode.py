@@ -17,7 +17,8 @@ with open(file_path, 'r', encoding='utf-8') as f:
 # (\d+) 用于捕获数字，(第)? 用于可选地捕获“第”字
 pattern = re.compile(r"更新至(第)?(\d+)集")
 
-modified_count = 0
+# 存储所有待修改的项目
+pending_modifications = []
 
 # 2. 遍历所有分类 (Movie, Drama, Show, Anime)
 for category, items in data.items():
@@ -46,7 +47,7 @@ for category, items in data.items():
                 num_str = match.group(2)  # 匹配到的数字字符串（例如 "02" 或 "28"）
                 info_num = int(num_str)   # 转为整数
                 
-                # 5. 如果实际数量大于 info 中的数量，进行更新
+                # 5. 如果实际数量大于 info 中的数量，加入待修改列表
                 if actual_count > info_num:
                     # 保持原有的数字位数格式（例如：如果是 "02" 且实际是 5，则更新为 "05"；如果是 "28" 且实际是 30，则更新为 "30"）
                     format_width = len(num_str)
@@ -56,16 +57,47 @@ for category, items in data.items():
                     di_str = "第" if has_di else ""
                     new_info = pattern.sub(f"更新至{di_str}{new_num_str}集", info)
                     
-                    # 更新数据
-                    item["info"] = new_info
-                    modified_count += 1
-                    print(f"【更新】[{category}]《{name}》: '{info}' -> '{new_info}' (实际URL数: {actual_count})")
+                    # 把需要修改的信息存起来
+                    pending_modifications.append({
+                        "item": item,
+                        "category": category,
+                        "name": name,
+                        "old_info": info,
+                        "new_info": new_info,
+                        "actual_count": actual_count
+                    })
 
-# 6. 保存回原 JSON 文件
-if modified_count > 0:
-    with open(file_path, 'w', encoding='utf-8') as f:
-        # ensure_ascii=False 保证中文不被编码为 \uXXXX，indent=4 保持美观缩进
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    print(f"\n处理完成！共更新了 {modified_count} 个项目的 info 字段。")
-else:
+# 如果没有需要修改的内容，直接退出
+if not pending_modifications:
     print("\n没有需要更新的项目。")
+    exit()
+
+# 打印所有待修改项
+print(f"\n========== 找到 {len(pending_modifications)} 个需要更新的项目 ==========\n")
+for idx, mod in enumerate(pending_modifications, 1):
+    print(f"[{idx}] 【{mod['category']}】《{mod['name']}》")
+    print(f"   原 info: {mod['old_info']}")
+    print(f"   新 info: {mod['new_info']}")
+    print(f"   实际集数: {mod['actual_count']}\n")
+
+# 询问是否确认修改
+while True:
+    choice = input("是否确认修改以上所有项目？(y/n): ").strip().lower()
+    if choice in ['y', 'n']:
+        break
+    print("输入无效，请输入 y 或 n")
+
+# 确认修改才执行
+if choice == 'y':
+    modified_count = 0
+    for mod in pending_modifications:
+        mod["item"]["info"] = mod["new_info"]
+        modified_count += 1
+    
+    # 保存文件
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    
+    print(f"\n✅ 修改完成！共更新了 {modified_count} 个项目。")
+else:
+    print("\n❌ 已取消，未修改任何内容。")

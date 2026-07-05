@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 6vdy.org 最新剧集、最新电影、小编推荐、首页 爬取脚本
-（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取）
+（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤）
 
 新增能力：
-1. 自动识别"新格式详情页"（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
+1. 自动识别“新格式详情页”（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
 2. 提供补全模式 backfill：python 脚本.py backfill
    - 扫描 JSON 中所有来自 6vdy 且字段缺失的记录，用新方法重抓并只补空字段（已有/正确的不动）。
 3. 新增 6vdy.org 首页抓取。
-4. 过滤规则变更：仅当【地区命中过滤名单】且【6vdy渠道为分集剧集(键名含"集")】时才跳过。
+4. 过滤规则变更：仅当【地区命中过滤名单】且【6vdy渠道为分集剧集(键名含“集”)】时才跳过。
+5. 新增“评分过滤”：仅针对新增项目，当豆瓣/IMDb 最高有效评分(非空非0)低于 MIN_RATING(默认6.0)时跳过。
 """
 
 import os
@@ -65,6 +66,10 @@ WHITELIST_NAMES = [
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "China"]
 # FILTER_REGIONS = ["测试",]
 
+# 评分过滤阈值：仅针对【新增项目】，当豆瓣/IMDb 最高有效评分(非空非0)低于该值时跳过。
+# 若想关闭此过滤，将其设为 0 即可。
+MIN_RATING = 6.0
+
 # ============== 镜像站识别（同源不同域名）==============
 MIRROR_DOMAINS = ("6vdy", "xb6v")
 
@@ -87,6 +92,30 @@ def fetch(url, is_binary=False):
     if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
         resp.encoding = resp.apparent_encoding or "utf-8"
     return resp.text
+
+
+def get_max_rating(rating_dict):
+    """
+    从评分字典中取豆瓣/IMDb 的【最大有效评分】。
+    - 空值('' / None)、无法转 float、或 <=0 的值都视为无效并忽略。
+    - 全部无效时返回 None。
+    """
+    if not isinstance(rating_dict, dict):
+        return None
+    vals = []
+    for key in ("豆瓣", "IMDB"):
+        v = rating_dict.get(key, "")
+        if v in ("", None):
+            continue
+        try:
+            f = float(v)
+        except (ValueError, TypeError):
+            continue
+        if f > 0:
+            vals.append(f)
+    if not vals:
+        return None
+    return max(vals)
 
 
 def update_movie_quality_info_if_needed(existing, new_6vdy_episodes):
@@ -350,7 +379,7 @@ INTRO_STOP_RE = re.compile(
 
 
 def parse_people_line(value):
-    """将"A / B / C"形式的人名拆成去重列表"""
+    """将“A / B / C”形式的人名拆成去重列表"""
     parts = re.split(r"[/、]", value)
     out, seen = [], set()
     for p in parts:
@@ -472,7 +501,7 @@ def parse_new_format(lines, h1_name):
             title_found = True
             continue
 
-    # alias 决策：优先"又名"，否则用标题外文名
+    # alias 决策：优先“又名”，否则用标题外文名
     if youming:
         result["alias"] = youming
     elif title_alias:
@@ -699,26 +728,32 @@ def find_existing_global(data, name, sub_url):
 
 
 def extract_max_episodes_from_info(info_str):
+    """从 info 中提取最大集数数字"""
     if not info_str:
         return 0
-    match = re.search(r"(\d+)", info_str)
+    match = re.findall(r'(\d+)', info_str)
     if match:
-        return int(match.group(1))
+        return int(match[-1])
     return 0
 
-
-def calculate_max_episodes_from_playlist(playlist):
-    max_eps = 0
-    if not playlist:
+def get_real_episode_count(episodes):
+    """
+    计算真实集数：
+    - 集名含数字（粤语05 / 国语05 / 第3集 / EP04）时，取所有数字里的最大值，
+      从而正确处理「同一集有粤语+国语等多语言版本」导致 len() 翻倍的问题。
+    - 集名无数字（HD / 正片等）时，退回用条目数量。
+    """
+    if not episodes:
         return 0
-    for pl in playlist:
-        eps = pl.get("episodes", {})
-        if isinstance(eps, dict):
-            count = len(eps)
-            if count > max_eps:
-                max_eps = count
-    return max_eps
-
+    max_num = 0
+    num_re = re.compile(r'(\d+)')
+    for k in episodes.keys():
+        nums = num_re.findall(str(k))
+        if nums:
+            n = int(nums[-1])
+            if n > max_num:
+                max_num = n
+    return max_num if max_num > 0 else len(episodes)
 
 def has_episode_concept(episodes):
     if not episodes:
@@ -762,7 +797,7 @@ def update_info_field_if_needed(existing, new_playlist):
         print(f"      [info字段跳过] 资源无集数概念，保持原 info「{existing.get('info', '')}」")
         return False
 
-    Y = len(eps)                       # 6vdy 新抓取集数
+    Y = get_real_episode_count(eps)    # ← 原来是 len(eps)
     old_info = existing.get("info", "")
     X = extract_max_episodes_from_info(old_info)
 
@@ -784,7 +819,8 @@ def update_info_field_if_needed(existing, new_playlist):
     for pl in new_playlist:
         if pl.get("name") == PLAYLIST_NAME:
             continue
-        cnt = len(pl.get("episodes", {})) if isinstance(pl.get("episodes"), dict) else 0
+        eps_other = pl.get("episodes", {})
+        cnt = get_real_episode_count(eps_other) if isinstance(eps_other, dict) else 0
         if cnt > max_other:
             max_other = cnt
             max_other_name = pl.get("name", "")
@@ -1096,7 +1132,7 @@ def process_items(data, items, tab_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # 先做全局查重，过滤逻辑要依赖"是否已存在"
+            # 先做全局查重，过滤逻辑要依赖“是否已存在”
             matched_group, existing = find_existing_global(data, real_name, url)
 
             # ============ 过滤规则（地区屏蔽）============
@@ -1122,6 +1158,18 @@ def process_items(data, items, tab_name):
                         ok += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
+
+            # ============ 过滤规则（评分屏蔽，仅针对新增项目）============
+            # 放行优先级：白名单 > 已存在记录；其余新增项目才校验评分。
+            # 逻辑：豆瓣/IMDb 取最高有效分(非空非0)，若该分数 < MIN_RATING 则跳过。
+            #      评分为空或全为0(无有效评分)时不干预，正常入库。
+            if MIN_RATING and existing is None and real_name not in WHITELIST_NAMES:
+                max_rating = get_max_rating(rec.get("评分", {}))
+                if max_rating is not None and max_rating < MIN_RATING:
+                    print(f"    - 跳过：评分 {max_rating}（豆瓣/IMDb 最高有效分）低于阈值 {MIN_RATING}")
+                    ok += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
 
             if existing:
                 status = process_existing_record(existing, new_6vdy_eps, url, rec)
@@ -1150,7 +1198,7 @@ def process_items(data, items, tab_name):
                 if group in ["Drama", "Anime"] and new_6vdy_eps:
                     has_ep_kw = any("集" in str(k) for k in new_6vdy_eps.keys())
                     if has_ep_kw:
-                        episode_count = len(new_6vdy_eps)
+                        episode_count = get_real_episode_count(new_6vdy_eps)  # ← 原来是 len()
                         rec["info"] = f"更新至第{episode_count}集"
                         print(f"      [新增剧集info初始化] 自动写入 info: 「更新至第{episode_count}集」")
                     else:

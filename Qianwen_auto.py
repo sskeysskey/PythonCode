@@ -138,6 +138,7 @@ def main():
     # ==== 1. 加载所有模板 ====
     template_copy_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_copy.png")
     template_forbidden_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_forbidden.png")
+    template_forbidden2_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_forbidden2.png")
     template_retry_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_retry.png")
     template_timeout_path = os.path.join(BASE_RESOURCE_DIR, "qianwen_timeout.png")
     
@@ -145,6 +146,7 @@ def main():
     required_templates = [
         ("copy", template_copy_path),
         ("forbidden", template_forbidden_path),
+        ("forbidden2", template_forbidden2_path),
         ("retry", template_retry_path),
         ("timeout", template_timeout_path)
     ]
@@ -156,6 +158,7 @@ def main():
     
     template_copy = cv2.imread(template_copy_path, cv2.IMREAD_COLOR)
     template_forbidden = cv2.imread(template_forbidden_path, cv2.IMREAD_COLOR)
+    template_forbidden2 = cv2.imread(template_forbidden2_path, cv2.IMREAD_COLOR)
     template_retry = cv2.imread(template_retry_path, cv2.IMREAD_COLOR)
     template_timeout = cv2.imread(template_timeout_path, cv2.IMREAD_COLOR)
     
@@ -175,10 +178,13 @@ def main():
         # 截取当前屏幕，供后续所有模板共用，提高匹配效率
         current_screen = capture_screen()
         
-        # 1. 优先寻找 Forbidden 按钮
+        # 1. 优先寻找 Forbidden / Forbidden2 按钮（任意一个匹配都触发拒答）
         forbidden_loc, _ = find_image_on_screen(template_forbidden, screen=current_screen)
-        if forbidden_loc:
-            print("检测到 qianwen_forbidden 图片，触发拒答机制，跳过当前文章。")
+        forbidden2_loc, _ = find_image_on_screen(template_forbidden2, screen=current_screen)
+
+        if forbidden_loc or forbidden2_loc:
+            found_name = "qianwen_forbidden" if forbidden_loc else "qianwen_forbidden2"
+            print(f"检测到 {found_name} 图片，触发拒答机制，跳过当前文章。")
             sys.exit(4)
             
         # 2. 寻找 Retry 和 Timeout 按钮
