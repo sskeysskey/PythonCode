@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "豆瓣抓取助手",
-  "version": "1.0",
-  "description": "抓取豆瓣电影页面的上映日期/首播日期、豆瓣评分和短评，下载为 json",
+  "name": "豆瓣/IMDb 抓取助手",
+  "version": "2.0",
+  "description": "抓取豆瓣电影页面(日期/评分/外文标题)与IMDb页面(评分)，下载为 json",
   "permissions": [
     "scripting",
     "downloads",
@@ -10,18 +10,19 @@
     "activeTab"
   ],
   "host_permissions": [
-    "*://*.douban.com/*"
+    "*://*.douban.com/*",
+    "*://*.imdb.com/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "commands": {
-    "scrape-douban": {
+    "scrape-page": {
       "suggested_key": {
         "default": "Alt+N",
         "mac": "Alt+N"
       },
-      "description": "抓取当前豆瓣页面"
+      "description": "抓取当前页面（自动识别豆瓣或IMDb）"
     }
   }
 }

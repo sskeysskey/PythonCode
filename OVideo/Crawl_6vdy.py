@@ -69,6 +69,7 @@ FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", 
 # 评分过滤阈值：仅针对【新增项目】，当豆瓣/IMDb 最高有效评分(非空非0)低于该值时跳过。
 # 若想关闭此过滤，将其设为 0 即可。
 MIN_RATING = 6.0
+MIN_RATING_7 = 7.0
 
 # ============== 镜像站识别（同源不同域名）==============
 MIRROR_DOMAINS = ("6vdy", "xb6v")
@@ -1149,15 +1150,22 @@ def process_items(data, items, tab_name):
                 if group_guess == "Anime":
                     print(f"    ✓ 动漫/动画分类放行：跳过地区屏蔽校验")
                 else:
-                    region = rec.get("地区", "")
-                    region_match = any(keyword == region.strip() for keyword in FILTER_REGIONS)
-                    has_episode_keyword = any("集" in str(k) for k in new_6vdy_eps.keys())
+                    region = (rec.get("地区", "") or "").strip()
+                    region_match = any(keyword == region for keyword in FILTER_REGIONS)
 
-                    if region_match and has_episode_keyword:
-                        print(f"    - 跳过：地区「{region}」命中过滤名单 且 为分集剧集资源（两条件同时满足）")
-                        ok += 1
-                        time.sleep(SLEEP_BETWEEN)
-                        continue
+                    if region_match:
+                        # 地区命中过滤名单，但若豆瓣/IMDb 最高有效评分达标则「开绿灯」放行
+                        max_rating = get_max_rating(rec.get("评分", {}))
+                        if max_rating is not None and max_rating >= MIN_RATING_7:
+                            print(f"    ✅ 地区「{region}」命中过滤名单，但评分 {max_rating}"
+                                  f"（豆瓣/IMDb 最高有效分）≥ {MIN_RATING_7}，开绿灯放行")
+                        else:
+                            rating_desc = "无有效评分" if max_rating is None else f"评分 {max_rating}"
+                            print(f"    - 跳过：地区「{region}」命中过滤名单，且{rating_desc}"
+                                  f" 未达阈值 {MIN_RATING_7}（电影/剧集均拦截）")
+                            ok += 1
+                            time.sleep(SLEEP_BETWEEN)
+                            continue
 
             # ============ 过滤规则（评分屏蔽，仅针对新增项目）============
             # 放行优先级：白名单 > 已存在记录；其余新增项目才校验评分。

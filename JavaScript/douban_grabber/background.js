@@ -1,6 +1,6 @@
-// 这个函数会被注入到豆瓣页面里执行，必须是“自包含”的（不能引用外部变量）
+// ================== 豆瓣页面抓取 ==================
 function scrapeDoubanPage() {
-  // 1. 日期：上映日期 / 首播 都用同一个属性 v:initialReleaseDate
+  // 1. 日期
   function extractDate() {
     const spans = document.querySelectorAll('span[property="v:initialReleaseDate"]');
     if (spans.length > 0) {
@@ -30,7 +30,35 @@ function scrapeDoubanPage() {
     return (document.title || '').replace(/\(豆瓣\)\s*$/, '').trim();
   }
 
-  // 4. 最多 5 条短评（暂存，后续再用）
+  // 4. 外文标题：豆瓣格式为「中文标题 + 空格 + 原文/外文标题」
+  //    中文标题可能自带空格（如「第二季」「第一部」），因此不能简单取第一个空格之后。
+  //    优先策略：外文标题一般从第一个含拉丁字母的 token 开始。
+  //    兜底策略：纯日文/韩文等无拉丁字母的原名，回退到「第一个空格之后」。
+  function extractForeignTitle() {
+    const el = document.querySelector('span[property="v:itemreviewed"]');
+    let full = el ? (el.textContent || '').trim() : '';
+    if (!full) return '';
+
+    // 规范空白：全角/多空格 => 单个半角空格
+    full = full.replace(/\s+/g, ' ').trim();
+
+    const tokens = full.split(' ');
+    if (tokens.length <= 1) return '';        // 只有一段 => 纯中文标题，无外文标题
+
+    // 从第 2 个 token 起（第 1 个必是中文标题），找第一个含拉丁字母的词
+    const hasLatin = /[A-Za-z]/;
+    for (let i = 1; i < tokens.length; i++) {
+      if (hasLatin.test(tokens[i])) {
+        return tokens.slice(i).join(' ');     // 从该词到结尾即为外文标题
+      }
+    }
+
+    // 没有任何拉丁字母（如纯日文原名「ハイウェイの堕天使」）=> 回退到第一个空格之后
+    const idx = full.indexOf(' ');
+    return full.slice(idx + 1).trim();
+  }
+
+  // 5. 短评（保留）
   function extractReviews() {
     const nodes = document.querySelectorAll('.short-content');
     const out = [];
@@ -46,7 +74,9 @@ function scrapeDoubanPage() {
   }
 
   return {
+    type: 'douban',
     name: extractName(),
+    foreign_title: extractForeignTitle(),
     date: extractDate(),
     douban_rating: extractRating(),
     reviews: extractReviews(),
@@ -55,30 +85,72 @@ function scrapeDoubanPage() {
   };
 }
 
-function downloadResult(data) {
+// ================== IMDb 页面抓取 ==================
+function scrapeImdbPage() {
+  function extractRating() {
+    const el = document.querySelector('[data-testid="hero-rating-bar__aggregate-rating__score"] span')
+      || document.querySelector('div[data-testid="hero-rating-bar__aggregate-rating__score"] span')
+      || document.querySelector('span.sc-a30a09c4-1');
+    return el ? el.textContent.trim() : '';
+  }
+
+  function extractTitle() {
+    const el = document.querySelector('h1[data-testid="hero__pageTitle"] span')
+      || document.querySelector('h1 span');
+    return el ? el.textContent.trim() : (document.title || '').trim();
+  }
+
+  return {
+    type: 'imdb',
+    title: extractTitle(),
+    imdb_rating: extractRating(),
+    url: location.href,
+    grabbed_at: new Date().toISOString()
+  };
+}
+
+// ================== 下载 ==================
+function downloadResult(data, filename) {
   const jsonStr = JSON.stringify(data, null, 2);
   const dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(jsonStr);
   chrome.downloads.download({
     url: dataUrl,
-    filename: 'douban_result.json',
-    conflictAction: 'overwrite',   // 始终覆盖同名文件，文件名保持不变
+    filename: filename,
+    conflictAction: 'overwrite',
     saveAs: false
   });
 }
 
+// ================== 命令入口：自动判断页面类型 ==================
 chrome.commands.onCommand.addListener((command) => {
-  if (command !== 'scrape-douban') return;
+  if (command !== 'scrape-page') return;
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs || !tabs.length) return;
+    const tab = tabs[0];
+    const url = tab.url || '';
+
+    let func = null;
+    let filename = '';
+    if (url.includes('douban.com')) {
+      func = scrapeDoubanPage;
+      filename = 'douban_result.json';
+    } else if (url.includes('imdb.com')) {
+      func = scrapeImdbPage;
+      filename = 'imdb_result.json';
+    } else {
+      console.warn('当前页面既不是豆瓣也不是IMDb，忽略。URL=', url);
+      return;
+    }
+
     chrome.scripting.executeScript(
-      { target: { tabId: tabs[0].id }, func: scrapeDoubanPage },
+      { target: { tabId: tab.id }, func: func },
       (results) => {
         if (chrome.runtime.lastError) {
           console.error(chrome.runtime.lastError);
           return;
         }
         if (results && results[0] && results[0].result) {
-          downloadResult(results[0].result);
+          downloadResult(results[0].result, filename);
         }
       }
     );

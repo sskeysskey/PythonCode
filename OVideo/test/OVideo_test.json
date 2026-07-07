@@ -55,7 +55,7 @@
     ],
     "Drama": [
         {
-            "name": "吞噬星空",
+            "name": "吞噬星空 第三季",
             "url": "https://www.pys2.com/mv/451195.html",
             "url1": "https://www.pys2.com/mv/451171.html",
             "url2": "https://www.6vdy.org/donghuapian/14764.html",
@@ -104,7 +104,7 @@
     ],
     "Show": [
         {
-            "name": "黑夜告白",
+            "name": "黑夜告白 第一季",
             "url": "https://www.pys2.com/mv/496549.html",
             "info": "更新至第02集",
             "update": "2026-05-16 14:45:12",
@@ -151,7 +151,52 @@
     ],
     "Anime": [
         {
-            "name": "黑夜告白",
+            "name": "大动画 第一季",
+            "url": "https://www.pys2.com/mv/496549.html",
+            "info": "28集全",
+            "update": "2026-05-16 14:45:12",
+            "image": "496549.jpg",
+            "导演": "王之",
+            "编剧": [
+                "言桄",
+                "孙泽宇"
+            ],
+            "主演": [
+                "潘粤明",
+                "周大勇"
+            ],
+            "类型": [
+                "剧情",
+                "犯罪",
+                "悬疑"
+            ],
+            "地区": "大陆",
+            "date": "2026-04-26(中国大陆)",
+            "alias": "又名：追影者",
+            "intro": "1997年，一对神秘父女在元龙里小区离奇失踪，核心。",
+            "评分": {
+                "豆瓣": "",
+                "IMDB": "8.3"
+            },
+            "playlist": [
+                {
+                    "name": "天堂",
+                    "episodes": {
+                        "第01集": "https://www.pys2.com/py/496549-1-1.html",
+                        "第02集": "https://www.pys2.com/py/496549-1-2.html"
+                    }
+                },
+                {
+                    "name": "暴风",
+                    "episodes": {
+                        "第1集": "https://www.pys2.com/py/496549-2-1.html",
+                        "第2集": "https://www.pys2.com/py/496549-2-2.html"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "大动画 第二季",
             "url": "https://www.pys2.com/mv/496549.html",
             "info": "28集全",
             "update": "2026-05-16 14:45:12",
