@@ -77,9 +77,9 @@ FILTER_REGIONS_OVERRIDE = {
     "https://www.chnland.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
     
-    # 动漫：只屏蔽「泰国和中国」，其余地区全部放开
-    # "https://www.chnland.com/vodshow/4--time---------2026.html":
-    #     ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
+    # 电视剧
+    "https://www.chnland.com/vodshow/2--time---------2026.html":
+        ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "台湾", "中国台湾", "日本"],
 }
 
 # 视为"空值"的占位文案
@@ -681,6 +681,15 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
         if new_episodes == old_eps:
             # 集数内容完全相同，但可能 info 有变化
             if new_scraped_info and new_scraped_info != existing.get("info", ""):
+                # 校验：新 info 声称的集数是否真的有对应 episode 存在
+                claimed = extract_episode_count_from_info(new_scraped_info)
+                if claimed is not None and claimed > len(new_episodes):
+                    # info 声称的集数 > 实际抓到的集数，
+                    # 说明网站只更新了文案，真正的 episode 并未出现 —— 不更新 info，也不打印
+                    log(f"      [info跳过] info 声称 {claimed} 集，但实际仅抓到 "
+                        f"{len(new_episodes)} 集，判定为虚假更新，保留原 info：「{existing.get('info', '')}」")
+                    return "updated" if fields_updated else "no_change"
+
                 old_info = existing.get("info", "")
                 existing["info"] = new_scraped_info
                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

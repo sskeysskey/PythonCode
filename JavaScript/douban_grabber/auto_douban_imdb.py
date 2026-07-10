@@ -4,7 +4,7 @@
 豆瓣 + IMDb 一次性抓取与回写
 流程：
   剪贴板取名字 → 在 OVideos.json 找项目 →
-  抓豆瓣(日期/评分/外文标题) → 写回 →
+  抓豆瓣(日期/评分/外文标题/导演/编剧/主演/类型) → 写回 →
   用外文标题搜 IMDb → 抓 IMDb 评分 → 写回 → 结束
 依赖: pyautogui, 以及同目录下你已有的 screenshot.py
 """
@@ -119,9 +119,42 @@ def find_item_by_name(data, name):
     return None, None, None
 
 
+# ------------------ 写入判断工具 ------------------
+def _content_len(v):
+    """字符串按字符数、数组按元素个数计算「长度」。"""
+    if isinstance(v, list):
+        return len(v)
+    if v is None:
+        return 0
+    return len(str(v).strip())
+
+
+def _should_write(old, new):
+    """
+    写入规则：原字段为空，或新内容比原内容「更长」才写入。
+    - 字符串：比字符数
+    - 数组  ：比元素个数
+    new 本身若为空则一律不写。
+    """
+    # 新内容为空 => 不写
+    if isinstance(new, list):
+        if not new:
+            return False
+    else:
+        if not str(new).strip():
+            return False
+
+    # 原内容为空 => 写
+    if _content_len(old) == 0:
+        return True
+
+    # 二者都非空 => 新的更长才写
+    return _content_len(new) > _content_len(old)
+
+
 # ------------------ 写回逻辑 ------------------
 def update_douban(item, scraped) -> bool:
-    """写回日期 + 豆瓣评分。IMDB 字段不动。"""
+    """写回日期 + 豆瓣评分 + 导演/编剧/主演/类型/alias。IMDB 字段不动。"""
     date   = str(scraped.get('date', '')).strip()
     douban = str(scraped.get('douban_rating', '')).strip()
     changed = False
@@ -150,6 +183,59 @@ def update_douban(item, scraped) -> bool:
             print(f"  │ 豆瓣评分 : {douban}")
     else:
         print("  │ 豆瓣评分 : 页面未抓到，保持原样")
+
+    # ---- 新增字段：仅当原字段为空 或 新内容更长时才写入 ----
+
+    # 导演（字符串，多个已在插件端用 " / " 连接）
+    director = str(scraped.get('director', '')).strip()
+    if _should_write(item.get('导演'), director):
+        old = item.get('导演')
+        item['导演'] = director
+        changed = True
+        print(f"  │ 导演    : {old or '空'} -> {director}")
+    else:
+        print(f"  │ 导演    : 不满足写入条件，保持原样（抓到：{director or '空'}）")
+
+    # 编剧（数组）
+    screenwriters = scraped.get('screenwriters', []) or []
+    screenwriters = [str(x).strip() for x in screenwriters if str(x).strip()]
+    if _should_write(item.get('编剧'), screenwriters):
+        item['编剧'] = screenwriters
+        changed = True
+        print(f"  │ 编剧    : {screenwriters}")
+    else:
+        print(f"  │ 编剧    : 不满足写入条件，保持原样（抓到：{screenwriters or '空'}）")
+
+    # 主演（数组）
+    starring = scraped.get('starring', []) or []
+    starring = [str(x).strip() for x in starring if str(x).strip()]
+    if _should_write(item.get('主演'), starring):
+        item['主演'] = starring
+        changed = True
+        print(f"  │ 主演    : {starring}")
+    else:
+        print(f"  │ 主演    : 不满足写入条件，保持原样（抓到：{starring or '空'}）")
+
+    # 类型（数组）
+    genres = scraped.get('genres', []) or []
+    genres = [str(x).strip() for x in genres if str(x).strip()]
+    if _should_write(item.get('类型'), genres):
+        item['类型'] = genres
+        changed = True
+        print(f"  │ 类型    : {genres}")
+    else:
+        print(f"  │ 类型    : 不满足写入条件，保持原样（抓到：{genres or '空'}）")
+
+    # alias（字符串，取自外文标题 foreign_title）
+    alias = str(scraped.get('foreign_title', '')).strip()
+    if _should_write(item.get('alias'), alias):
+        old = item.get('alias')
+        item['alias'] = alias
+        changed = True
+        print(f"  │ alias   : {old or '空'} -> {alias}")
+    else:
+        print(f"  │ alias   : 不满足写入条件，保持原样（抓到：{alias or '空'}）")
+
     print("  └──────────────────────────────────────")
     return changed
 

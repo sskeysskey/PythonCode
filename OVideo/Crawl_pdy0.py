@@ -143,7 +143,7 @@ TASKS = [
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": True},
+                "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": False},
                 "Drama": {"id": 2, "enabled": True, "pages": 1},
                 "Show": {"id": 3, "enabled": True, "pages": 1},
                 "Anime": {"id": 4, "enabled": True, "pages": 1}
@@ -253,7 +253,7 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 7.0
+MIN_SCORE_LIMIT = 6.0
 # 非当前年份的旧片，豆瓣/IMDB 取最高分，低于此值则跳过不抓
 OLD_VIDEO_MIN_SCORE = 6.0
 # 当前年份（综艺 Show 分类只抓当年内容，跨年自动跟随，无需改代码）
@@ -1232,11 +1232,11 @@ def process_item(item: dict, cat_name: str,
                 old_info_val = old_entry.get("info", "")
                 if own_max_ep <= protected_max_ep:
                     if detail.get("info") != old_info_val:
-                        print(f"     ✅[Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
+                        print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
                               f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
                     detail["info"] = old_info_val
                 else:
-                    print(f"     ✅[Info可更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
+                    print(f"     ✅[Info更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
 
             if is_update and old_entry:
                 old_info = old_entry.get("info", "")

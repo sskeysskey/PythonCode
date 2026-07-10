@@ -1,5 +1,7 @@
 // ================== 豆瓣页面抓取 ==================
 function scrapeDoubanPage() {
+  const info = document.querySelector('#info');
+
   // 1. 日期
   function extractDate() {
     const spans = document.querySelectorAll('span[property="v:initialReleaseDate"]');
@@ -30,7 +32,7 @@ function scrapeDoubanPage() {
     return (document.title || '').replace(/\(豆瓣\)\s*$/, '').trim();
   }
 
-  // 4. 外文标题：豆瓣格式为「中文标题 + 空格 + 原文/外文标题」
+  // 4. 外文标题（= alias）：豆瓣格式为「中文标题 + 空格 + 原文/外文标题」
   //    中文标题可能自带空格（如「第二季」「第一部」），因此不能简单取第一个空格之后。
   //    优先策略：外文标题一般从第一个含拉丁字母的 token 开始。
   //    兜底策略：纯日文/韩文等无拉丁字母的原名，回退到「第一个空格之后」。
@@ -58,7 +60,55 @@ function scrapeDoubanPage() {
     return full.slice(idx + 1).trim();
   }
 
-  // 5. 短评（保留）
+  // 5. 导演：rel="v:directedBy"，多个用 " / " 连接（返回单个字符串）
+  function extractDirector() {
+    if (!info) return '';
+    const links = info.querySelectorAll('a[rel="v:directedBy"]');
+    const arr = Array.from(links)
+      .map(a => (a.textContent || '').trim())
+      .filter(Boolean);
+    return arr.join(' / ');
+  }
+
+  // 6. 主演：rel="v:starring"（返回数组）
+  function extractStarring() {
+    if (!info) return [];
+    const links = info.querySelectorAll('a[rel="v:starring"]');
+    return Array.from(links)
+      .map(a => (a.textContent || '').trim())
+      .filter(Boolean);
+  }
+
+  // 7. 按 .pl 标签名提取其 .attrs 下所有链接文本（用于「编剧」，因为它没有 rel 属性）
+  function extractByLabel(label) {
+    if (!info) return [];
+    const pls = info.querySelectorAll('span.pl');
+    for (const pl of pls) {
+      const t = (pl.textContent || '').replace(/[:：]/g, '').trim();
+      if (t === label) {
+        const wrap = pl.parentElement;
+        const attrs = wrap ? wrap.querySelector('span.attrs') : null;
+        if (attrs) {
+          const links = attrs.querySelectorAll('a');
+          return Array.from(links)
+            .map(a => (a.textContent || '').trim())
+            .filter(Boolean);
+        }
+      }
+    }
+    return [];
+  }
+
+  // 8. 类型：property="v:genre"（返回数组）
+  function extractGenres() {
+    if (!info) return [];
+    const nodes = info.querySelectorAll('span[property="v:genre"]');
+    return Array.from(nodes)
+      .map(n => (n.textContent || '').trim())
+      .filter(Boolean);
+  }
+
+  // 9. 短评（保留）
   function extractReviews() {
     const nodes = document.querySelectorAll('.short-content');
     const out = [];
@@ -79,6 +129,10 @@ function scrapeDoubanPage() {
     foreign_title: extractForeignTitle(),
     date: extractDate(),
     douban_rating: extractRating(),
+    director: extractDirector(),
+    screenwriters: extractByLabel('编剧'),
+    starring: extractStarring(),
+    genres: extractGenres(),
     reviews: extractReviews(),
     url: location.href,
     grabbed_at: new Date().toISOString()

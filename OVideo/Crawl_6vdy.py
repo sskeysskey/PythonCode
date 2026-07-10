@@ -175,6 +175,14 @@ def normalize_text(s):
     s = re.sub(r"[，；;]\s*$", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     s = s.strip(":：·•")
+    
+    # 【新增：过滤纯问号或非正常符号】
+    # 如果字符串只由 问号(?、？)、星号(*)、减号(-)、下划线(_)、斜杠(/)、空格 或 纯标点 组成，则视为无效，返回空
+    if re.match(r"^[?？*\-_/\s\d.,，;；:：]+$", s) or re.match(r"^[-—~=?.#*&%@!！\s]+$", s):
+        # 排除掉纯数字（因为年份或评分可能是纯数字，不能误杀）
+        if not s.isdigit() and not re.match(r"^\d+\.\d+$", s):
+            return ""
+            
     return s
 
 
@@ -687,17 +695,17 @@ def _is_mirror(url):
 
 
 def find_existing_global(data, name, sub_url):
-    # ---- 1) 名称精确匹配 ----
-    for group in ["Movie", "Drama", "Show", "Anime"]:
-        for item in data.get(group, []):
-            if item.get("name") == name:
-                return group, item
+    # ================= 优先级调整 =================
+    # 规则：URL 一致 > 镜像路径一致 > 名称一致
+    # 原因：可能存在「同名但不同资源」或「异名但同一 URL」的情况，
+    #       只要 URL(或同源镜像路径)命中，就应认定为同一资源并对其更新，
+    #       名称匹配仅作为最后的兜底手段。
 
     if sub_url:
         sub_path = _url_path(sub_url)
         sub_is_mirror = _is_mirror(sub_url)
 
-        # ---- 2) URL 完全一致匹配 ----
+        # ---- 1) URL 完全一致匹配（最高优先级）----
         for group in ["Movie", "Drama", "Show", "Anime"]:
             for item in data.get(group, []):
                 existing_urls = {
@@ -705,11 +713,14 @@ def find_existing_global(data, name, sub_url):
                     if k == "url" or re.match(r"^url\d+$", k)
                 }
                 if sub_url in existing_urls:
-                    print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
-                          f"(URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
+                    if item.get("name") != name:
+                        print(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
+                              f"(URL: {sub_url}, 已有:「{item.get('name')}」, 抓取:「{name}」)")
+                    else:
+                        print(f"      [URL匹配去重] 命中相同 URL 记录：「{item.get('name')}」")
                     return group, item
 
-        # ---- 3) 同源镜像站「路径一致」匹配 ----
+        # ---- 2) 同源镜像站「路径一致」匹配（次高优先级）----
         #     6vdy.org 与 xb6v.com 等为同一站点的不同域名，
         #     其详情页路径(如 /dianshiju/oumeiju/28772.html)完全相同，
         #     故仅当双方都是镜像域名且 path 相同时判定为同一资源。
@@ -724,6 +735,12 @@ def find_existing_global(data, name, sub_url):
                                       f"(路径: {sub_path}, 已有:「{item.get('name')}」@{u}, "
                                       f"抓取:「{name}」@{sub_url})")
                                 return group, item
+
+    # ---- 3) 名称精确匹配（兜底，最低优先级）----
+    for group in ["Movie", "Drama", "Show", "Anime"]:
+        for item in data.get(group, []):
+            if item.get("name") == name:
+                return group, item
 
     return None, None
 
@@ -807,7 +824,7 @@ def update_info_field_if_needed(existing, new_playlist):
         if Y > X:
             new_info = f"更新至第{Y}集"
             existing["info"] = new_info
-            print(f"      [info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
+            print(f"      ✅[info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
                   f"info 由「{old_info}」更新为「{new_info}」")
             return True
         else:
@@ -829,7 +846,7 @@ def update_info_field_if_needed(existing, new_playlist):
     if Y > max_other:
         new_info = f"更新至第{Y}集"
         existing["info"] = new_info
-        print(f"      [info字段更新] 多渠道场景下 6vdy 新集数 {Y} > 其他渠道最大集数 "
+        print(f"      ✅[info字段更新] 多渠道场景下 6vdy 新集数 {Y} > 其他渠道最大集数 "
               f"{max_other}（渠道「{max_other_name}」），info 由「{old_info}」更新为「{new_info}」")
         return True
     else:
@@ -888,12 +905,12 @@ def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
     elif info_updated:
         if should_touch_update_on_episode_change(playlist, len(new_6vdy_episodes)):
             touch = True
-            print("      [时间戳] 集数更新且满足 chnland 规则 → 刷新 update")
+            print("      ✅[时间戳] 集数更新且满足 chnland 规则 → 刷新 update")
         else:
             print("      [时间戳] 集数更新但 chnland 集数 ≥ 6vdy → 保持 update 不变")
     if touch:
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print("      [字段更新] 已同步更新「update」时间戳")
+        print("      ✅[字段更新] 已同步更新「update」时间戳")
     return touch
 
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
@@ -962,8 +979,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
             if movie_info_updated:
                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                return "updated"
-            return "updated" if fields_updated else "no_change"
+                return "quality_updated"
+            # 播放源完全无变化，仅普通字段更新
+            return "meta_updated" if fields_updated else "no_change"
 
         if len(new_6vdy_episodes) < len(old_6vdy_eps):
             return "updated" if fields_updated else "decreased"
@@ -1182,7 +1200,18 @@ def process_items(data, items, tab_name):
             if existing:
                 status = process_existing_record(existing, new_6vdy_eps, url, rec)
                 if status == "updated":
+                    # 播放源集数/链接真正变更时才打印这句
                     print(f"    ✅ 更新({matched_group})：6vdy 渠道发现新剧集，已覆盖更新")
+                    save_json(data)
+                    ok += 1
+                elif status == "meta_updated":
+                    # 仅字段更新，无播放源改动，只提示元数据更新
+                    print(f"    ✅ 更新({matched_group})：仅补充/修正影片元数据，播放源无变化")
+                    save_json(data)
+                    ok += 1
+                elif status == "quality_updated":
+                    # 仅画质info升级
+                    print(f"    ✅ 更新({matched_group})：影片画质标识升级，播放源无变化")
                     save_json(data)
                     ok += 1
                 elif status == "channel_added":

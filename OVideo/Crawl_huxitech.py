@@ -9,7 +9,8 @@ import re
 import sys
 import json
 import time
-import requests
+from curl_cffi import requests as cffi
+import browser_cookie3
 import platform
 import subprocess
 import atexit
@@ -85,6 +86,10 @@ FILTER_REGIONS_OVERRIDE = {
     # 电影(1)：只屏蔽「泰国和中国」，其余地区全部放开
     "https://www.huxitech.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
+
+    # 电视剧(1)：
+    "https://www.huxitech.com/vodshow/2--time---------2026.html":
+        ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "台湾", "中国台湾", "日本"],
 }
 
 # 视为"空值"的占位文案
@@ -97,7 +102,7 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
+        "Chrome/149.0.0.0 Safari/537.36"
     ),
     "Referer": DOMAIN,
 }
@@ -110,8 +115,36 @@ def extract_episode_number(info_text):
     match = re.search(r'(\d+)', info_text)
     return int(match.group(1)) if match else None
 
+# ============== 基于 curl_cffi 的会话（伪装 Chrome 指纹）==============
+# impersonate 的版本尽量贴近你真实 Chrome 大版本，可选：chrome124 / chrome131 / chrome
+_session = cffi.Session(impersonate="chrome124")
+_chrome_cookies = None
+
+def _load_chrome_cookies():
+    """从本机 Chrome 读取 huxitech 的 Cookie（含 cf_clearance）"""
+    try:
+        cj = browser_cookie3.chrome(domain_name="huxitech.com")
+        cookies = {c.name: c.value for c in cj}
+        if cookies:
+            print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: "
+                  f"{list(cookies.keys())}")
+        else:
+            print(">>> [Cookie] 未读到 huxitech 的 cookie，请先在 Chrome 里手动过一次验证并浏览一下该站")
+        return cookies
+    except Exception as e:
+        print(f">>> [Cookie] 读取 Chrome cookie 失败: {e}")
+        return {}
+
 def fetch(url, is_binary=False):
-    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    global _chrome_cookies
+    if _chrome_cookies is None:
+        _chrome_cookies = _load_chrome_cookies()
+    resp = _session.get(
+        url,
+        headers=HEADERS,
+        cookies=_chrome_cookies,
+        timeout=REQUEST_TIMEOUT,
+    )
     resp.raise_for_status()
     if is_binary:
         return resp.content

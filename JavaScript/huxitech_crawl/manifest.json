@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Huxitech Fetch Bridge",
+  "version": "1.0",
+  "description": "借用已登录/已过验证的浏览器为本地Python抓取页面",
+  "permissions": [
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.huxitech.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
