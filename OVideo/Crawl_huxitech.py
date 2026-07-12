@@ -52,7 +52,7 @@ SITE_KEY      = "huxitech"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
-                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记"]
+                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖"]
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
     # "镖人 第二季"

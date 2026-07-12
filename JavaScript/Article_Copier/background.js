@@ -2697,12 +2697,23 @@ function extractAndCopy() {
         const articleBody = document.querySelector('[data-testid="ArticleBody"]');
         const article = document.querySelector('article[data-testid="Article"]');
         if (articleBody && article) {
-          // 1. 按 DOM 顺序一次性抓取所有 Heading 和 段落
+          // 1. 按 DOM 顺序一次性抓取所有 Heading、段落 和 列表项正文
+          //    - h2[data-testid="Heading"]                  : 小标题
+          //    - [data-testid^="paragraph-"]                : 普通段落 (paragraph-0, paragraph-1 ...)
+          //    - div[data-testid="ArticleList"] li [data-testid="Body"] : 项目符号列表(li)里的正文
+          //    ※ 特意限定 Body 必须在 ArticleList 的 li 内，
+          //      这样可以排除 promo-box(广告)、SignOff(署名)、
+          //      trust-badge("Our Standards" 那个 <p data-testid="Body">) 以及 Tags
           const contentNodes = articleBody.querySelectorAll(
-            'h2[data-testid="Heading"], [data-testid^="paragraph-"]'
+            'h2[data-testid="Heading"], ' +
+            '[data-testid^="paragraph-"], ' +
+            'div[data-testid="ArticleList"] li [data-testid="Body"]'
           );
           const textLines = Array.from(contentNodes)
-            .map(el => el.textContent.trim())
+            .map(el => el.textContent
+              .replace(/[\u200B\u2060\uFEFF]/g, '') // 去掉零宽空格(&ZeroWidthSpace;)、NoBreak 等不可见字符
+              .replace(/\s+/g, ' ')                 // 合并多余空白
+              .trim())
             .filter(t => t.length > 0);
           textContent = textLines.join('\n\n');
 
