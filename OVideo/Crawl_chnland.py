@@ -49,7 +49,7 @@ PLAYLIST_NAME = "chnland"
 SITE_KEY      = "chnland"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
-BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵"]
+BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵", "J Music 第二季", "拳锋", "除却巫山不是云"]
 # ===================== 新增：白名单（在这里添加你要放行的名称）
 WHITELIST_NAMES = [
     "镖人 第二季"
