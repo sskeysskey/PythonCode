@@ -49,7 +49,8 @@ PLAYLIST_NAME = "chnland"
 SITE_KEY      = "chnland"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
-BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵", "J Music 第二季", "拳锋", "除却巫山不是云"]
+BLACKLIST_NAMES = ["去火星", "返校惊魂", "白蛇传之我叫王道灵", "J Music 第二季",
+                   "拳锋", "除却巫山不是云", "最后的秘密", "雪落六月"]
 # ===================== 新增：白名单（在这里添加你要放行的名称）
 WHITELIST_NAMES = [
     "镖人 第二季"
@@ -668,6 +669,22 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 
     playlist = existing.setdefault("playlist", [])
     new_scraped_info = rec.get("info", "")
+    new_ep_count = len(new_episodes)
+
+    # 计算其他渠道最大集数（排除当前chnland）
+    max_other_ep = 0
+    other_pl_list = []
+    chnland_old_idx = -1
+    for idx, pl in enumerate(playlist):
+        pl_name = pl.get("name", "")
+        pl_eps = pl.get("episodes", {})
+        if pl_name == PLAYLIST_NAME:
+            chnland_old_idx = idx
+        else:
+            other_pl_list.append(pl)
+            ep_num = len(pl_eps)
+            if ep_num > max_other_ep:
+                max_other_ep = ep_num
 
     if has_site_url:
         old_eps = {}
@@ -702,10 +719,17 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 
         # 播放源有变更，更新 playlist
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
+        # 移除原有chnland条目
         if old_idx != -1:
-            playlist[old_idx] = new_pl
-        else:
+            del playlist[old_idx]
+        
+        # 判断是否比其他所有渠道集数更多，决定放第一位还是原位
+        if new_ep_count > max_other_ep:
             playlist.insert(0, new_pl)
+            log(f"      [排序] chnland集数({new_ep_count})大于其他渠道最大({max_other_ep})，置顶playlist")
+        else:
+            # 放回原来删除的位置
+            playlist.insert(old_idx, new_pl)
 
         # 用抓取到的 info 直接更新
         # ==================== 优化：优质info（全）不被普通info覆盖 ====================
@@ -759,9 +783,14 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
         existing.update(new_ordered_dict)
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
-        playlist.insert(0, new_pl)
+        # 新增渠道时对比集数，决定插入位置
+        if new_ep_count > max_other_ep:
+            playlist.insert(0, new_pl)
+            log(f"      [排序] 新增chnland集数({new_ep_count})大于其他渠道最大({max_other_ep})，置顶playlist")
+        else:
+            playlist.append(new_pl)
 
-        log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并将播放源插入至第一位")
+        log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}")
 
         # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新、或新抓取集数更多时都更新
         if new_scraped_info:

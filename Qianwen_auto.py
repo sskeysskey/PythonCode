@@ -208,21 +208,22 @@ def main():
         location, shape = find_image_on_screen(template_copy, screen=current_screen)
         
         if location:
-            print("初步定位到 Copy 按钮，等待 1 秒以确保 UI 稳定...")
-            sleep(1) # 等待 1 秒
+            # print("初步定位到 Copy 按钮，等待 1 秒以确保 UI 稳定...")
+            # sleep(1) # 等待 1 秒
             
-            # 再次寻找，获取最新的坐标 (这里不传 current_screen，因为需要获取 1 秒后的最新屏幕状态)
-            new_location, new_shape = find_image_on_screen(template_copy)
+            # # 再次寻找，获取最新的坐标 (这里不传 current_screen，因为需要获取 1 秒后的最新屏幕状态)
+            # new_location, new_shape = find_image_on_screen(template_copy)
             
-            # 如果第二次没找到（可能页面刷新了），则跳过本次循环继续找
-            if not new_location:
-                print("等待后未找到按钮，继续寻找...")
-                continue
+            # # 如果第二次没找到（可能页面刷新了），则跳过本次循环继续找
+            # if not new_location:
+            #     print("等待后未找到按钮，继续寻找...")
+            #     continue
                 
-            print(f"确认定位到 Copy 按钮，准备点击 (原位置: {location}, 新位置: {new_location})...")
+            # print(f"确认定位到 Copy 按钮，准备点击 (原位置: {location}, 新位置: {new_location})...")
             
             # 执行点击（使用最新的坐标和形状）
-            lx, ly = perform_click(new_location, new_shape)
+            # lx, ly = perform_click(new_location, new_shape)
+            lx, ly = perform_click(location, shape)
             print(f"第 {current_attempt} 次尝试 - 点击按钮: {lx}, {ly}")
             
             # 校验内容

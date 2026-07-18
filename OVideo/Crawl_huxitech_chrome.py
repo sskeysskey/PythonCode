@@ -9,7 +9,6 @@ import re
 import sys
 import json
 import time
-import requests
 import platform
 import subprocess
 import atexit

@@ -102,7 +102,7 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/149.0.0.0 Safari/537.36"
+        "Chrome/150.0.0.0 Safari/537.36"
     ),
     "Referer": DOMAIN,
 }
@@ -145,6 +145,9 @@ def fetch(url, is_binary=False):
         cookies=_chrome_cookies,
         timeout=REQUEST_TIMEOUT,
     )
+    if resp.status_code == 403:
+        # 打印前 500 字符，判断是不是 Cloudflare 挑战页
+        print(f"    [403调试] {resp.text[:500]}")
     resp.raise_for_status()
     if is_binary:
         return resp.content
@@ -1147,15 +1150,28 @@ def process_list_page(data, list_url, group, page_name):
                         fail += 1
 
                 else:
-                    # ===== 无 huxitech 渠道，且未触发置顶：仅 Movie 走补充渠道逻辑 =====
+                    # ===== 无 huxitech 渠道，且未触发置顶：Movie / Drama(单渠道+集数<20) 允许补充渠道 =====
                     can_add = False
+                    playlist_len = len(existing.get("playlist", []))
+                    episode_total = len(new_eps)
+
+                    # 电影原有规则不变
                     if matched_group == "Movie":
-                        if len(existing.get("playlist", [])) == 1:
+                        if playlist_len == 1:
                             can_add = True
                             buf.append("    [Movie] 现有单一渠道，允许把 huxitech 作为新渠道插入")
                         else:
-                            buf.append(f"    [Movie] 现有渠道数 "
-                                       f"{len(existing.get('playlist', []))} != 1，不插入")
+                            buf.append(f"    [Movie] 现有渠道数 {playlist_len} != 1，不插入")
+
+                    # 新增Drama补充规则：仅1个渠道 + 总集数小于20
+                    elif matched_group == "Drama":
+                        if playlist_len == 1 and episode_total < 20:
+                            can_add = True
+                            buf.append(f"    [Drama] 现有单一渠道，总集数{episode_total}<20，允许追加huxitech渠道至末尾")
+                        elif playlist_len != 1:
+                            buf.append(f"    [Drama] 现有渠道数 {playlist_len} != 1，不插入")
+                        else:
+                            buf.append(f"    [Drama] 总集数{episode_total}≥20，不自动追加渠道")
 
                     if can_add:
                         new_url_key = append_huxitech_channel(existing, new_eps, url)
@@ -1163,14 +1179,13 @@ def process_list_page(data, list_url, group, page_name):
                         save_json(data)
                         flush()
                         print(f"    ✅ 更新({matched_group})：已把 {SITE_KEY} 作为新渠道写入 "
-                              f"{new_url_key}，并追加到 playlist 末尾")
+                            f"{new_url_key}，并追加到 playlist 末尾")
                         ok += 1
                     else:
                         flush()
                         print(f"    - 跳过({matched_group})：项目已存在但无 {SITE_KEY} 渠道，"
-                              f"且不满足补充渠道条件，保持原样")
+                            f"且不满足补充渠道条件，保持原样")
                         ok += 1
-
             else:
                 # 新增记录（用生效分类）
                 flush()

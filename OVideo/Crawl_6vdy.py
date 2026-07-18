@@ -799,9 +799,18 @@ def update_info_field_if_needed(existing, new_playlist):
 
     # 找到 6vdy 渠道及其集数
     vdy_pl = None
+    old_vdy_cnt = 0  # 新增：存储旧6vdy集数
     for pl in new_playlist:
         if pl.get("name") == PLAYLIST_NAME:
             vdy_pl = pl
+            break
+
+    # 从现有记录playlist读取旧6vdy集数
+    existing_playlist = existing.get("playlist", [])
+    for old_pl in existing_playlist:
+        if old_pl.get("name") == PLAYLIST_NAME:
+            old_eps = old_pl.get("episodes", {})
+            old_vdy_cnt = get_real_episode_count(old_eps)
             break
 
     if vdy_pl is None:
@@ -824,11 +833,11 @@ def update_info_field_if_needed(existing, new_playlist):
         if Y > X:
             new_info = f"更新至第{Y}集"
             existing["info"] = new_info
-            print(f"      ✅[info字段更新] playlist 仅含 6vdy，共 {Y} 集，"
+            print(f"      ✅[info字段更新] playlist 仅含 6vdy，旧集数{old_vdy_cnt}，新集数 {Y}，"
                   f"info 由「{old_info}」更新为「{new_info}」")
             return True
         else:
-            print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，保持原样")
+            print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，旧6vdy渠道原有集数{old_vdy_cnt}，保持原样")
             return False
 
     # ---- 场景二：多渠道，比较 6vdy 与其他渠道的最大集数 ----
@@ -846,11 +855,12 @@ def update_info_field_if_needed(existing, new_playlist):
     if Y > max_other:
         new_info = f"更新至第{Y}集"
         existing["info"] = new_info
-        print(f"      ✅[info字段更新] 多渠道场景下 6vdy 新集数 {Y} > 其他渠道最大集数 "
+        print(f"      ✅[info字段更新] 多渠道场景下 6vdy 旧集数{old_vdy_cnt}，新集数 {Y} > 其他渠道最大集数 "
               f"{max_other}（渠道「{max_other_name}」），info 由「{old_info}」更新为「{new_info}」")
         return True
     else:
-        print(f"      [info字段跳过] 多渠道场景下 6vdy 新集数 {Y} 未大于其他渠道最大集数 "
+        # 这里就是你日志对应的打印，增加旧集数输出
+        print(f"      [info字段跳过] 多渠道场景下 6vdy 旧集数{old_vdy_cnt}，新集数 {Y} 未大于其他渠道最大集数 "
               f"{max_other}（渠道「{max_other_name}」），保持原 info「{old_info}」")
         return False
 
@@ -875,20 +885,24 @@ def insert_6vdy_playlist(playlist, new_pl):
 
 def should_touch_update_on_episode_change(playlist, new_6vdy_count):
     """
-    集数更新场景下，判断是否刷新 update 时间戳（需求3）：
-      - 现有 playlist 中【没有】chnland 渠道                    -> True
-      - 存在 chnland 渠道，且【6vdy 新集数 > chnland 现有集数】 -> True
-      - 其余情况                                               -> False
+    集数更新场景下，判断是否刷新 update 时间戳（新版规则）：
+      - 计算所有**非6vdy渠道**的最大集数 max_other_count
+      - 仅当 6vdy新集数 > max_other_count 时返回 True
+      - 其余全部返回 False
     """
-    chnland_count = None
+    max_other_count = 0
+    # 遍历所有播放渠道，只统计除6vdy外的渠道集数
     for pl in playlist:
-        if pl.get("name") == "chnland":
-            eps = pl.get("episodes", {})
-            chnland_count = len(eps) if isinstance(eps, dict) else 0
-            break
-    if chnland_count is None:
-        return True          # 无 chnland 渠道
-    return new_6vdy_count > chnland_count
+        pl_name = pl.get("name", "")
+        if pl_name == PLAYLIST_NAME:
+            continue
+        eps_other = pl.get("episodes", {})
+        cnt = get_real_episode_count(eps_other) if isinstance(eps_other, dict) else 0
+        if cnt > max_other_count:
+            max_other_count = cnt
+    
+    # 仅6vdy集数大于其他渠道最大集数才刷新时间戳
+    return new_6vdy_count > max_other_count
 
 
 def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
@@ -905,9 +919,9 @@ def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
     elif info_updated:
         if should_touch_update_on_episode_change(playlist, len(new_6vdy_episodes)):
             touch = True
-            print("      ✅[时间戳] 集数更新且满足 chnland 规则 → 刷新 update")
+            print("      ✅[时间戳] 集数更新且6vdy集数大于其他所有渠道最大值 → 刷新 update")
         else:
-            print("      [时间戳] 集数更新但 chnland 集数 ≥ 6vdy → 保持 update 不变")
+            print("      [时间戳] 集数更新但6vdy集数未超过其他渠道最大值 → 保持 update 不变")
     if touch:
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("      ✅[字段更新] 已同步更新「update」时间戳")
@@ -1206,7 +1220,7 @@ def process_items(data, items, tab_name):
                     ok += 1
                 elif status == "meta_updated":
                     # 仅字段更新，无播放源改动，只提示元数据更新
-                    print(f"    ✅ 更新({matched_group})：仅补充/修正影片元数据，播放源无变化")
+                    print(f"    更新({matched_group})：仅补充/修正影片元数据，播放源无变化")
                     save_json(data)
                     ok += 1
                 elif status == "quality_updated":
