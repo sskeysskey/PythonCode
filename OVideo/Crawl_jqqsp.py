@@ -52,7 +52,10 @@ SITE_KEY      = "jqqsp"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 
-BLACKLIST_NAMES = []
+# 综艺每个渠道保留的“最新（倒数）”集数（后续可调整）
+SHOW_EPISODE_LIMIT = 5
+
+BLACKLIST_NAMES = ["美凤有约", "红色珍珠"]
 # ===================== 白名单（在这里添加你要放行的名称）
 WHITELIST_NAMES = []
 
@@ -60,7 +63,7 @@ WHITELIST_NAMES = []
 LIST_PAGES = [
     ("https://m.jqqsp.com/jdvodshow/dianying--time---------.html", "Movie", "电影"),
     ("https://m.jqqsp.com/jdvodshow/dianshij--time---------.html", "Drama", "电视剧"),
-    ("https://m.jqqsp.com/jdvodshow/zongyi--time---------.html",   "Show",  "综艺"),
+    # ("https://m.jqqsp.com/jdvodshow/zongyi--time---------.html",   "Show",  "综艺"),
     ("https://m.jqqsp.com/jdvodshow/dongm--time---------.html",    "Anime", "动漫"),
 ]
 
@@ -157,6 +160,32 @@ def fetch(url, is_binary=False):
     except Exception:
         # 兜底：多等一会儿让 JS 挑战完成
         _page.wait_for_timeout(2500)
+
+    # ★ 详情页：依次点击所有“云播线路”标签，触发每条线路 tab-pane 的懒加载渲染
+    try:
+        tabs = _page.query_selector_all("a[href^='#playlist']")
+        # 依据 href 去重（#playlist1 / #playlist2 ...）
+        seen, targets = set(), []
+        for a in tabs:
+            href = a.get_attribute("href") or ""
+            if href.startswith("#playlist") and href not in seen:
+                seen.add(href)
+                targets.append(a)
+
+        if len(targets) > 1:
+            for a in targets:
+                try:
+                    a.click(timeout=2000)
+                    _page.wait_for_timeout(350)
+                except Exception:
+                    pass
+            # 点完所有线路后，等一次网络空闲，确保 DOM 稳定
+            try:
+                _page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                _page.wait_for_timeout(500)
+    except Exception:
+        pass
 
     html = _page.content()
     _sync_cookies_to_session()
@@ -316,6 +345,69 @@ def is_valid_episode_name(name):
 def filter_episodes(eps):
     """过滤无效集名，只保留正式播放条目"""
     return {k: v for k, v in eps.items() if is_valid_episode_name(k)}
+
+
+def keep_latest_episodes(episodes, limit):
+    """综艺：只保留最新（倒数）limit 条 episode，保持原顺序"""
+    items = list(episodes.items())
+    if limit and len(items) > limit:
+        items = items[-limit:]
+    return dict(items)
+
+
+def get_latest_episode_name(channels):
+    """综艺：取集数最多渠道的“最后一期”名称，作为 info"""
+    best = None
+    best_len = -1
+    for pl in channels:
+        eps = pl.get("episodes", {})
+        if len(eps) > best_len:
+            best_len = len(eps)
+            best = eps
+    if best:
+        keys = list(best.keys())
+        if keys:
+            return keys[-1]
+    return ""
+
+def get_movie_episode_name(channels):
+    """电影：取集数最多渠道的第一个 episode 名称作为 info（如 HD）"""
+    best = None
+    best_len = -1
+    for pl in channels:
+        eps = pl.get("episodes", {})
+        if len(eps) > best_len:
+            best_len = len(eps)
+            best = eps
+    if best:
+        keys = list(best.keys())
+        if keys:
+            return keys[0]
+    return ""
+
+def max_episode_count_of_record(item):
+    """一条已有记录中所有渠道的最大集数"""
+    return max((len(pl.get("episodes", {})) for pl in item.get("playlist", [])), default=0)
+
+
+def is_likely_different_work(existing, matched_group, new_group, new_ep_count):
+    """
+    需求3：跨分类且仅按名称匹配时，判断是否极可能是“同名不同作品”。
+    规则：Movie(集数少) 与 Drama/Anime(集数多) 之间，
+          若新抓集数 > 3 且原数据集数 < 3（或反之），判定为不同作品。
+    """
+    if matched_group == new_group:
+        return False
+    old_ep_count = max_episode_count_of_record(existing)
+    movie_like = {"Movie"}
+    series_like = {"Drama", "Anime"}
+    if matched_group in movie_like and new_group in series_like:
+        if new_ep_count > 3 and old_ep_count < 3:
+            return True
+    if matched_group in series_like and new_group in movie_like:
+        if new_ep_count < 3 and old_ep_count > 3:
+            return True
+    return False
 
 
 def is_our_playlist(pl):
@@ -671,6 +763,12 @@ def save_json(data):
 
 
 def find_existing_global(data, name, sub_url, log=print):
+    """
+    返回 (group, item, match_type)
+      match_type: "url" —— 按 URL 命中（同一作品）
+                  "name" —— 按名称命中（可能同名不同作品）
+                  None  —— 未命中
+    """
     # 1. 优先跨分类按 URL 全局检索
     if sub_url:
         for group in ["Movie", "Drama", "Show", "Anime"]:
@@ -682,15 +780,15 @@ def find_existing_global(data, name, sub_url, log=print):
                         log(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
                             f"(URL: {sub_url}, 已有:「{item.get('name')}」, "
                             f"抓取:「{name}」, 所在分类:{group})")
-                    return group, item
+                    return group, item, "url"
 
     # 2. 再按名称全局检索
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             if item.get("name") == name:
-                return group, item
+                return group, item, "name"
 
-    return None, None
+    return None, None, None
 
 
 def _register_site_url(existing, url_keys, sub_url, log):
@@ -719,10 +817,11 @@ def _register_site_url(existing, url_keys, sub_url, log):
     log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}")
 
 
-def process_existing_record(existing, new_channels, sub_url, rec, log=print):
+def process_existing_record(existing, new_channels, sub_url, rec, effective_group, log=print):
     """处理已存在的记录：合并字段、更新本站(多渠道)播放源和 info
 
     new_channels: [{"name": 渠道名, "episodes": {...}}, ...]（均属于本站 jqqsp）
+    effective_group: 该记录所在（生效）分类，用于决定 info 计算方式
     """
     # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
@@ -775,13 +874,8 @@ def process_existing_record(existing, new_channels, sub_url, rec, log=print):
     new_ep_count = max((len(e) for e in new_our.values()), default=0)
     old_ep_count = max((len(e) for e in old_our.values()), default=0)
 
-    # 其他渠道（非本站）的最大集数
-    max_other_ep = max(
-        (len(pl.get("episodes", {})) for i, pl in enumerate(playlist) if i not in old_our_idx),
-        default=0
-    )
-
-    new_scraped_info = rec.get("info", "")
+    # 抓取前“已有数据”里所有渠道（含其他站）的最大集数
+    old_max_all = max((len(pl.get("episodes", {})) for pl in playlist), default=0)
 
     # url 键
     url_keys = sorted(
@@ -794,28 +888,55 @@ def process_existing_record(existing, new_channels, sub_url, rec, log=print):
     )
     newly_added = not has_site_url
 
+    # -------- 统一的 info 计算（按分类决定策略） --------
+    def apply_info_update():
+        """按分类计算 info，成功更新返回 True"""
+        old_info = existing.get("info", "")
+
+        if effective_group in ("Drama", "Anime"):
+            # 用抓到 episode 的最大集数；仅当比“已有数据最大集数”更大才更新
+            if new_ep_count > old_max_all:
+                new_info = f"更新至第{new_ep_count}集"
+                if new_info != old_info:
+                    existing["info"] = new_info
+                    log(f"      [info更新] 「{old_info}」 -> 「{new_info}」")
+                    return True
+            else:
+                log(f"      [info跳过] 抓取最大集数 {new_ep_count} 未超过已有最大 "
+                    f"{old_max_all}，保留原 info：「{old_info}」")
+            return False
+
+        if effective_group == "Show":
+            # 综艺：info 用最新一期 episode 的名称
+            latest = get_latest_episode_name(new_channels)
+            if latest and latest != old_info:
+                existing["info"] = latest
+                log(f"      [info更新] 「{old_info}」 -> 「{latest}」")
+                return True
+            return False
+
+        # Movie：info 用抓取到的 episode 名称（如 HD），不使用不稳定的 info 文本
+        new_info = get_movie_episode_name(new_channels)
+        if new_info and new_info != old_info:
+            existing["info"] = new_info
+            log(f"      [info更新] 「{old_info}」 -> 「{new_info}」")
+            return True
+        return False
+
     # ---------- 情况A：本站渠道内容完全一致 ----------
     if old_our and new_our == old_our:
-        # 补登 URL（若尚未登记）
         if newly_added:
             _register_site_url(existing, url_keys, sub_url, log)
 
-        if new_scraped_info and new_scraped_info != existing.get("info", ""):
-            claimed = extract_episode_count_from_info(new_scraped_info)
-            if claimed is not None and claimed > new_ep_count:
-                log(f"      [info跳过] info 声称 {claimed} 集，但实际仅抓到 "
-                    f"{new_ep_count} 集，判定为虚假更新，保留原 info：「{existing.get('info', '')}」")
-                return "channel_added" if newly_added else ("updated" if fields_updated else "no_change")
+        info_changed = apply_info_update()
 
-            old_info = existing.get("info", "")
-            existing["info"] = new_scraped_info
+        if info_changed or newly_added:
             existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-            return "channel_added" if newly_added else "updated"
 
         if newly_added:
-            existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             return "channel_added"
+        if info_changed:
+            return "updated"
         return "updated" if fields_updated else "no_change"
 
     # ---------- 情况B：集数减少 ----------
@@ -823,14 +944,12 @@ def process_existing_record(existing, new_channels, sub_url, rec, log=print):
         return "updated" if fields_updated else "decreased"
 
     # ---------- 情况C：更新本站渠道 / 新增本站渠道 ----------
-    # 取出非本站渠道（保持它们原有的相对顺序）
     old_our_idx_set = set(old_our_idx)
     other_pls = [pl for i, pl in enumerate(playlist) if i not in old_our_idx_set]
 
-    # 新抓取的本站渠道
     new_pls = [{"name": pl["name"], "episodes": pl["episodes"]} for pl in new_channels]
 
-    # 组合所有渠道，按“集数降序；集数相同时本站渠道优先；再按各自原顺序稳定排序”
+    # 组合所有渠道，按“集数降序；集数相同本站优先；再按各自原顺序稳定排序”
     combined = []
     for idx, pl in enumerate(new_pls):
         combined.append((len(pl.get("episodes", {})), 0, idx, pl))   # 0 = 本站(优先)
@@ -851,38 +970,8 @@ def process_existing_record(existing, new_channels, sub_url, rec, log=print):
     if newly_added:
         _register_site_url(existing, url_keys, sub_url, log)
 
-    # info 更新
-    if new_scraped_info:
-        old_info = existing.get("info", "")
-        if newly_added:
-            # 新增渠道：按日期 / 集数判断
-            old_date2 = extract_info_date(old_info)
-            new_date2 = extract_info_date(new_scraped_info)
-            old_ep_count_info = extract_episode_count_from_info(old_info)
-            should_update = False
-            if not old_info:
-                should_update = True
-            elif new_date2 and (not old_date2 or new_date2 > old_date2):
-                should_update = True
-            elif old_ep_count_info is not None and new_ep_count > old_ep_count_info:
-                should_update = True
-            if should_update and new_scraped_info != old_info:
-                existing["info"] = new_scraped_info
-                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-        else:
-            # 更新已有渠道：按集数判断
-            if new_scraped_info != old_info:
-                old_ep = extract_episode_number(old_info)
-                new_ep = extract_episode_number(new_scraped_info)
-                if not old_info:
-                    existing["info"] = new_scraped_info
-                    log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-                elif old_ep is not None and new_ep is not None:
-                    if new_ep > old_ep:
-                        existing["info"] = new_scraped_info
-                        log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-                    else:
-                        log(f"      [info跳过] 集数相同，保留优质原有info：「{old_info}」")
+    # info 更新（分类感知）
+    apply_info_update()
 
     existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return "channel_added" if newly_added else "updated"
@@ -919,6 +1008,16 @@ def process_list_page(data, list_url, group, page_name):
 
             # 本站所有渠道
             new_channels = rec.get("playlist", [])
+
+            # 需求2：综艺——每个渠道只保留最新(倒数) SHOW_EPISODE_LIMIT 条
+            if group == "Show":
+                for pl in new_channels:
+                    pl["episodes"] = keep_latest_episodes(
+                        pl.get("episodes", {}), SHOW_EPISODE_LIMIT)
+
+            # ★ 本站多渠道：集数多的云播线路排在前面
+            new_channels.sort(key=lambda pl: -len(pl.get("episodes", {})))
+
             max_new_eps = max((len(pl.get("episodes", {})) for pl in new_channels), default=0)
 
             if not new_channels:
@@ -928,7 +1027,19 @@ def process_list_page(data, list_url, group, page_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            matched_group, existing = find_existing_global(data, real_name, url, buf.append)
+            matched_group, existing, match_type = find_existing_global(
+                data, real_name, url, buf.append)
+
+            # 需求3：仅按名称匹配时，判断是否“同名不同作品”
+            if (existing and match_type == "name"
+                    and is_likely_different_work(existing, matched_group, group, max_new_eps)):
+                buf.append(
+                    f"    * 名称相同但判定为“不同作品”"
+                    f"（已有分类:{matched_group} 集数:{max_episode_count_of_record(existing)}，"
+                    f"当前分类:{group} 集数:{max_new_eps}），"
+                    f"将在「{group}」中作为新记录处理")
+                existing = None
+                matched_group = None
 
             effective_group = matched_group if existing else group
             if existing and matched_group != group:
@@ -956,7 +1067,8 @@ def process_list_page(data, list_url, group, page_name):
                 continue
 
             if existing:
-                status = process_existing_record(existing, new_channels, url, rec, buf.append)
+                status = process_existing_record(
+                    existing, new_channels, url, rec, effective_group, buf.append)
                 if status == "updated":
                     buf.append(f"    ✅ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
                     save_json(data)
@@ -979,11 +1091,22 @@ def process_list_page(data, list_url, group, page_name):
                     fail += 1
             else:
                 flush()
+                # 根据分类生成 info
+                if group in ("Drama", "Anime"):
+                    rec["info"] = f"更新至第{max_new_eps}集" if max_new_eps else rec.get("info", "")
+                elif group == "Show":
+                    latest = get_latest_episode_name(new_channels)
+                    if latest:
+                        rec["info"] = latest
+                elif group == "Movie":
+                    ename = get_movie_episode_name(new_channels)
+                    if ename:
+                        rec["info"] = ename
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(group, []).append(rec)
                 ch_names = "、".join(pl["name"] for pl in new_channels)
                 print(f"    ✅ 新增 -> {group} (渠道: {ch_names}，最大 {max_new_eps} 集) "
-                      f"[真实名称: {real_name}] [URL: {rec['url']}]")
+                      f"[真实名称: {real_name}] [URL: {rec['url']}] [info: {rec.get('info','')}]")
                 save_json(data)
                 ok += 1
 

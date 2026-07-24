@@ -1338,7 +1338,7 @@ def process_item(item: dict, cat_name: str,
             new_upk = detail.get("update_pk", "")
             if old_upk != new_upk:
                 if not old_upk:
-                    print(f"     [新增 update_pk 并更新] -> {new_upk}")
+                    print(f"     ✅[新增 update_pk 并更新] -> {new_upk}")
                 else:
                     print(f"     ✅[update_pk 变化] {old_upk} → {new_upk}")
 

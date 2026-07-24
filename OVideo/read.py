@@ -19,10 +19,12 @@ RATING_THRESHOLD = 3.0
 RATING_FIELDS = ('豆瓣', 'IMDB')
 
 # ===== 渠道优先级配置 =====
-# 列表里出现的渠道优先级最高（越靠前越高）；
-# 未列出的渠道一律排在它们后面，并保持原 JSON 中的顺序。
-# 你新增的 chnland 排第一，6vdy 第二，其它按原序。
-CHANNEL_PRIORITY = ['huxitech', 'chnland', '6vdy']
+# 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
+# 组内不排序,按它们在 JSON playlist 里的原始顺序取。
+CLOUD_SERIES_PREFIX = '云播线路'
+
+# 云播线路系列之后的优先级(越靠前越高);未列出的渠道再排在这些后面,保持原序。
+CHANNEL_PRIORITY = ['6vdy', 'huxitech', 'chnland']
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
 # Movie：至少需要这么多个完整渠道（可改）
@@ -31,7 +33,7 @@ MOVIE_REQUIRED_CHANNELS = 2
 # 剧集类分类
 SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
 EPISODE_THRESHOLD = 20          # 集数阈值
-SERIES_REQUIRED_SHORT = 2       # 集数 <= 阈值时，需要的完整渠道数（可改）
+SERIES_REQUIRED_SHORT = 1       # 集数 <= 阈值时，需要的完整渠道数（可改）
 SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改）
 
 # ===== Show 全量抓取白名单 =====
@@ -110,22 +112,30 @@ def get_required_channel_count(category, episode_count):
     return DEFAULT_REQUIRED_CHANNELS
 
 
-def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY):
+def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
+                               cloud_prefix=CLOUD_SERIES_PREFIX):
     """
-    按优先级排序渠道：
-    - priority 列表里的渠道排前面（越靠前优先级越高）
-    - 未列出的渠道排后面，并保持原始顺序
+    按优先级排序渠道:
+    - 「云播线路」系列整体排最前;组内按原始 JSON 顺序(谁在前先取谁)
+    - 其后是 priority 列表里的渠道(越靠前优先级越高)
+    - 最后是未列出的渠道,保持原始顺序
     """
     indexed = list(enumerate(playlists))
 
     def sort_key(pair):
         original_idx, pl = pair
-        name = pl.get('name')
+        name = pl.get('name') or ''
+
+        # 第一优先级组:云播线路系列,组内按原始顺序
+        if name.startswith(cloud_prefix):
+            return (0, original_idx, 0)
+
+        # 第二档:显式列在 priority 里的渠道
         if name in priority:
-            # (0, 优先级序号, 原序号)
-            return (0, priority.index(name), original_idx)
-        # (1, 0, 原序号) —— 未列出的排后面，保持原顺序
-        return (1, 0, original_idx)
+            return (1, priority.index(name), original_idx)
+
+        # 未列出的渠道排最后,保持原顺序
+        return (2, 0, original_idx)
 
     indexed.sort(key=sort_key)
     return [pl for _, pl in indexed]

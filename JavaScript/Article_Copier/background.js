@@ -3257,9 +3257,10 @@ function extractAndCopy() {
       'p[data-component="Text"], ' +
       'p[data-apitype="text"], ' +
       'p[data-testid="paragraph"], ' +
-      'p.article-content, ' + // <-- 【新增】支持新版页面的正文段落
+      'p.article-content, ' +
       'h2[data-testid="article-header"], ' +
-      'ul[data-testid="list"] li'
+      'ul[data-testid="list"] li, ' +
+      'ol[data-apitype="list"] li'    // 新增：抓取你页面里的有序列表li
     ));
 
     textContent = paras
