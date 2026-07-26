@@ -879,8 +879,8 @@ def get_max_other_playlist_ep_count(playlist):
 def insert_6vdy_playlist(playlist, new_pl):
     """
     将 6vdy 播放源插入到 playlist：
-    规则：6vdy集数 >= 其他渠道最大集数 → 强制放第一位
-    否则：若已存在 chnland 渠道，则紧跟在它后面；否则插入到第一位。
+    规则：6vdy集数 > 其他渠道最大集数 → 强制放第一位
+    等于、小于的时候不走置顶逻辑，按原有兜底逻辑处理
     """
     # 计算6vdy自身集数
     vdy_eps = new_pl.get("episodes", {})
@@ -888,13 +888,13 @@ def insert_6vdy_playlist(playlist, new_pl):
     # 计算其他渠道最大集数
     max_other = get_max_other_playlist_ep_count(playlist)
 
-    # 集数大于等于其他渠道最大值，强制置顶
-    if vdy_cnt >= max_other:
+    # =========关键修改：>= 改为 > =========
+    if vdy_cnt > max_other:
         playlist.insert(0, new_pl)
-        print(f"      [排序规则] 6vdy集数{vdy_cnt}≥其他渠道最大集数{max_other}，强制置顶第一位")
+        print(f"      [排序规则] 6vdy集数{vdy_cnt} > 其他渠道最大集数{max_other}，强制置顶第一位")
         return
 
-    # 原有兜底逻辑（6vdy集数更少时才走chnland后置）
+    # 原有兜底逻辑（6vdy集数 ≤ 其他渠道最大值时才走这里）
     chnland_idx = -1
     for i, item in enumerate(playlist):
         if item.get("name") == "chnland":
@@ -902,10 +902,10 @@ def insert_6vdy_playlist(playlist, new_pl):
             break
     if chnland_idx != -1:
         playlist.insert(chnland_idx + 1, new_pl)
-        print(f"      [排序规则] 6vdy集数少于其他渠道最大值，检测到 chnland，6vdy 已放在它后面")
+        print(f"      [排序规则] 6vdy集数{vdy_cnt} ≤ 其他渠道最大值{max_other}，检测到 chnland，6vdy 放在它后面")
     else:
         playlist.insert(0, new_pl)
-        print(f"      [排序规则] 6vdy集数少于其他渠道最大值，未检测到 chnland，6vdy 已放在第一位")
+        print(f"      [排序规则] 6vdy集数{vdy_cnt} ≤ 其他渠道最大值{max_other}，未检测到 chnland，6vdy 放在第一位")
 
 def should_touch_update_on_episode_change(playlist, new_6vdy_count):
     """
@@ -1026,10 +1026,14 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         if old_6vdy_idx != -1:
-            # 已存在 6vdy 播放源 → 原地覆盖，保持原有位置
+            # 原地覆盖数据
             playlist[old_6vdy_idx] = new_pl
+            # =========新增：存量更新集数后，重新判断是否需要调整位置=========
+            # 先移除旧位置的6vdy
+            del playlist[old_6vdy_idx]
+            # 重新执行排序插入逻辑
+            insert_6vdy_playlist(playlist, new_pl)
         else:
-            # 有 6vdy 的 URL 但 playlist 里没有 6vdy 源 → 按 chnland 规则插入
             insert_6vdy_playlist(playlist, new_pl)
 
         info_updated = update_info_field_if_needed(existing, playlist)

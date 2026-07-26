@@ -19,12 +19,19 @@ RATING_THRESHOLD = 3.0
 RATING_FIELDS = ('豆瓣', 'IMDB')
 
 # ===== 渠道优先级配置 =====
+# ===== 比「云播线路」系列更高优先级的渠道 =====
+# 组内越靠前优先级越高。将来若有：
+#   - 比 gdefud 更高的渠道 → 加在 gdefud 前面
+#   - 介于 gdefud 与云播线路之间的渠道 → 加在 gdefud 后面
+# 整个这一档都排在「云播线路」系列之上。
+TOP_PRIORITY_CHANNELS = ['gdefud', 'mcm', '6vdy', 'meiju8']
+
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。
 CLOUD_SERIES_PREFIX = '云播线路'
 
 # 云播线路系列之后的优先级(越靠前越高);未列出的渠道再排在这些后面,保持原序。
-CHANNEL_PRIORITY = ['6vdy', 'huxitech', 'chnland']
+CHANNEL_PRIORITY = ['huxitech', 'chnland']
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
 # Movie：至少需要这么多个完整渠道（可改）
@@ -113,12 +120,14 @@ def get_required_channel_count(category, episode_count):
 
 
 def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
-                               cloud_prefix=CLOUD_SERIES_PREFIX):
+                               cloud_prefix=CLOUD_SERIES_PREFIX,
+                               top_priority=TOP_PRIORITY_CHANNELS):
     """
     按优先级排序渠道:
-    - 「云播线路」系列整体排最前;组内按原始 JSON 顺序(谁在前先取谁)
-    - 其后是 priority 列表里的渠道(越靠前优先级越高)
-    - 最后是未列出的渠道,保持原始顺序
+    - 第 0 档: TOP_PRIORITY_CHANNELS(比云播线路更高), 组内按列表顺序
+    - 第 1 档: 「云播线路」系列, 组内按原始 JSON 顺序
+    - 第 2 档: priority 列表里的渠道(越靠前优先级越高)
+    - 第 3 档: 未列出的渠道, 保持原始顺序
     """
     indexed = list(enumerate(playlists))
 
@@ -126,16 +135,20 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
         original_idx, pl = pair
         name = pl.get('name') or ''
 
-        # 第一优先级组:云播线路系列,组内按原始顺序
+        # 第 0 档: 比云播线路更高优先级的渠道, 组内按 top_priority 列表顺序
+        if name in top_priority:
+            return (0, top_priority.index(name), original_idx)
+
+        # 第 1 档: 云播线路系列, 组内按原始顺序
         if name.startswith(cloud_prefix):
-            return (0, original_idx, 0)
+            return (1, original_idx, 0)
 
-        # 第二档:显式列在 priority 里的渠道
+        # 第 2 档: 显式列在 priority 里的渠道
         if name in priority:
-            return (1, priority.index(name), original_idx)
+            return (2, priority.index(name), original_idx)
 
-        # 未列出的渠道排最后,保持原顺序
-        return (2, 0, original_idx)
+        # 第 3 档: 未列出的渠道排最后, 保持原顺序
+        return (3, 0, original_idx)
 
     indexed.sort(key=sort_key)
     return [pl for _, pl in indexed]
@@ -302,7 +315,8 @@ def main():
         print(f"错误: {blacklist_path} 不是有效的JSON格式")
         return
 
-    print(f"[渠道优先级] {' > '.join(CHANNEL_PRIORITY)} > 其它(原顺序)")
+    print(f"[渠道优先级] {' > '.join(TOP_PRIORITY_CHANNELS)} > 云播线路系列 > "
+          f"{' > '.join(CHANNEL_PRIORITY)} > 其它(原顺序)")
     print(f"[Movie 要求] 至少 {MOVIE_REQUIRED_CHANNELS} 个完整渠道")
     print(f"[剧集要求] 集数<= {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_SHORT} 个完整渠道 | "
           f"集数> {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_LONG} 个完整渠道")

@@ -531,8 +531,6 @@ def download_cover(img_url: str, video_id: str) -> str:
     return ""
 
 
-
-
 def extract_video_id(url: str, name: str) -> str:
     """从详情页 URL 中提取数字 ID；提取不到则用清洗后的 name。"""
     m = re.search(r"/(?:mv|vod|detail)/(\d+)", url)
@@ -1119,7 +1117,7 @@ def process_item(item: dict, cat_name: str,
     is_update = (old_data is not None) or is_special_6vdy_update
     if is_update:
         if is_special_6vdy_update:
-            tag = "[受保护源特殊更新]"   # 【改动】更名，含义更通用
+            tag = "[受保护源特殊更新]"
         elif matched_by_path_only:
             tag = "[更名更新]"
         elif old_data.get("info") != item["info"]:
@@ -1178,76 +1176,79 @@ def process_item(item: dict, cat_name: str,
                 if target_list_idx is not None and target_list_idx < len(existing_list):
                     old_entry = existing_list[target_list_idx]
 
-        # 合并受保护源（新源会被追加到 6vdy/chnland 等受保护源之后）
+        # ======================【修改后的 playlist 合并逻辑 开始】======================
+        # 合并播放源：完整保留旧playlist原有顺序，不再置顶重排受保护源
         if old_entry:
             old_playlist = old_entry.get("playlist", [])
+            # 本次抓取出来的所有非受保护源
+            new_candidate_sources = [
+                p for p in detail.get("playlist", [])
+                if p.get("name") not in PROTECTED_SOURCES
+            ]
+
+            # 收集旧playlist已存在的源名称，用于去重
+            old_source_names = {item["name"] for item in old_playlist}
+            # 只保留旧playlist不存在的新渠道
+            new_playlist = [
+                item for item in new_candidate_sources
+                if item["name"] not in old_source_names
+            ]
+
+            # 旧playlist顺序完全不动，末尾追加新增渠道
+            final_playlist = old_playlist.copy()
+            final_playlist.extend(new_playlist)
+            detail["playlist"] = final_playlist
+
             protected_in_old = [
                 p for p in old_playlist
                 if p.get("name") in PROTECTED_SOURCES
             ]
-            if protected_in_old:
-                new_playlist = [
-                    p for p in detail.get("playlist", [])
-                    if p.get("name") not in PROTECTED_SOURCES
-                ]
+            kept_names = [p.get("name") for p in protected_in_old]
+            print(f"     [保留受保护源] {kept_names} (维持原有顺序，新增渠道追加至末尾)")
 
-                final_playlist = []
+            # ==========================================
+            # 【新增】：info 更新前，比较"自己渠道"与"受保护渠道"的集数
+            #   - own_max_ep：本次抓到的自己渠道(非受保护源)最大集数
+            #   - protected_max_ep：受保护源(6vdy/chnland等)最大集数
+            #   - 若 own_max_ep <= protected_max_ep，只更新内容(playlist)，不更新 info
+            # ==========================================
+            protected_max_ep = max(
+                (len(p.get("episodes", {})) for p in protected_in_old),
+                default=0
+            )
+            own_max_ep = max(
+                (len(p.get("episodes", {})) for p in new_candidate_sources),
+                default=0
+            )
+            old_info_val = old_entry.get("info", "")
+            if own_max_ep <= protected_max_ep:
+                if detail.get("info") != old_info_val:
+                    print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
+                          f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
+                detail["info"] = old_info_val
+            else:
+                print(f"     ✅[Info更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
 
-                # 1. chnland 置顶（若存在）
-                chnland_source = next((p for p in protected_in_old if p.get("name") == "chnland"), None)
-                if chnland_source:
-                    final_playlist.append(chnland_source)
+        # =====================【修复位置开始】=====================
+        # 受保护源合并、info回滚逻辑全部执行完成后，再打印真实变更日志
+        if is_update and old_entry:
+            old_info = old_entry.get("info", "")
+            final_info = detail.get("info", "")
+            old_pl = old_entry.get("playlist", [])
+            new_pl = detail.get("playlist", [])
+            # 使用落地后的final_info对比，不再使用原始item["info"]
+            info_changed = (old_info != final_info)
+            pl_changed = (old_pl != new_pl)
+            if info_changed and pl_changed:
+                print(f"     ✅[Info+Playlist更新] {item['name']} (Info: {old_info} -> {final_info})")
+            elif info_changed:
+                print(f"     ✅[仅Info更新] {item['name']} (Info: {old_info} -> {final_info})")
+            elif pl_changed:
+                print(f"     ✅[仅Playlist更新] {item['name']}")
+        # =====================【修复位置结束】=====================
 
-                # 2. 6vdy 第二（若存在）
-                vdy_source = next((p for p in protected_in_old if p.get("name") == "6vdy"), None)
-                if vdy_source:
-                    final_playlist.append(vdy_source)
-
-                # 3. 其它受保护源（既不是 chnland 也不是 6vdy）按原顺序追加
-                for p in protected_in_old:
-                    if p.get("name") not in ("chnland", "6vdy"):
-                        final_playlist.append(p)
-
-                # 4. 新抓取的非受保护源追加在最后
-                final_playlist.extend(new_playlist)
-
-                detail["playlist"] = final_playlist
-                kept_names = [p.get("name") for p in final_playlist if p.get("name") in PROTECTED_SOURCES]
-                print(f"     [保留受保护源] {kept_names} (已置顶 chnland，其次 6vdy，新源追加在后)")
-                
-                # ==========================================
-                # 【新增】：info 更新前，比较"自己渠道"与"受保护渠道"的集数
-                #   - own_max_ep：本次抓到的自己渠道(非受保护源)最大集数
-                #   - protected_max_ep：受保护源(6vdy/chnland等)最大集数
-                #   - 若 own_max_ep <= protected_max_ep，只更新内容(playlist)，不更新 info
-                # ==========================================
-                protected_max_ep = max(
-                    (len(p.get("episodes", {})) for p in protected_in_old),
-                    default=0
-                )
-                own_max_ep = max(
-                    (len(p.get("episodes", {})) for p in new_playlist),
-                    default=0
-                )
-                old_info_val = old_entry.get("info", "")
-                if own_max_ep <= protected_max_ep:
-                    if detail.get("info") != old_info_val:
-                        print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
-                              f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
-                    detail["info"] = old_info_val
-                else:
-                    print(f"     ✅[Info更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
-
-            if is_update and old_entry:
-                old_info = old_entry.get("info", "")
-                new_info = item["info"]
-                old_pl = old_entry.get("playlist", [])
-                new_pl = detail.get("playlist", [])
-                if old_info != new_info and old_pl != new_pl:
-                    print(f"     ✅[Info+Playlist更新] {item['name']} (Info: {old_info} -> {new_info})")
-
-            if matched_by_path_only:
-                print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
+        if matched_by_path_only:
+            print(f"     [更名同步] {key[0]} -> {item['name']} (已强行保留旧名 {key[0]})")
 
         # ==========================================
         # 细粒度字段合并与更新
@@ -1392,8 +1393,6 @@ def process_item(item: dict, cat_name: str,
         print(f"     [解析失败] {e}")
         traceback.print_exc()
         return "skipped"
-
-
 
 
 # =============================================================
