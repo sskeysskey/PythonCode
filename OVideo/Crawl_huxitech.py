@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-huxitech.com 分类页（电影/电视剧/综艺/动漫 + 混合页37）爬取脚本
+cifppc.com 分类页（电影/电视剧/综艺/动漫 + 混合页37）爬取脚本
 基于 Crawl_chnland.py 改写
 """
 
@@ -44,7 +44,7 @@ def stop_caffeinate():
 atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
-DOMAIN        = "https://www.huxitech.com"
+DOMAIN        = "https://www.cifppc.com"
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "huxitech"
@@ -68,28 +68,32 @@ SITE_PRIORITY = {
 # 分类页 -> 分组
 #   group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
 LIST_PAGES = [
-    ("https://www.huxitech.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
-    ("https://www.huxitech.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
-    ("https://www.huxitech.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
-    ("https://www.huxitech.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
-    ("https://www.huxitech.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
-    ("https://www.huxitech.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
+    ("https://www.cifppc.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
+    ("https://www.cifppc.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
+    ("https://www.cifppc.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
+    ("https://www.cifppc.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
+    ("https://www.cifppc.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
+    ("https://www.cifppc.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
 ]
 
-FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
+FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "国产剧", "国产", "泰国", "日本"]
 # 针对特定列表页的地区过滤覆盖（key = 列表页 URL，value = 该页要屏蔽的地区名单）
 FILTER_REGIONS_OVERRIDE = {
     # 电影(35)：放开「日本」，其余保持屏蔽
-    "https://www.huxitech.com/vodshow/35--time---------.html":
+    "https://www.cifppc.com/vodshow/35--time---------.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
 
     # 电影(1)：只屏蔽「泰国和中国」，其余地区全部放开
-    "https://www.huxitech.com/vodshow/1--time---------2026.html":
+    "https://www.cifppc.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
 
     # 电视剧(1)：
-    "https://www.huxitech.com/vodshow/2--time---------2026.html":
-        ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "台湾", "中国台湾", "日本"],
+    "https://www.cifppc.com/vodshow/2--time---------2026.html":
+        ["中国", "大陆", "内地", "中国大陆", "中国内地", "国产剧", "国产", "泰国", "台湾", "中国台湾", "日本"],
+
+    # 动漫(4)：
+    "https://www.cifppc.com/vodshow/4--time---------2026.html":
+        ["中国", "大陆", "内地", "国产", "中国大陆", "中国内地", "国产剧", "泰国", "台湾", "中国台湾", "日本"],
 }
 
 # 视为"空值"的占位文案
@@ -123,7 +127,7 @@ _chrome_cookies = None
 def _load_chrome_cookies():
     """从本机 Chrome 读取 huxitech 的 Cookie（含 cf_clearance）"""
     try:
-        cj = browser_cookie3.chrome(domain_name="huxitech.com")
+        cj = browser_cookie3.chrome(domain_name="cifppc.com")
         cookies = {c.name: c.value for c in cj}
         if cookies:
             print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: "
@@ -182,6 +186,18 @@ def is_garbled(value):
     if re.fullmatch(r"[?？]+", stripped):
         return True
     return False
+
+def normalize_info_text(info_str):
+    """把更新信息标准化，用于对比语义是否相同，忽略：04→4、多余的第字"""
+    if not info_str:
+        return ""
+    # 提取数字
+    num_match = re.search(r"(\d+)", info_str)
+    if not num_match:
+        return normalize_text(info_str)
+    num = int(num_match.group(1))
+    # 重建标准格式字符串
+    return f"更新至第{num}集"
 
 def normalize_text(s):
     if not s:
@@ -349,11 +365,11 @@ def append_huxitech_channel(existing, new_episodes, sub_url):
     )
     return new_url_key
 
-def promote_huxitech_to_front(existing, new_episodes, sub_url):
+def promote_huxitech_to_front(existing, new_episodes, sub_url, insert_pos=0):
     """
-    把 huxitech 渠道放到 playlist 首位：
-      - 已存在 huxitech 渠道 -> 更新其 episodes 并移动到首位（url 键沿用原有）
-      - 不存在 -> 新建 urlX 并把 playlist 插到首位
+    把 huxitech 渠道放到指定位置 insert_pos
+      - 已存在 huxitech 渠道 -> 更新其 episodes，移动到 insert_pos
+      - 不存在 -> 新建urlX，playlist插入 insert_pos
     返回 (url_key, action)，action ∈ {"moved", "inserted"}
     """
     playlist = existing.setdefault("playlist", [])
@@ -362,17 +378,19 @@ def promote_huxitech_to_front(existing, new_episodes, sub_url):
         None
     )
 
-    # ---- 情况 A：已存在 huxitech，直接更新并挪到首位 ----
+    # ---- 情况 A：已存在 huxitech，更新并移动到目标位置 ----
     if hux_index is not None:
         pl = playlist.pop(hux_index)
-        pl["episodes"] = new_episodes          # 用新抓取覆盖
-        playlist.insert(0, pl)                 # 移到首位
+        pl["episodes"] = new_episodes
+        # 如果pop之后，insert位置等于原来下标，不需要插入移动
+        if insert_pos != hux_index:
+            playlist.insert(insert_pos, pl)
         return None, "moved"
 
-    # ---- 情况 B：不存在 huxitech，新建 urlX 并插到 playlist 首位 ----
+    # ---- 情况 B：不存在 huxitech，新建urlX，插入目标位置 ----
     url_keys = sorted(
         [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
-        key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
+        key=lambda x: (0,0) if x=="url" else (1, int(re.search(r"\d+",x).group()))
     )
     max_num = 0
     for k in url_keys:
@@ -381,9 +399,8 @@ def promote_huxitech_to_front(existing, new_episodes, sub_url):
             max_num = max(max_num, int(m.group(1)))
     new_url_key = f"url{max_num + 1}"
 
-    # 保持字段顺序：把新 url 插到最后一个 url 键之后
-    last_url_key = url_keys[-1] if url_keys else None
     new_ordered = {}
+    last_url_key = url_keys[-1] if url_keys else None
     inserted = False
     for k, v in existing.items():
         new_ordered[k] = v
@@ -397,7 +414,7 @@ def promote_huxitech_to_front(existing, new_episodes, sub_url):
 
     # playlist 插到首位
     playlist = existing.setdefault("playlist", [])
-    playlist.insert(0, {"name": PLAYLIST_NAME, "episodes": new_episodes})
+    playlist.insert(insert_pos, {"name": PLAYLIST_NAME, "episodes": new_episodes})
     return new_url_key, "inserted"
 
 def extract_episode_count_from_info(info):
@@ -1095,34 +1112,93 @@ def process_list_page(data, list_url, group, page_name):
                 # ===== Drama/Anime 置顶规则：新抓取最大集数 > 现有最大集数 -> huxitech 置顶 =====
                 promote_to_front = False
                 if matched_group in ("Drama", "Anime"):
-                    existing_max = 0
-                    for pl in existing.get("playlist", []):
-                        existing_max = max(
-                            existing_max,
-                            get_max_episode_number(pl.get("episodes", {}))
-                        )
-                    if new_max > existing_max:
+                    playlist_all = existing.get("playlist", [])
+                    # 遍历全部渠道，得到每个渠道的(名字,最大集数)
+                    pl_with_max = []
+                    for pl in playlist_all:
+                        pl_max = get_max_episode_number(pl.get("episodes", {}))
+                        pl_with_max.append((pl.get("name"), pl_max))
+                    # 全局所有渠道的最大值
+                    global_max = max((x[1] for x in pl_with_max), default=0)
+                    # 找出全局最大集数渠道的下标（第一个出现的max渠道）
+                    idx_global_max = 0
+                    for idx,(name,pmax) in enumerate(pl_with_max):
+                        if pmax == global_max:
+                            idx_global_max = idx
+                            break
+
+                    buf.append(f"    [{matched_group}] 全局最大集数={global_max} @下标{idx_global_max}, huxitech新抓取max={new_max}")
+
+                    promote_to_front = False
+                    insert_at = None
+
+                    if new_max > global_max:
+                        # ①huxitech >全部渠道：插到最头部 0
                         promote_to_front = True
-                        buf.append(f"    [{matched_group}] 现有最大集数 {existing_max} "
-                                   f"< 新抓取 {new_max}，huxitech 将置顶到 playlist 首位")
+                        insert_at = 0
+                        buf.append(f"    [{matched_group}] huxitech({new_max}) >全局最大({global_max})，插到playlist[0]首位")
+                    elif new_max == global_max:
+                        # ②等于全局最大：放到全局max渠道的后面一位 idx_global_max + 1
+                        promote_to_front = True
+                        insert_at = idx_global_max + 1
+                        buf.append(f"    [{matched_group}] huxitech({new_max}) ==全局最大({global_max})，插到全局max渠道之后下标{insert_at}")
+                    elif new_max > 0:
+                        # ③huxitech集数小于全局max，但仍然高于后面部分渠道：放到全局max渠道后面一位
+                        # 不要求huxitech必须超过全部，只要有效就插在第一名后面
+                        promote_to_front = True
+                        insert_at = idx_global_max + 1
+                        buf.append(f"    [{matched_group}] huxitech({new_max}) <全局最大({global_max})，但仍优于其余渠道，插到下标{insert_at}")
                     else:
-                        buf.append(f"    [{matched_group}] 现有最大集数 {existing_max} "
-                                   f">= 新抓取 {new_max}，不置顶")
+                        buf.append(f"    [{matched_group}] huxitech无有效集数，不调整顺序")
 
                 if promote_to_front:
-                    # ★ 无论原来有没有 huxitech，都放到首位（有则挪位，无则新建插首位）
-                    url_key, action = promote_huxitech_to_front(existing, new_eps, url)
+                    # 查找现有huxitech所在下标
+                    playlist = existing.get("playlist", [])
+                    hux_index = next((i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME), None)
+
+                    # 构造候选新info文本
+                    candidate_info = f"更新至第{new_max}集"
                     old_info = existing.get("info", "")
-                    existing["info"] = f"更新至第{new_max}集"
-                    existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    buf.append(f"    [info更新] 「{old_info}」 -> 「更新至第{new_max}集」")
-                    save_json(data)
-                    flush()
-                    if action == "moved":
-                        print(f"    ✅ 更新({matched_group})：huxitech 已更新并置顶到 playlist 首位")
+
+                    # 判断：是否真的要移动位置；是否info文本发生变化
+                    need_move = (hux_index is not None) and (hux_index != insert_at)
+                    norm_old = normalize_info_text(old_info)
+                    norm_candidate = normalize_info_text(candidate_info)
+                    info_changed = (norm_old != norm_candidate)
+
+                    actual_changed = False
+
+                    if need_move or (hux_index is None):
+                        url_key, action = promote_huxitech_to_front(existing, new_eps, url, insert_pos=insert_at)
+                        actual_changed = True
                     else:
-                        print(f"    ✅ 更新({matched_group})：huxitech 作为新渠道写入 {url_key}，"
-                              f"并置顶到 playlist 首位")
+                        # 已经就在目标位置，不执行移动操作
+                        url_key = None
+                        action = "no_move"
+                        buf.append(f"    [{matched_group}] huxitech已经位于目标下标 {insert_at}，跳过playlist移动")
+
+                    # info仅当文本不一样时才覆盖
+                    if info_changed:
+                        buf.append(f"    [info更新] 「{old_info}」 -> 「{candidate_info}」")
+                        existing["info"] = candidate_info
+                        actual_changed = True
+                    else:
+                        buf.append(f"    [info跳过] info文本无变化，不覆盖")
+
+                    # 只有真实发生修改才更新时间戳+保存+打印成功日志
+                    if actual_changed:
+                        existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        save_json(data)
+                    flush()
+
+                    if not actual_changed:
+                        print(f"    - 无变更({matched_group})：集数、顺序、info均无变化，跳过保存")
+                    elif action == "moved":
+                        print(f"    ✅ 更新({matched_group})：huxitech 已更新并调整playlist位置")
+                    elif action == "inserted":
+                        print(f"    ✅ 更新({matched_group})：huxitech 作为新渠道写入 {url_key}，插入playlist")
+                    else:
+                        print(f"    ✅ 更新({matched_group})：仅info字段发生更新")
                     ok += 1
 
                 elif has_huxitech_channel:

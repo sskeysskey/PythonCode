@@ -3,25 +3,40 @@
 6vdy.org 最新剧集、最新电影、小编推荐、首页 爬取脚本
 （升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤）
 
-新增能力：
-1. 自动识别“新格式详情页”（无 ◎ 标记的纯文本字段页），并切换为新版解析逻辑。
-2. 提供补全模式 backfill：python 脚本.py backfill
-   - 扫描 JSON 中所有来自 6vdy 且字段缺失的记录，用新方法重抓并只补空字段（已有/正确的不动）。
-3. 新增 6vdy.org 首页抓取。
-4. 过滤规则变更：仅当【地区命中过滤名单】且【6vdy渠道为分集剧集(键名含“集”)】时才跳过。
-5. 新增“评分过滤”：仅针对新增项目，当豆瓣/IMDb 最高有效评分(非空非0)低于 MIN_RATING(默认6.0)时跳过。
+本次网络层加固（解决 SSLEOFError / 站点换域名 / 偶发抖动）：
+1. 统一使用 requests.Session + urllib3 Retry（含指数退避），失败不再直接崩溃。
+2. 提供「严格 TLS」与「宽松 TLS」两套 SSLContext：
+   宽松模式启用 DEFAULT@SECLEVEL=1、OP_LEGACY_SERVER_CONNECT、TLS1.2 下限，
+   并可关闭证书校验，用于兼容老旧服务器（UNEXPECTED_EOF_WHILE_READING 常见诱因）。
+3. 镜像域名自动回退：6vdy.org -> xb6v.com -> 66ss.org -> 6v520.tv，
+   同一 path 逐个尝试；全部 https 失败后再尝试 http 降级。
+4. 抓到的播放/详情链接会「归一化回原始请求域名」，避免同一资源因镜像域名不同
+   被误判为“有新剧集”，从而污染 update 时间戳与集数判断。
+5. main() 中每个抓取任务独立 try/except，单个列表页失败不影响其他任务。
 """
 
 import os
 import re
+import ssl
 import sys
 import json
 import time
+import random
 import requests
 import platform
 import subprocess
 import atexit
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry
+except ImportError:  # 极老版本兼容
+    from urllib3.util.retry import Retry
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -55,10 +70,11 @@ BASE_URL    = "https://www.6vdy.org/qian50m.html"
 HOME_URL_6VDY = "https://www.6vdy.org/"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
+BLACKLIST_URL_PATH = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blacklist_url.json"
 PLAYLIST_NAME = "6vdy"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = (10, 25)   # (连接超时, 读取超时)
 SLEEP_BETWEEN  = 1.0
-BLACKLIST_NAMES = ["乘风2026"]
+BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版"]
 WHITELIST_NAMES = [
     "镖人 第二季"
 ]
@@ -72,8 +88,24 @@ MIN_RATING = 6.0
 MIN_RATING_7 = 7.0
 
 # ============== 镜像站识别（同源不同域名）==============
-MIRROR_DOMAINS = ("6vdy", "xb6v")
+MIRROR_DOMAINS = ("6vdy", "xb6v", "66ss", "6v520", "66s.cc")
 
+# 镜像域名回退顺序（同一 path 依次尝试；第一个为首选主站）
+MIRROR_HOSTS = [
+    "www.6vdy.org",
+    "www.xb6v.com",
+    "www.66ss.org",
+    "www.6v520.tv",
+]
+
+# ============== 网络行为可调参数 ==============
+# 若你的网络需要代理才能访问（被墙场景），在这里填写；留 None 则自动读取环境变量
+# 例：PROXIES = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+PROXIES = None
+
+MAX_ATTEMPTS_PER_URL = 3      # 单个候选 URL 的尝试次数
+BACKOFF_BASE = 1.8            # 指数退避基数（秒）
+VERIFY_SSL_STRICT_FIRST = True  # 先严格校验证书，失败后再降级为不校验
 
 HEADERS = {
     "User-Agent": (
@@ -81,18 +113,287 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
     "Referer": BASE_URL,
 }
 
+
+# ============== TLS / Session 构建 ==============
+class TLSAdapter(HTTPAdapter):
+    """允许注入自定义 SSLContext 的 HTTPAdapter"""
+
+    def __init__(self, ssl_context=None, **kwargs):
+        self._ssl_context = ssl_context
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        if self._ssl_context is not None:
+            kwargs["ssl_context"] = self._ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        if self._ssl_context is not None:
+            kwargs["ssl_context"] = self._ssl_context
+        return super().proxy_manager_for(*args, **kwargs)
+
+
+def _build_ssl_context(loose=False):
+    """
+    loose=False: 标准安全上下文（仅放宽最低协议版本）
+    loose=True : 宽松上下文，用于兼容老旧/异常服务器：
+                 - SECLEVEL=1 允许较弱密码套件
+                 - OP_LEGACY_SERVER_CONNECT 允许不安全的旧式重协商
+                 - 关闭主机名与证书校验
+    """
+    ctx = ssl.create_default_context()
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    except Exception:
+        pass
+
+    if loose:
+        try:
+            ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        except ssl.SSLError:
+            try:
+                ctx.set_ciphers("ALL:@SECLEVEL=1")
+            except ssl.SSLError:
+                pass
+        # OpenSSL 3 需要显式允许 legacy server connect
+        legacy_flag = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+        try:
+            ctx.options |= legacy_flag
+        except Exception:
+            pass
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1
+        except Exception:
+            pass
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _build_session(loose_tls=False):
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    if PROXIES:
+        s.proxies.update(PROXIES)
+
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=2,
+        status=2,
+        backoff_factor=1.2,
+        status_forcelist=(429, 500, 502, 503, 504, 520, 521, 522, 524),
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+    )
+    adapter = TLSAdapter(
+        ssl_context=_build_ssl_context(loose=loose_tls),
+        max_retries=retry,
+        pool_connections=10,
+        pool_maxsize=20,
+    )
+    s.mount("https://", adapter)
+    s.mount("http://", HTTPAdapter(max_retries=retry))
+    return s
+
+
+# 两套 Session：优先严格，握手异常时自动切宽松
+SESSION_STRICT = _build_session(loose_tls=False)
+SESSION_LOOSE  = _build_session(loose_tls=True)
+
+# 记录本次运行中「已确认可用」的主机，后续请求直接优先使用，避免反复重试死域名
+_WORKING_HOST = None
+_DEAD_HOSTS = set()
+
+
 # ============== 工具函数 ==============
-def fetch(url, is_binary=False):
-    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+def load_blacklist_urls():
+    """加载 blacklist_url.json 的所有 key（被拉黑的 URL），返回 set。"""
+    if not os.path.exists(BLACKLIST_URL_PATH):
+        print(">>> [黑名单URL] 文件不存在，视为空名单")
+        return set()
+    try:
+        with open(BLACKLIST_URL_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        urls = set(data.keys())
+        print(f">>> [黑名单URL] 已加载 {len(urls)} 条")
+        return urls
+    except Exception as e:
+        print(f">>> [黑名单URL] 读取失败: {e}")
+        return set()
+
+
+# 模块级全局：只加载一次
+BLACKLIST_URLS = load_blacklist_urls()
+
+
+def _swap_host(url, new_host, scheme=None):
+    """把 URL 的域名替换为 new_host（可选替换协议）"""
+    p = urlparse(url)
+    return urlunparse((
+        scheme or p.scheme or "https",
+        new_host,
+        p.path or "/",
+        p.params,
+        p.query,
+        p.fragment,
+    ))
+
+
+def _host_of(url):
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
+def _candidate_urls(url):
+    """
+    生成候选 URL 列表（按尝试顺序）：
+      1) 本次运行已验证可用的主机（若有）
+      2) 原始 URL
+      3) 其余镜像主机（https）
+      4) 原始主机的 http 降级
+      5) 其余镜像主机的 http 降级
+    """
+    p = urlparse(url)
+    origin_host = p.netloc.lower()
+    ordered_hosts = []
+
+    if _WORKING_HOST and _WORKING_HOST not in ordered_hosts:
+        ordered_hosts.append(_WORKING_HOST)
+    if origin_host and origin_host not in ordered_hosts:
+        ordered_hosts.append(origin_host)
+    for h in MIRROR_HOSTS:
+        if h not in ordered_hosts:
+            ordered_hosts.append(h)
+
+    cands = []
+    for h in ordered_hosts:
+        if h in _DEAD_HOSTS:
+            continue
+        cands.append(_swap_host(url, h, scheme="https"))
+    for h in ordered_hosts:
+        if h in _DEAD_HOSTS:
+            continue
+        cands.append(_swap_host(url, h, scheme="http"))
+
+    # 去重且保持顺序
+    seen, out = set(), []
+    for c in cands:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _do_request(session, url, verify, is_binary):
+    resp = session.get(url, timeout=REQUEST_TIMEOUT, verify=verify, allow_redirects=True)
     resp.raise_for_status()
     if is_binary:
         return resp.content
     if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
         resp.encoding = resp.apparent_encoding or "utf-8"
     return resp.text
+
+
+def fetch_ex(url, is_binary=False, allow_mirror=True):
+    """
+    强化版请求：
+      返回 (内容, 实际生效的URL)
+      - 多候选域名 / http 降级
+      - 严格 TLS -> 宽松 TLS 自动切换
+      - 每个候选多次指数退避重试
+      - 全部失败才抛出最后一个异常
+    """
+    global _WORKING_HOST
+
+    candidates = _candidate_urls(url) if allow_mirror else [url]
+    last_err = None
+
+    for cand in candidates:
+        host = _host_of(cand)
+        # session/verify 组合：严格校验 -> 严格不校验 -> 宽松不校验
+        plans = []
+        if VERIFY_SSL_STRICT_FIRST:
+            plans.append((SESSION_STRICT, True))
+        plans.append((SESSION_STRICT, False))
+        plans.append((SESSION_LOOSE, False))
+
+        for sess, verify in plans:
+            for attempt in range(1, MAX_ATTEMPTS_PER_URL + 1):
+                try:
+                    content = _do_request(sess, cand, verify, is_binary)
+                    if host and host != _WORKING_HOST:
+                        _WORKING_HOST = host
+                        if cand != url:
+                            print(f"    [网络] 已切换到可用地址: {cand}")
+                    return content, cand
+                except requests.exceptions.SSLError as e:
+                    last_err = e
+                    # print(f"    [网络] SSL 失败({attempt}/{MAX_ATTEMPTS_PER_URL}) "
+                    #       f"{'strict' if sess is SESSION_STRICT else 'loose'}"
+                    #       f"/verify={verify} -> {cand}")
+                    break  # SSL 层问题：直接换下一套 TLS 方案，重试同方案意义不大
+                except (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout,
+                        requests.exceptions.ChunkedEncodingError) as e:
+                    last_err = e
+                    if attempt < MAX_ATTEMPTS_PER_URL:
+                        wait = (BACKOFF_BASE ** attempt) + random.uniform(0, 0.8)
+                        print(f"    [网络] 连接异常({attempt}/{MAX_ATTEMPTS_PER_URL})，"
+                              f"{wait:.1f}s 后重试 -> {cand}")
+                        time.sleep(wait)
+                    else:
+                        print(f"    [网络] 连接失败，放弃该方案 -> {cand}")
+                except requests.exceptions.HTTPError as e:
+                    last_err = e
+                    code = getattr(e.response, "status_code", None)
+                    # print(f"    [网络] HTTP {code} -> {cand}")
+                    if code in (403, 404, 410):
+                        # 明确的资源问题，不必换 TLS 方案
+                        break
+                    if attempt < MAX_ATTEMPTS_PER_URL:
+                        time.sleep((BACKOFF_BASE ** attempt))
+                except Exception as e:
+                    last_err = e
+                    # print(f"    [网络] 未知异常 {type(e).__name__}: {e} -> {cand}")
+                    break
+
+        # 该主机所有方案均失败：本次运行内标记为不可用（避免后续反复浪费时间）
+        if host and host not in _DEAD_HOSTS and host != _WORKING_HOST:
+            _DEAD_HOSTS.add(host)
+
+    raise RuntimeError(f"所有候选地址均请求失败: {url} | 最后错误: {last_err}")
+
+
+def fetch(url, is_binary=False):
+    """向后兼容的旧接口：只返回内容"""
+    content, _ = fetch_ex(url, is_binary=is_binary)
+    return content
+
+
+def normalize_link_host(link, target_host):
+    """
+    把镜像域名下抓到的链接归一化回 target_host。
+    目的：防止「同一集因域名不同」被判定为新剧集，导致 update 时间戳被误刷。
+    """
+    if not link or not target_host:
+        return link
+    h = _host_of(link)
+    if not h:
+        return link
+    if h == target_host:
+        return link
+    if any(d in h for d in MIRROR_DOMAINS):
+        return _swap_host(link, target_host, scheme="https")
+    return link
 
 
 def get_max_rating(rating_dict):
@@ -175,14 +476,12 @@ def normalize_text(s):
     s = re.sub(r"[，；;]\s*$", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     s = s.strip(":：·•")
-    
-    # 【新增：过滤纯问号或非正常符号】
-    # 如果字符串只由 问号(?、？)、星号(*)、减号(-)、下划线(_)、斜杠(/)、空格 或 纯标点 组成，则视为无效，返回空
-    if re.match(r"^[?？*\-_/\s\d.,，;；:：]+$", s) or re.match(r"^[-—~=?.#*&%@!！\s]+$", s):
-        # 排除掉纯数字（因为年份或评分可能是纯数字，不能误杀）
+
+    # 【过滤纯问号或非正常符号】
+    if re.match(r"^[?？*\-_/\s\d.,，;；:：]+$\(\(", s) or re.match(r"^[-—~=?.#*&%@!！\s]+\)\)$", s):
         if not s.isdigit() and not re.match(r"^\d+\.\d+$", s):
             return ""
-            
+
     return s
 
 
@@ -212,7 +511,7 @@ def split_name_info(raw_title):
     base_name = raw_title
     base_info = ""
 
-    bracket_match = re.search(r"^(.*?)[[［](.*?)[\]］]$", raw_title)
+    bracket_match = re.search(r"^(.*?)[\[［](.*?)[\]］]$", raw_title)
     if bracket_match:
         base_name = bracket_match.group(1).strip()
         base_info = bracket_match.group(2).strip()
@@ -256,7 +555,7 @@ def safe_filename(url):
 
 
 # ============== 播放列表提取 ==============
-def extract_episodes(soup, base_url=BASE_URL):
+def extract_episodes(soup, base_url=BASE_URL, host_normalize_to=None):
     for widget in soup.select("div.widget.box.row"):
         h3 = widget.find("h3")
         if h3 and "播放地址（无需安装插件" in h3.get_text():
@@ -266,7 +565,10 @@ def extract_episodes(soup, base_url=BASE_URL):
                 if "DownSys/play" in href:
                     ep_name = a.get_text(strip=True) or a.get("title", "").strip()
                     if ep_name:
-                        eps[ep_name] = urljoin(base_url, href)
+                        full = urljoin(base_url, href)
+                        if host_normalize_to:
+                            full = normalize_link_host(full, host_normalize_to)
+                        eps[ep_name] = full
             return eps
     return {}
 
@@ -527,8 +829,10 @@ def parse_new_format(lines, h1_name):
 
 # ============== 子页面解析（旧格式 + 新格式自动回退） ==============
 def parse_subpage(sub_url, default_name, default_info):
-    html = fetch(sub_url)
+    html, eff_url = fetch_ex(sub_url)
     soup = BeautifulSoup(html, "lxml")
+
+    origin_host = _host_of(sub_url) or MIRROR_HOSTS[0]
 
     h1 = soup.select_one(".article_container h1")
     raw_title = h1.get_text(strip=True) if h1 else default_name
@@ -540,7 +844,7 @@ def parse_subpage(sub_url, default_name, default_info):
 
     post = soup.select_one("#post_content")
     if not post:
-        raise RuntimeError(f"子页面没有 #post_content: {sub_url}")
+        raise RuntimeError(f"子页面没有 #post_content: {eff_url}")
 
     # 旧格式简介与图片（注意 extract_intro 须在 parse_post_lines 之前调用）
     intro_text = extract_intro(post)
@@ -548,7 +852,7 @@ def parse_subpage(sub_url, default_name, default_info):
     img_url = ""
     img_tag = post.find("img")
     if img_tag and img_tag.get("src"):
-        img_url = img_tag["src"]
+        img_url = urljoin(eff_url, img_tag["src"])
 
     lines = parse_post_lines(post)
 
@@ -633,15 +937,16 @@ def parse_subpage(sub_url, default_name, default_info):
         if not rating.get("IMDB") and nf["评分"].get("IMDB"):
             rating["IMDB"] = nf["评分"]["IMDB"]
 
-    # 用当前详情页 URL 作为播放链接拼接基准，兼容 xb6v 站内相对链接
-    episodes = extract_episodes(soup, base_url=sub_url)
+    # 用「实际生效的 URL」作为相对链接拼接基准，再把域名归一化回原始请求域名，
+    # 避免镜像切换导致 episodes 字典与库内数据不一致（误判为有新集）。
+    episodes = extract_episodes(soup, base_url=eff_url, host_normalize_to=origin_host)
     playlist = []
     if episodes:
         playlist.append({"name": PLAYLIST_NAME, "episodes": episodes})
 
     return {
         "name":   name,
-        "url":    sub_url,
+        "url":    sub_url,   # 始终保存原始（规范）URL，保证去重与黑名单判断稳定
         "info":   info,
         "update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "image":  img_url,
@@ -695,12 +1000,8 @@ def _is_mirror(url):
 
 
 def find_existing_global(data, name, sub_url):
-    # ================= 优先级调整 =================
-    # 规则：URL 一致 > 镜像路径一致 > 名称一致
-    # 原因：可能存在「同名但不同资源」或「异名但同一 URL」的情况，
-    #       只要 URL(或同源镜像路径)命中，就应认定为同一资源并对其更新，
-    #       名称匹配仅作为最后的兜底手段。
-
+    # ================= 优先级 =================
+    # URL 一致 > 镜像路径一致 > 名称一致
     if sub_url:
         sub_path = _url_path(sub_url)
         sub_is_mirror = _is_mirror(sub_url)
@@ -720,10 +1021,7 @@ def find_existing_global(data, name, sub_url):
                         print(f"      [URL匹配去重] 命中相同 URL 记录：「{item.get('name')}」")
                     return group, item
 
-        # ---- 2) 同源镜像站「路径一致」匹配（次高优先级）----
-        #     6vdy.org 与 xb6v.com 等为同一站点的不同域名，
-        #     其详情页路径(如 /dianshiju/oumeiju/28772.html)完全相同，
-        #     故仅当双方都是镜像域名且 path 相同时判定为同一资源。
+        # ---- 2) 同源镜像站「路径一致」匹配 ----
         if sub_is_mirror and sub_path:
             for group in ["Movie", "Drama", "Show", "Anime"]:
                 for item in data.get(group, []):
@@ -736,7 +1034,7 @@ def find_existing_global(data, name, sub_url):
                                       f"抓取:「{name}」@{sub_url})")
                                 return group, item
 
-    # ---- 3) 名称精确匹配（兜底，最低优先级）----
+    # ---- 3) 名称精确匹配（兜底）----
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             if item.get("name") == name:
@@ -754,12 +1052,12 @@ def extract_max_episodes_from_info(info_str):
         return int(match[-1])
     return 0
 
+
 def get_real_episode_count(episodes):
     """
     计算真实集数：
-    - 集名含数字（粤语05 / 国语05 / 第3集 / EP04）时，取所有数字里的最大值，
-      从而正确处理「同一集有粤语+国语等多语言版本」导致 len() 翻倍的问题。
-    - 集名无数字（HD / 正片等）时，退回用条目数量。
+    - 集名含数字时取最大数字（处理同一集多语言版本导致 len() 翻倍）
+    - 集名无数字（HD / 正片等）时退回条目数量
     """
     if not episodes:
         return 0
@@ -772,6 +1070,7 @@ def get_real_episode_count(episodes):
             if n > max_num:
                 max_num = n
     return max_num if max_num > 0 else len(episodes)
+
 
 def has_episode_concept(episodes):
     if not episodes:
@@ -787,25 +1086,67 @@ def has_episode_concept(episodes):
     return False
 
 
+def record_hits_blacklist_url(existing, blacklist_urls):
+    if not blacklist_urls:
+        return False
+
+    for k, v in existing.items():
+        if (k == "url" or re.match(r"^url\d+$", k)) and v in blacklist_urls:
+            print(f"      [黑名单命中] 字段「{k}」的 URL 在黑名单中：{v}")
+            return True
+
+    for pl in existing.get("playlist", []):
+        eps = pl.get("episodes", {})
+        if isinstance(eps, dict):
+            for ep_name, ep_url in eps.items():
+                if ep_url in blacklist_urls:
+                    print(f"      [黑名单命中] 渠道「{pl.get('name')}」的集「{ep_name}」"
+                          f"URL 在黑名单中：{ep_url}")
+                    return True
+
+    return False
+
+
+def only_6vdy_hits_blacklist_url(existing, blacklist_urls):
+    if not blacklist_urls:
+        return False
+
+    for k, v in existing.items():
+        if (k == "url" or re.match(r"^url\d+$", k)) and v:
+            if "6vdy" in v and v in blacklist_urls:
+                print(f"      [黑名单命中] 6vdy 字段「{k}」的 URL 在黑名单中：{v}")
+                return True
+
+    for pl in existing.get("playlist", []):
+        if pl.get("name") != PLAYLIST_NAME:
+            continue
+        eps = pl.get("episodes", {})
+        if isinstance(eps, dict):
+            for ep_name, ep_url in eps.items():
+                if ep_url in blacklist_urls:
+                    print(f"      [黑名单命中] 6vdy 渠道的集「{ep_name}」"
+                          f"URL 在黑名单中：{ep_url}")
+                    return True
+
+    return False
+
+
 def update_info_field_if_needed(existing, new_playlist):
-    """
-    规则：
-      - 唯一渠道且为 6vdy：按原逻辑，与 info 中记录的集数比较。
-      - 多渠道：比较 6vdy 新抓取集数 Y 与「其他渠道中集数最多的那个」max_other，
-                仅当 Y > max_other（严格大于）时才更新 info。
-    """
     if not new_playlist:
         return False
 
-    # 找到 6vdy 渠道及其集数
+    if only_6vdy_hits_blacklist_url(existing, BLACKLIST_URLS):
+        print(f"      [info字段跳过] 6vdy 渠道命中黑名单 URL，"
+              f"即使 6vdy 抓取集数多于其他渠道也不更新 info")
+        return False
+
     vdy_pl = None
-    old_vdy_cnt = 0  # 新增：存储旧6vdy集数
+    old_vdy_cnt = 0
     for pl in new_playlist:
         if pl.get("name") == PLAYLIST_NAME:
             vdy_pl = pl
             break
 
-    # 从现有记录playlist读取旧6vdy集数
     existing_playlist = existing.get("playlist", [])
     for old_pl in existing_playlist:
         if old_pl.get("name") == PLAYLIST_NAME:
@@ -819,16 +1160,15 @@ def update_info_field_if_needed(existing, new_playlist):
 
     eps = vdy_pl.get("episodes", {})
 
-    # 无集数概念（如单个电影文件）不更新
     if not has_episode_concept(eps):
         print(f"      [info字段跳过] 资源无集数概念，保持原 info「{existing.get('info', '')}」")
         return False
 
-    Y = get_real_episode_count(eps)    # ← 原来是 len(eps)
+    Y = get_real_episode_count(eps)
     old_info = existing.get("info", "")
     X = extract_max_episodes_from_info(old_info)
 
-    # ---- 场景一：唯一渠道且为 6vdy（原逻辑不变）----
+    # ---- 场景一：唯一渠道且为 6vdy ----
     if len(new_playlist) == 1:
         if Y > X:
             new_info = f"更新至第{Y}集"
@@ -840,7 +1180,7 @@ def update_info_field_if_needed(existing, new_playlist):
             print(f"      [info字段未更新] 最新集数 {Y} 未大于原记录集数 {X}，旧6vdy渠道原有集数{old_vdy_cnt}，保持原样")
             return False
 
-    # ---- 场景二：多渠道，比较 6vdy 与其他渠道的最大集数 ----
+    # ---- 场景二：多渠道 ----
     max_other = 0
     max_other_name = ""
     for pl in new_playlist:
@@ -859,10 +1199,10 @@ def update_info_field_if_needed(existing, new_playlist):
               f"{max_other}（渠道「{max_other_name}」），info 由「{old_info}」更新为「{new_info}」")
         return True
     else:
-        # 这里就是你日志对应的打印，增加旧集数输出
         print(f"      [info字段跳过] 多渠道场景下 6vdy 旧集数{old_vdy_cnt}，新集数 {Y} 未大于其他渠道最大集数 "
               f"{max_other}（渠道「{max_other_name}」），保持原 info「{old_info}」")
         return False
+
 
 def get_max_other_playlist_ep_count(playlist):
     """获取playlist里排除6vdy渠道后的最大真实集数"""
@@ -876,25 +1216,26 @@ def get_max_other_playlist_ep_count(playlist):
             max_cnt = cnt
     return max_cnt
 
-def insert_6vdy_playlist(playlist, new_pl):
+
+def insert_6vdy_playlist(playlist, new_pl, existing):
     """
-    将 6vdy 播放源插入到 playlist：
-    规则：6vdy集数 > 其他渠道最大集数 → 强制放第一位
-    等于、小于的时候不走置顶逻辑，按原有兜底逻辑处理
+    6vdy集数 > 其他渠道最大集数 → 强制置顶；
+    ⚠️新增：如果6vdy命中黑名单URL，**取消强制置顶，直接走兜底排序**
     """
-    # 计算6vdy自身集数
     vdy_eps = new_pl.get("episodes", {})
     vdy_cnt = get_real_episode_count(vdy_eps)
-    # 计算其他渠道最大集数
     max_other = get_max_other_playlist_ep_count(playlist)
 
-    # =========关键修改：>= 改为 > =========
-    if vdy_cnt > max_other:
+    # 关键新增：只要6vdy渠道命中黑名单，直接禁用强制置顶逻辑
+    hit_black = only_6vdy_hits_blacklist_url(existing, BLACKLIST_URLS)
+    if hit_black:
+        print(f"      [排序规则] 检测到6vdy渠道命中黑名单URL，禁用强制置顶，执行兜底排序")
+    elif vdy_cnt > max_other:
         playlist.insert(0, new_pl)
         print(f"      [排序规则] 6vdy集数{vdy_cnt} > 其他渠道最大集数{max_other}，强制置顶第一位")
         return
 
-    # 原有兜底逻辑（6vdy集数 ≤ 其他渠道最大值时才走这里）
+    # -------- 兜底排序逻辑（黑名单命中 OR 集数不占优都会走到这里） --------
     chnland_idx = -1
     for i, item in enumerate(playlist):
         if item.get("name") == "chnland":
@@ -902,20 +1243,16 @@ def insert_6vdy_playlist(playlist, new_pl):
             break
     if chnland_idx != -1:
         playlist.insert(chnland_idx + 1, new_pl)
-        print(f"      [排序规则] 6vdy集数{vdy_cnt} ≤ 其他渠道最大值{max_other}，检测到 chnland，6vdy 放在它后面")
+        print(f"      [排序规则] 检测到 chnland，6vdy 放在它后面")
     else:
-        playlist.insert(0, new_pl)
-        print(f"      [排序规则] 6vdy集数{vdy_cnt} ≤ 其他渠道最大值{max_other}，未检测到 chnland，6vdy 放在第一位")
+        # 没有chnland，不插0号位置，追加到末尾，避免置顶
+        playlist.append(new_pl)
+        print(f"      [排序规则] 未检测到 chnland，6vdy 添加到playlist末尾")
+
 
 def should_touch_update_on_episode_change(playlist, new_6vdy_count):
-    """
-    集数更新场景下，判断是否刷新 update 时间戳（新版规则）：
-      - 计算所有**非6vdy渠道**的最大集数 max_other_count
-      - 仅当 6vdy新集数 > max_other_count 时返回 True
-      - 其余全部返回 False
-    """
+    """仅当 6vdy 新集数 > 其他所有渠道最大集数时才刷新 update"""
     max_other_count = 0
-    # 遍历所有播放渠道，只统计除6vdy外的渠道集数
     for pl in playlist:
         pl_name = pl.get("name", "")
         if pl_name == PLAYLIST_NAME:
@@ -924,19 +1261,12 @@ def should_touch_update_on_episode_change(playlist, new_6vdy_count):
         cnt = get_real_episode_count(eps_other) if isinstance(eps_other, dict) else 0
         if cnt > max_other_count:
             max_other_count = cnt
-    
-    # 仅6vdy集数大于其他渠道最大集数才刷新时间戳
+
     return new_6vdy_count > max_other_count
 
 
 def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
                              info_updated, movie_info_updated):
-    """
-    统一的 update 时间戳刷新决策：
-      - 画质 / info 升级（movie_info_updated）→ 始终刷新（需求5）
-      - 集数更新（info_updated）→ 仅当满足 chnland 规则时刷新（需求3）
-    返回是否刷新。
-    """
     touch = False
     if movie_info_updated:
         touch = True
@@ -950,6 +1280,7 @@ def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("      ✅[字段更新] 已同步更新「update」时间戳")
     return touch
+
 
 def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     # ==================== 1. 字段合并与更新逻辑 ====================
@@ -1018,7 +1349,6 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             if movie_info_updated:
                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 return "quality_updated"
-            # 播放源完全无变化，仅普通字段更新
             return "meta_updated" if fields_updated else "no_change"
 
         if len(new_6vdy_episodes) < len(old_6vdy_eps):
@@ -1026,15 +1356,11 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         if old_6vdy_idx != -1:
-            # 原地覆盖数据
             playlist[old_6vdy_idx] = new_pl
-            # =========新增：存量更新集数后，重新判断是否需要调整位置=========
-            # 先移除旧位置的6vdy
             del playlist[old_6vdy_idx]
-            # 重新执行排序插入逻辑
-            insert_6vdy_playlist(playlist, new_pl)
+            insert_6vdy_playlist(playlist, new_pl, existing)
         else:
-            insert_6vdy_playlist(playlist, new_pl)
+            insert_6vdy_playlist(playlist, new_pl, existing)
 
         info_updated = update_info_field_if_needed(existing, playlist)
         movie_info_updated = False
@@ -1042,7 +1368,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
         if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                            info_updated, movie_info_updated):
+                                    info_updated, movie_info_updated):
             fields_updated = True
 
         return "updated"
@@ -1072,7 +1398,6 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         existing.clear()
         existing.update(new_ordered_dict)
 
-        # 注意：playlist 变量仍指向原 list 对象，existing.clear() 后引用依然有效
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         insert_6vdy_playlist(playlist, new_pl)
 
@@ -1084,7 +1409,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
         if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                            info_updated, movie_info_updated):
+                                    info_updated, movie_info_updated):
             fields_updated = True
 
         return "channel_added"
@@ -1112,7 +1437,7 @@ def detect_group(episodes, actors, types):
 
 
 def get_list_by_tab(tab_index):
-    html = fetch(BASE_URL)
+    html, eff_url = fetch_ex(BASE_URL)
     soup = BeautifulSoup(html, "lxml")
     tab_content = soup.select_one("#tab-content")
     if not tab_content:
@@ -1123,6 +1448,7 @@ def get_list_by_tab(tab_index):
         print(f"警告：期望获取索引为 {tab_index} 的列表，但实际只找到 {len(uls)} 个有效列表")
         return []
 
+    origin_host = _host_of(BASE_URL)
     target_ul = uls[tab_index]
     items = []
     for a in target_ul.select("li > a[href]"):
@@ -1131,25 +1457,27 @@ def get_list_by_tab(tab_index):
         if not title or not href:
             continue
         name, info = split_name_info(title)
-        items.append((name, info, urljoin(BASE_URL, href)))
+        full = urljoin(eff_url, href)
+        full = normalize_link_host(full, origin_host)  # 归一化回主域名，保证去重稳定
+        items.append((name, info, full))
     return items
 
 
 def get_homepage_list_6vdy():
     """抓取 6vdy.org 首页 #post_container 中的所有条目"""
-    html = fetch(HOME_URL_6VDY)
+    html, eff_url = fetch_ex(HOME_URL_6VDY)
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one("#post_container")
     if not container:
         raise RuntimeError("找不到 #post_container（6vdy 首页）")
 
+    origin_host = _host_of(HOME_URL_6VDY)
     items = []
     seen = set()
     for li in container.select("li.post"):
         h2 = li.find("h2")
         a = h2.find("a", href=True) if h2 else None
         if not a:
-            # 退而求其次：取缩略图链接
             a = li.select_one("a.zoom[href]")
         if not a:
             continue
@@ -1157,7 +1485,8 @@ def get_homepage_list_6vdy():
         href = a.get("href", "").strip()
         if not title or not href:
             continue
-        full_url = urljoin(HOME_URL_6VDY, href)
+        full_url = urljoin(eff_url, href)
+        full_url = normalize_link_host(full_url, origin_host)
         if full_url in seen:
             continue
         seen.add(full_url)
@@ -1187,23 +1516,19 @@ def process_items(data, items, tab_name):
                     new_6vdy_eps = pl.get("episodes", {})
                     break
 
-            # 无播放源直接判为失败（提前，逻辑不变）
             if not new_6vdy_eps:
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # 先做全局查重，过滤逻辑要依赖“是否已存在”
             matched_group, existing = find_existing_global(data, real_name, url)
 
             # ============ 过滤规则（地区屏蔽）============
-            # 放行优先级：白名单 > 已存在记录 > Anime 分类；其余才执行地区屏蔽
             if real_name in WHITELIST_NAMES:
                 print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
             elif existing is not None:
                 print(f"    ✓ 已存在记录放行（{matched_group}）：跳过地区屏蔽，持续更新")
             else:
-                # 新增记录：先预判分类，Anime 不做地区屏蔽
                 group_guess = detect_group(
                     new_6vdy_eps, rec.get("主演", []), rec.get("类型", [])
                 )
@@ -1214,7 +1539,6 @@ def process_items(data, items, tab_name):
                     region_match = any(keyword == region for keyword in FILTER_REGIONS)
 
                     if region_match:
-                        # 地区命中过滤名单，但若豆瓣/IMDb 最高有效评分达标则「开绿灯」放行
                         max_rating = get_max_rating(rec.get("评分", {}))
                         if max_rating is not None and max_rating >= MIN_RATING_7:
                             print(f"    ✅ 地区「{region}」命中过滤名单，但评分 {max_rating}"
@@ -1228,9 +1552,6 @@ def process_items(data, items, tab_name):
                             continue
 
             # ============ 过滤规则（评分屏蔽，仅针对新增项目）============
-            # 放行优先级：白名单 > 已存在记录；其余新增项目才校验评分。
-            # 逻辑：豆瓣/IMDb 取最高有效分(非空非0)，若该分数 < MIN_RATING 则跳过。
-            #      评分为空或全为0(无有效评分)时不干预，正常入库。
             if MIN_RATING and existing is None and real_name not in WHITELIST_NAMES:
                 max_rating = get_max_rating(rec.get("评分", {}))
                 if max_rating is not None and max_rating < MIN_RATING:
@@ -1242,17 +1563,14 @@ def process_items(data, items, tab_name):
             if existing:
                 status = process_existing_record(existing, new_6vdy_eps, url, rec)
                 if status == "updated":
-                    # 播放源集数/链接真正变更时才打印这句
                     print(f"    ✅ 更新({matched_group})：6vdy 渠道发现新剧集，已覆盖更新")
                     save_json(data)
                     ok += 1
                 elif status == "meta_updated":
-                    # 仅字段更新，无播放源改动，只提示元数据更新
                     print(f"    更新({matched_group})：仅补充/修正影片元数据，播放源无变化")
                     save_json(data)
                     ok += 1
                 elif status == "quality_updated":
-                    # 仅画质info升级
                     print(f"    ✅ 更新({matched_group})：影片画质标识升级，播放源无变化")
                     save_json(data)
                     ok += 1
@@ -1277,11 +1595,10 @@ def process_items(data, items, tab_name):
                 if group in ["Drama", "Anime"] and new_6vdy_eps:
                     has_ep_kw = any("集" in str(k) for k in new_6vdy_eps.keys())
                     if has_ep_kw:
-                        episode_count = get_real_episode_count(new_6vdy_eps)  # ← 原来是 len()
+                        episode_count = get_real_episode_count(new_6vdy_eps)
                         rec["info"] = f"更新至第{episode_count}集"
                         print(f"      [新增剧集info初始化] 自动写入 info: 「更新至第{episode_count}集」")
                     else:
-                        # 无“集”字但属于剧集/动漫，且新格式可能已写入年份，仅在为空时写入播放源名
                         if not rec.get("info"):
                             first_ep_name = list(new_6vdy_eps.keys())[0]
                             rec["info"] = first_ep_name
@@ -1307,14 +1624,22 @@ def process_items(data, items, tab_name):
 
 def process_tab_unified(data, tab_index, tab_name):
     print(f"\n[抓取] {tab_name} ...")
-    items = get_list_by_tab(tab_index)
+    try:
+        items = get_list_by_tab(tab_index)
+    except Exception as e:
+        print(f"  ✗ 列表页抓取失败，跳过「{tab_name}」: {e}")
+        return 0, 1
     print(f"  共发现 {len(items)} 条")
     return process_items(data, items, tab_name)
 
 
 def process_homepage_6vdy(data):
     print(f"\n[抓取] 6vdy 首页 ...")
-    items = get_homepage_list_6vdy()
+    try:
+        items = get_homepage_list_6vdy()
+    except Exception as e:
+        print(f"  ✗ 首页抓取失败，跳过: {e}")
+        return 0, 1
     print(f"  共发现 {len(items)} 条")
     return process_items(data, items, "6vdy首页")
 
@@ -1322,7 +1647,7 @@ def process_homepage_6vdy(data):
 # ============== 补全模式（用新方法补全已有记录的缺失字段） ==============
 def fetch_new_format_data(url):
     """请求一个 6vdy 详情页，返回 (新格式字段字典, 远程图片URL, 真实名称)"""
-    html = fetch(url)
+    html, eff_url = fetch_ex(url)
     soup = BeautifulSoup(html, "lxml")
     post = soup.select_one("#post_content")
     if not post:
@@ -1332,7 +1657,7 @@ def fetch_new_format_data(url):
     real_name, _ = split_name_info(h1_text) if h1_text else ("", "")
 
     img_tag = post.find("img")
-    img_url = img_tag["src"] if (img_tag and img_tag.get("src")) else ""
+    img_url = urljoin(eff_url, img_tag["src"]) if (img_tag and img_tag.get("src")) else ""
 
     lines = parse_post_lines(post)
     nf = parse_new_format(lines, real_name or h1_text)
@@ -1360,7 +1685,6 @@ def fill_empty_fields(item, nf, img_url=""):
         if not old_rating.get(rk) and nf_rating.get(rk):
             old_rating[rk] = nf_rating[rk]; changed = True
 
-    # 仅当原 image 为空时才补图
     if img_url and not item.get("image"):
         local = download_and_localize_image(img_url)
         if local:
@@ -1384,7 +1708,6 @@ def backfill_existing(data):
             if not target_url:
                 continue
 
-            # 判断是否字段缺失（导演/编剧/主演/类型/地区/intro 全空才需要补）
             need = (not item.get("导演") and not item.get("编剧")
                     and not item.get("主演") and not item.get("类型")
                     and not item.get("地区") and not item.get("intro"))
@@ -1402,7 +1725,8 @@ def backfill_existing(data):
                 if fill_empty_fields(item, nf, img_url):
                     updated += 1
                     save_json(data)
-                    print(f"    ✓ 已补全 (导演:「{item.get('导演')}」 类型:{item.get('类型')} 地区:「{item.get('地区')}」 年份:「{item.get('info')}」)")
+                    print(f"    ✓ 已补全 (导演:「{item.get('导演')}」 类型:{item.get('类型')} "
+                          f"地区:「{item.get('地区')}」 年份:「{item.get('info')}」)")
                 else:
                     print("    - 未发现可补全内容（可能该页同样缺数据）")
             except Exception as e:
@@ -1412,11 +1736,36 @@ def backfill_existing(data):
     print(f"\n[补全模式] 完成：扫描 {total} 条候选，成功更新 {updated} 条。")
 
 
+# ============== 连通性自检 ==============
+def preflight_check():
+    """启动时先探测可用站点；全部不通则给出明确排查提示"""
+    print(">>> [自检] 正在探测可用站点 ...")
+    for host in MIRROR_HOSTS:
+        test_url = f"https://{host}/"
+        try:
+            content, eff = fetch_ex(test_url, allow_mirror=False)
+            if content:
+                print(f">>> [自检] 可用站点: {eff}")
+                return True
+        except Exception as e:
+            print(f">>> [自检] 不可用: {test_url} ({type(e).__name__})")
+    print(">>> [自检] 所有镜像站均不可访问！可能原因：")
+    print("    1) 域名被阻断/DNS 污染 -> 请配置代理（脚本顶部 PROXIES 或环境变量 https_proxy）")
+    print("    2) 站点已全部更换域名 -> 打开发布页 https://www.6v123.com/ 获取最新域名，")
+    print("       然后更新脚本中的 BASE_URL / HOME_URL_6VDY / MIRROR_HOSTS")
+    print("    3) 本机网络故障 -> 先用 curl -I 手工验证")
+    return False
+
+
 # ============== 主流程 ==============
 def main():
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
     data = load_json()
+
+    if not preflight_check():
+        print("\n已中止：网络层不可用，未对 JSON 做任何修改。")
+        return
 
     # 补全模式：python 脚本.py backfill
     if len(sys.argv) > 1 and sys.argv[1] in ("backfill", "--backfill"):
@@ -1429,11 +1778,11 @@ def main():
     m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
     d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
     r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
-
-    # 新增：6vdy 首页抓取
     h_ok, h_fail = process_homepage_6vdy(data)
 
     print("\n====================================")
+    print(f"统计：电影 {m_ok}成功/{m_fail}失败 | 剧集 {d_ok}/{d_fail} | "
+          f"推荐 {r_ok}/{r_fail} | 首页 {h_ok}/{h_fail}")
     print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
 
 

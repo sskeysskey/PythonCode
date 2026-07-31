@@ -12,9 +12,12 @@ import requests
 import platform
 import subprocess
 import atexit
+import urllib3   # 新增
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) #屏蔽ssl警告
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup, NavigableString, Tag
 from datetime import datetime
+
 
 # ================= 防止系统休眠控制 =================
 _caffeinate_proc = None
@@ -618,8 +621,8 @@ def find_existing_global(data, name, sub_url, log=print):
     return None, None
 
 
-def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
-    """处理已存在的记录：合并字段、更新播放源和 info"""
+def process_existing_record(existing, new_episodes, sub_url, rec, matched_group, log=print):
+    """处理已存在的记录：合并字段、更新播放源和info"""
     # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
 
@@ -695,6 +698,21 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
                 old_idx = idx
                 break
 
+        # ==========【新增Movie特殊逻辑开始】==========
+        # 获得当前这条记录所在分组，existing是data[group]里的对象，我们需要从上层调用传入matched_group，这里做一点兼容：
+        # 注意：原函数没有传入matched_group，这里要修改函数入参！
+        # ！！重要：你需要修改函数定义增加参数 matched_group，往下看完整函数签名
+        # 对比新旧episode的url集合，忽略key(集名标签)
+        old_url_set = set(old_eps.values())
+        new_url_set = set(new_episodes.values())
+        # 仅Movie分类，url完全相同，但key(集名)不一样
+        if matched_group == "Movie" and old_url_set and new_url_set and (old_url_set == new_url_set) and (old_eps.keys() != new_episodes.keys()):
+            log(f"      [Movie防护] 播放URL全部未变化，仅集名标签变更，不覆盖episodes、不修改info")
+            log(f"        -> 旧标签:{list(old_eps.keys())}  新抓取标签:{list(new_episodes.keys())}")
+            # 即使网站info变成HD，也拒绝修改，直接返回no_change
+            return "no_change"
+        # ==========【新增Movie特殊逻辑结束】==========
+
         if new_episodes == old_eps:
             # 集数内容完全相同，但可能 info 有变化
             if new_scraped_info and new_scraped_info != existing.get("info", ""):
@@ -722,26 +740,30 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
         # 移除原有chnland条目
         if old_idx != -1:
             del playlist[old_idx]
-        
+
         # 判断是否比其他所有渠道集数更多，决定放第一位还是原位
-        if new_ep_count > max_other_ep:
+        chnland_on_top = new_ep_count > max_other_ep
+        if chnland_on_top:
             playlist.insert(0, new_pl)
             log(f"      [排序] chnland集数({new_ep_count})大于其他渠道最大({max_other_ep})，置顶playlist")
         else:
             # 放回原来删除的位置
             playlist.insert(old_idx, new_pl)
 
-        # 用抓取到的 info 直接更新
-        # ==================== 优化：优质info（全）不被普通info覆盖 ====================
-        if new_scraped_info and new_scraped_info != existing.get("info", ""):
+        # ==================== info 更新 ====================
+        if chnland_on_top:
+            # chnland 已成为集数最多的渠道 → info 以「实际抓到的集数」为准
+            actual_info = f"更新至第{new_ep_count}集"
+            old_info = existing.get("info", "")
+            if actual_info != old_info:
+                existing["info"] = actual_info
+                log(f"      [info更新] 「{old_info}」 -> 「{actual_info}」（按实际集数 {new_ep_count}）")
+        elif new_scraped_info and new_scraped_info != existing.get("info", ""):
+            # 非置顶：沿用原有的「优质info不被覆盖」逻辑
             old_info = existing.get("info", "")
             old_ep = extract_episode_number(old_info)
             new_ep = extract_episode_number(new_scraped_info)
 
-            # 规则：
-            # 1. 旧info为空 → 更新
-            # 2. 新旧集数都存在 且 新集数 > 旧集数 → 更新
-            # 3. 集数相同 → 不更新（保留优质旧info）
             if not old_info:
                 existing["info"] = new_scraped_info
                 log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
@@ -751,7 +773,6 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
                     log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
                 else:
                     log(f"      [info跳过] 集数相同，保留优质原有info：「{old_info}」")
-            # 其他情况（无法提取集数 / 集数相同）都不更新
 
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return "updated"
@@ -784,7 +805,8 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
         # 新增渠道时对比集数，决定插入位置
-        if new_ep_count > max_other_ep:
+        chnland_on_top = new_ep_count > max_other_ep
+        if chnland_on_top:
             playlist.insert(0, new_pl)
             log(f"      [排序] 新增chnland集数({new_ep_count})大于其他渠道最大({max_other_ep})，置顶playlist")
         else:
@@ -792,8 +814,15 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
 
         log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}")
 
-        # 用抓取到的 info 更新：现有 info 为空，或新 info 日期更新、或新抓取集数更多时都更新
-        if new_scraped_info:
+        if chnland_on_top:
+            # chnland 已成为集数最多的渠道 → info 以「实际抓到的集数」为准
+            actual_info = f"更新至第{new_ep_count}集"
+            old_info = existing.get("info", "")
+            if actual_info != old_info:
+                existing["info"] = actual_info
+                log(f"      [info更新] 「{old_info}」 -> 「{actual_info}」（按实际集数 {new_ep_count}）")
+        elif new_scraped_info:
+            # 非置顶：沿用原有更新逻辑
             old_info = existing.get("info", "")
             old_date = extract_info_date(old_info)
             new_date = extract_info_date(new_scraped_info)
@@ -804,7 +833,6 @@ def process_existing_record(existing, new_episodes, sub_url, rec, log=print):
             elif new_date and (not old_date or new_date > old_date):
                 should_update = True
             elif old_ep_count is not None and len(new_episodes) > old_ep_count:
-                # 新抓取的集数超过原 info 中标注的集数，更新 info
                 should_update = True
             if should_update and new_scraped_info != old_info:
                 existing["info"] = new_scraped_info
@@ -894,7 +922,7 @@ def process_list_page(data, list_url, group, page_name):
                 continue
 
             if existing:
-                status = process_existing_record(existing, new_eps, url, rec, buf.append)
+                status = process_existing_record(existing, new_eps, url, rec, matched_group, buf.append)
                 if status == "updated":
                     buf.append(f"    ✅ 更新({matched_group})：{SITE_KEY} 渠道发现新内容，已覆盖更新")
                     save_json(data)

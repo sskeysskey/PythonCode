@@ -51,20 +51,21 @@ PLAYLIST_NAME = "gdefud"
 SITE_KEY      = "gdefud"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
+
+# 网络重试
+MAX_RETRIES   = 3
+RETRY_BACKOFF = 2.0     # 第 n 次失败后等待 RETRY_BACKOFF * n 秒
+
+# 落盘节流：每 N 条变更写一次磁盘（1 = 实时写盘）
+SAVE_EVERY    = 1
+
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
-                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖", "红色珍珠"]
+                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
+                   "阿松与阿暖", "红色珍珠", "飞越疯人院"]
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
-    # "镖人 第二季"
+    "北斗神拳 拳王军杂兵们的挽歌", "麻辣教师第二季"
 ]
-
-# 渠道优先级：数字越小优先级越高，playlist 排序时靠前
-SITE_PRIORITY = {
-    "huxitech": 0,
-    "chnland":  1,
-    "6vdy":     2,
-    "gdefud":   3,
-}
 
 # 分类页 -> 分组
 #   group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
@@ -91,7 +92,10 @@ FILTER_REGIONS_OVERRIDE = {
 EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
 
 # 无效的集名（需要从 playlist 中过滤掉）
-INVALID_EPISODE_NAMES = {"立即播放", "收藏"}
+INVALID_EPISODE_NAMES = {
+    "立即播放", "收藏", "播放", "倒序", "正序", "排序",
+    "下载", "分享", "报错", "举报", "评论",
+}
 
 HEADERS = {
     "User-Agent": (
@@ -102,24 +106,69 @@ HEADERS = {
     "Referer": DOMAIN,
 }
 
+
+# ============== 网络异常类型 ==============
+class FetchError(Exception):
+    pass
+
+
+class NoRetryFetchError(FetchError):
+    """客户端错误（403/404 等），重试无意义"""
+    pass
+
+
 # ============== 工具函数 ==============
 
 def has_existing_site_url(item, target_url):
     """检查item中是否已经存在目标url（匹配url/url1/url2...）"""
-    url_keys = sorted(
+    if not target_url:
+        return False
+    for k in item.keys():
+        if k == "url" or re.match(r"^url\d+$", k):
+            if item.get(k, "") == target_url:
+                return True
+    return False
+
+
+def _url_keys_sorted(item):
+    """按 url, url1, url2 ... 的顺序返回键名列表"""
+    return sorted(
         [k for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)],
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
     )
-    for k in url_keys:
-        val = item.get(k, "")
-        if val == target_url:
-            return True
-    return False
+
+
+def _attach_url(existing, sub_url):
+    """
+    若 sub_url 不存在于 item 中，则分配一个新的 urlN 并保持字段顺序（插到最后一个 url 键之后），
+    返回新键名；若已存在则返回 None。
+    """
+    if not sub_url or has_existing_site_url(existing, sub_url):
+        return None
+
+    url_keys = _url_keys_sorted(existing)
+    nums = [int(re.match(r"^url(\d+)$", k).group(1))
+            for k in url_keys if re.match(r"^url(\d+)$", k)]
+    new_key = f"url{(max(nums) if nums else 0) + 1}"
+
+    last = url_keys[-1] if url_keys else None
+    ordered, done = {}, False
+    for k, v in existing.items():
+        ordered[k] = v
+        if k == last:
+            ordered[new_key] = sub_url
+            done = True
+    if not done:
+        ordered[new_key] = sub_url
+
+    existing.clear()
+    existing.update(ordered)
+    return new_key
 
 
 # ============== 基于 curl_cffi 的会话（伪装 Chrome 指纹）==============
 # impersonate 的版本尽量贴近你真实 Chrome 大版本，可选：chrome124 / chrome131 / chrome
-_session = cffi.Session(impersonate="chrome124")
+_session = cffi.Session(impersonate="chrome")
 _chrome_cookies = None
 
 def _load_chrome_cookies():
@@ -137,25 +186,51 @@ def _load_chrome_cookies():
         print(f">>> [Cookie] 读取 Chrome cookie 失败: {e}")
         return {}
 
+
 def fetch(url, is_binary=False):
+    """带退避重试的请求；403/404 不重试"""
     global _chrome_cookies
     if _chrome_cookies is None:
         _chrome_cookies = _load_chrome_cookies()
-    resp = _session.get(
-        url,
-        headers=HEADERS,
-        cookies=_chrome_cookies,
-        timeout=REQUEST_TIMEOUT,
-    )
-    if resp.status_code == 403:
-        # 打印前 500 字符，判断是不是 Cloudflare 挑战页
-        print(f"    [403调试] {resp.text[:500]}")
-    resp.raise_for_status()
-    if is_binary:
-        return resp.content
-    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
-        resp.encoding = resp.apparent_encoding or "utf-8"
-    return resp.text
+
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = _session.get(
+                url,
+                headers=HEADERS,
+                cookies=_chrome_cookies,
+                timeout=REQUEST_TIMEOUT,
+            )
+            status = resp.status_code
+
+            if status in (403, 404):
+                if status == 403:
+                    # 打印前 500 字符，判断是不是 Cloudflare 挑战页
+                    print(f"    [403调试] {resp.text[:500]}")
+                raise NoRetryFetchError(f"HTTP {status} (不重试): {url}")
+
+            if status == 429 or status >= 500:
+                raise FetchError(f"HTTP {status}: {url}")
+
+            resp.raise_for_status()
+
+            if is_binary:
+                return resp.content
+            if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
+                resp.encoding = resp.apparent_encoding or "utf-8"
+            return resp.text
+
+        except NoRetryFetchError:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF * attempt
+                print(f"    [重试 {attempt}/{MAX_RETRIES}] 请求失败: {e}，{wait:.1f}s 后重试")
+                time.sleep(wait)
+
+    raise last_err if last_err else FetchError(f"请求失败: {url}")
 
 
 def _re_class(base):
@@ -184,6 +259,7 @@ def is_garbled(value):
     if re.fullmatch(r"[?？]+", stripped):
         return True
     return False
+
 
 def normalize_text(s):
     if not s:
@@ -277,6 +353,8 @@ def download_and_localize_image(img_url):
     if not img_url:
         return ""
     fn = safe_filename(img_url)
+    if not fn:
+        return ""
     local_path = os.path.join(IMG_DIR, fn)
     if not os.path.exists(local_path):
         try:
@@ -289,6 +367,7 @@ def download_and_localize_image(img_url):
             print(f"  [图片下载失败] {img_url}: {e}")
             return ""
     return fn
+
 
 def episodes_are_numbered(episodes):
     """判断选集是否是按 集/期 编号（用来排除电影的 HD / BD1080P / HD国语 之类）"""
@@ -329,6 +408,45 @@ def info_episode_number(info):
             return int(m.group(1))
     return None
 
+def same_progress_info(a, b):
+    """判断两个 info 是否表达相同的更新进度（忽略 01 vs 1 之类写法差异）"""
+    na = info_episode_number(a)
+    nb = info_episode_number(b)
+    if na is not None and nb is not None:
+        return na == nb
+    return normalize_text(a or "") == normalize_text(b or "")
+
+def get_max_episode_number(episodes):
+    """
+    从选集字典的集名中提取最大集编号；
+    若所有集名都没有可用编号，返回 0（是否兜底由调用方决定）。
+    """
+    max_num = 0
+    for name in episodes.keys():
+        m = re.search(r'(\d+)\s*[集期话話]', name)   # 优先 "第20集" / "20期"
+        if not m:
+            m = re.search(r'第\s*(\d+)', name)        # 其次 "第20"
+        if not m:
+            m = re.search(r'(\d+)', name)             # 最后任意数字
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    return max_num
+
+
+def episode_progress(episodes):
+    """用于渠道之间比较「谁更新得多」：
+    - 如果选集是编号型(有集/期标记)，优先集号；
+    - 如果是日期类等非编号选集，直接使用条目总数，避免把日期数字误判成巨大集数
+    """
+    if not episodes:
+        return 0
+    if episodes_are_numbered(episodes):
+        n = get_max_episode_number(episodes)
+        return n if n > 0 else len(episodes)
+    else:
+        # 非编号选集（例如纯日期），直接返回条目数量，不要解析里面的裸数字
+        return len(episodes)
+
 
 def build_progress_info(episodes, old_info=""):
     """根据选集生成「更新至第N集/期」；不适用或会造成降级时返回 None"""
@@ -344,7 +462,7 @@ def build_progress_info(episodes, old_info=""):
 
 
 def merge_missing_fields(existing, rec, log=print):
-    """只补空字段（原来这段逻辑写在 process_existing_record 里，但那个函数从没被调用过）"""
+    """只补空字段"""
     changed = False
     for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro", "date"]:
         new_val = rec.get(field)
@@ -360,154 +478,41 @@ def merge_missing_fields(existing, rec, log=print):
             log(f"    [字段补全] {field}: {new_val}")
     return changed
 
-def get_max_episode_number(episodes):
-    """从选集字典的集名中提取最大集编号；集名里没有数字时退回到集数总量"""
-    max_num = 0
-    for name in episodes.keys():
-        m = re.search(r'(\d+)\s*[集期话話]', name)   # 优先 "第20集" / "20期"
-        if not m:
-            m = re.search(r'第\s*(\d+)', name)         # 其次 "第20"
-        if not m:
-            m = re.search(r'(\d+)', name)              # 最后任意数字
-        if m:
-            max_num = max(max_num, int(m.group(1)))
-    if max_num == 0:
-        max_num = len(episodes)
-    return max_num
-
-
-def append_gdefud_channel(existing, new_episodes, sub_url):
-    """
-    把 gdefud 作为【新渠道】追加：
-      - 如果url已存在，不再新增url键，只追加playlist
-      - 分配新的 urlX（数字取现有最大值 +1），并插到最后一个 url 键之后
-      - playlist 直接追加到末尾（不按优先级插队）
-    返回新分配的 url 键名，url已存在返回None
-    """
-    if has_existing_site_url(existing, sub_url):
-        existing.setdefault("playlist", []).append(
-            {"name": PLAYLIST_NAME, "episodes": new_episodes}
-        )
-        return None
-
-    url_keys = sorted(
-        [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
-        key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
-    )
-    max_num = 0
-    for k in url_keys:
-        m = re.match(r"^url(\d+)$", k)
-        if m:
-            max_num = max(max_num, int(m.group(1)))
-    new_url_key = f"url{max_num + 1}"   # 只有 base "url" 时 -> url1
-
-    # 保持字段顺序：把新 url 插到最后一个 url 键之后
-    last_url_key = url_keys[-1] if url_keys else None
-    new_ordered = {}
-    for k, v in existing.items():
-        new_ordered[k] = v
-        if k == last_url_key:
-            new_ordered[new_url_key] = sub_url
-    if new_url_key not in new_ordered:
-        new_ordered[new_url_key] = sub_url
-    existing.clear()
-    existing.update(new_ordered)
-
-    # playlist 追加到末尾
-    existing.setdefault("playlist", []).append(
-        {"name": PLAYLIST_NAME, "episodes": new_episodes}
-    )
-    return new_url_key
-
 
 def promote_gdefud_to_front(existing, new_episodes, sub_url):
     """
-    把 gdefud 渠道放到 playlist 首位：
-      - 已存在相同sub_url：只更新playlist，不新增url键
-      - 不存在sub_url：新建urlX并把playlist插到首位
-      - 已存在gdefud playlist条目但是url缺失：新增urlX
+    把 gdefud 渠道放到 playlist 首位；URL 缺失时自动补一个 urlN。
     返回 (url_key or None, action)，action ∈ {"moved", "inserted"}
     """
+    url_key  = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
-    gd_index = next(
-        (i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME),
-        None
-    )
-
-    # url 是否已经存在在 item 的 url/url1/url2...
-    url_already_exists = has_existing_site_url(existing, sub_url)
-
-    # ---- 情况A：playlist存在gdefud渠道 ----
+    gd_index = next((i for i, pl in enumerate(playlist)
+                     if pl.get("name") == PLAYLIST_NAME), None)
     if gd_index is not None:
         pl = playlist.pop(gd_index)
-        pl["episodes"] = new_episodes          # 更新选集
-        playlist.insert(0, pl)                 # 挪到首位
-        # url已经存在，不需要新增url键
-        return None, "moved"
+        pl["episodes"] = new_episodes
+        playlist.insert(0, pl)
+        return url_key, "moved"
 
-    # ---- 情况B：playlist不存在gdefud ----
-    if url_already_exists:
-        # URL已经存在，只新增playlist条目，不再创建urlX！
-        playlist.insert(0, {"name": PLAYLIST_NAME, "episodes": new_episodes})
-        return None, "inserted"
-
-    # URL不存在，新建urlX
-    url_keys = sorted(
-        [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
-        key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
-    )
-    max_num = 0
-    for k in url_keys:
-        m = re.match(r"^url(\d+)$", k)
-        if m:
-            max_num = max(max_num, int(m.group(1)))
-    new_url_key = f"url{max_num + 1}"
-
-    # 保持字段顺序：把新 url 插到最后一个 url 键之后
-    last_url_key = url_keys[-1] if url_keys else None
-    new_ordered = {}
-    inserted = False
-    for k, v in existing.items():
-        new_ordered[k] = v
-        if k == last_url_key:
-            new_ordered[new_url_key] = sub_url
-            inserted = True
-    if not inserted:
-        new_ordered[new_url_key] = sub_url
-    existing.clear()
-    existing.update(new_ordered)
-
-    # playlist 插到首位
-    playlist = existing.setdefault("playlist", [])
     playlist.insert(0, {"name": PLAYLIST_NAME, "episodes": new_episodes})
-    return new_url_key, "inserted"
+    return url_key, "inserted"
 
 
 def upsert_gdefud_channel(existing, new_episodes, sub_url):
     """
-    插入/更新 gdefud 渠道，但【不改变其在 playlist 中的位置】（不置顶）：
-      - 已存在 gdefud 渠道 -> 就地更新其 episodes（位置不变）
-      - 不存在：
-          url已存在：只追加playlist，不新增urlX
-          url不存在：追加新urlX，并把playlist追加到末尾
+    插入/更新 gdefud 渠道，但【不改变其在 playlist 中的位置】（不置顶）。
+    URL 缺失时自动补一个 urlN。
     返回 (url_key or None, action)，action ∈ {"updated", "appended"}
     """
+    url_key  = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
     for pl in playlist:
         if pl.get("name") == PLAYLIST_NAME:
             pl["episodes"] = new_episodes      # 就地更新，不动位置
-            return None, "updated"
+            return url_key, "updated"
 
-    # playlist没有gdefud条目
-    url_already_exists = has_existing_site_url(existing, sub_url)
-    if url_already_exists:
-        # url已经存在，仅追加playlist，不再新增url
-        playlist.append({"name": PLAYLIST_NAME, "episodes": new_episodes})
-        return None, "appended"
-
-    # 不存在url，新建urlX
-    new_url_key = append_gdefud_channel(existing, new_episodes, sub_url)
-    return new_url_key, "appended"
+    playlist.append({"name": PLAYLIST_NAME, "episodes": new_episodes})
+    return url_key, "appended"
 
 
 def is_valid_episode_name(name):
@@ -519,6 +524,7 @@ def is_valid_episode_name(name):
     if re.match(r"^更新[至到]", name):
         return False
     return True
+
 
 def filter_episodes(eps):
     """过滤无效集名，只保留正式播放条目"""
@@ -716,18 +722,19 @@ def parse_intro(soup):
 
 def extract_episodes(soup):
     """只抓取【云播资源】下面的选集，忽略高清资源，返回 {集名: 播放url}，已过滤无效集名"""
+    # 排除缩略图 / 大播放按钮里的链接（提到函数顶部，避免作用域隐患）
+    exclude_pat = re.compile(r"stui-content_+thumb|play-btn|stui-vodlist_+thumb")
+
     best = {}
 
     # 精准定位标题文字=云播资源对应的播放列表
     target_playlist_ul = None
-    # 遍历每个板块头部标题
     for head_div in soup.select(".stui-pannel_head.bottom-line.active"):
         h3_title = head_div.select_one("h3.title")
         if not h3_title:
             continue
         title_text = normalize_text(h3_title.get_text(strip=True))
         if "云播资源" in title_text:
-            # 找到父容器 → 向下查找最近的 stui-content_playlist
             parent_box = head_div.find_parent(class_=_re_class("stui-pannel-box"))
             if parent_box:
                 target_playlist_ul = parent_box.select_one("ul.stui-content_playlist")
@@ -737,8 +744,12 @@ def extract_episodes(soup):
     if target_playlist_ul:
         eps = {}
         for a in target_playlist_ul.select("li a[href]"):
-            name = a.get_text(strip=True)
             href = a.get("href", "")
+            if "/vodplay/" not in href:      # 过滤「收藏/报错」之类的按钮
+                continue
+            if a.find_parent(class_=exclude_pat):
+                continue
+            name = a.get_text(strip=True)
             if name and href:
                 eps[name] = urljoin(DOMAIN, href)
         if len(eps) > len(best):
@@ -747,11 +758,9 @@ def extract_episodes(soup):
     if best:
         return filter_episodes(best)
 
-    # === 下面原来的兜底策略保留不变，防止页面结构异常找不到云播资源时兜底 ===
     # 策略2：兜底——只从 .stui-pannel_bd 内抓 /vodplay/ 链接
     pannel_bd = soup.find_all(class_=_re_class("stui-pannel_bd"))
     eps = {}
-    exclude_pat = re.compile(r"stui-content_+thumb|play-btn|stui-vodlist_+thumb")
     for bd in pannel_bd:
         for a in bd.select('a[href*="/vodplay/"]'):
             if a.find_parent(class_=exclude_pat):
@@ -863,7 +872,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
     }
 
 
-# ============== JSON 读写与核心逻辑 ==============
+# ============== JSON 读写（原子写 + 节流） ==============
 def load_json():
     if not os.path.exists(JSON_PATH):
         return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
@@ -872,17 +881,58 @@ def load_json():
 
 
 def save_json(data):
+    """写临时文件 + os.replace 原子替换，避免中途中断损坏文件"""
     os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
-    with open(JSON_PATH, "w", encoding="utf-8") as f:
+    tmp = JSON_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, JSON_PATH)
 
 
-def find_existing_global(data, name, sub_url, log=print):
+_pending_changes = 0
+_pending_data = None
+
+
+def mark_dirty(data, force=False):
+    """记录一次变更，达到 SAVE_EVERY 条或 force 时落盘"""
+    global _pending_changes, _pending_data
+    _pending_data = data
+    _pending_changes += 1
+    if force or _pending_changes >= SAVE_EVERY:
+        save_json(data)
+        _pending_changes = 0
+
+
+def flush_pending():
+    """程序结束（含异常退出）时把未落盘的变更写下去"""
+    global _pending_changes
+    if _pending_changes and _pending_data is not None:
+        try:
+            save_json(_pending_data)
+            print(">>> [保存] 已写入未落盘的变更")
+        except Exception as e:
+            print(f">>> [保存失败] {e}")
+        _pending_changes = 0
+
+
+atexit.register(flush_pending)
+
+
+# ============== 去重检索 ==============
+def _year(v):
+    m = re.search(r"(19|20)\d{2}", str(v or ""))
+    return int(m.group(0)) if m else None
+
+
+def find_existing_global(data, name, sub_url, rec_date=None, log=print):
     # 生成【去所有空格】的标准化名称
     def normalize_name(s):
         return s.replace(" ", "").strip() if s else ""
 
     norm_name = normalize_name(name)
+    new_year = _year(rec_date)
 
     # 1. 优先跨分类按 URL 全局检索
     if sub_url:
@@ -898,14 +948,22 @@ def find_existing_global(data, name, sub_url, log=print):
                             f"抓取:「{name}」, 所在分类:{group})")
                     return group, item
 
-    # 2. 按【去空格名称】全局检索
+    # 2. 按【去空格名称】全局检索（同名需年份接近，避免翻拍误合并）
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             existing_raw_name = item.get("name", "")
             existing_norm_name = normalize_name(existing_raw_name)
-            if existing_norm_name == norm_name:
-                log(f"      [名称去重（忽略空格）] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
-                return group, item
+            if existing_norm_name != norm_name:
+                continue
+
+            old_year = _year(item.get("date"))
+            if old_year and new_year and abs(old_year - new_year) > 1:
+                log(f"      [名称同名但年份不符] 「{existing_raw_name}」({old_year}) "
+                    f"≠ 抓取「{name}」({new_year})，视为不同作品")
+                continue
+
+            log(f"      [名称去重（忽略空格）] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
+            return group, item
 
     return None, None
 
@@ -918,13 +976,14 @@ def process_list_page(data, list_url, group, page_name):
         items = get_list(list_url)
     except Exception as e:
         print(f"  ✗ 列表抓取失败: {e}")
-        return 0, 0
+        return 0, 0, 0
     print(f"  共发现 {len(items)} 条")
-    ok, fail = 0, 0
+    ok, fail, skipped = 0, 0, 0
 
     for idx, (name, info, url, img) in enumerate(items, 1):
         if name in BLACKLIST_NAMES:
             print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            skipped += 1
             continue
 
         header = f"  ({idx}/{len(items)}) {name}  [{info}]"
@@ -948,7 +1007,7 @@ def process_list_page(data, list_url, group, page_name):
             if not new_eps:
                 flush()
                 print("    ! 无播放源，跳过")
-                fail += 1
+                skipped += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
@@ -964,12 +1023,14 @@ def process_list_page(data, list_url, group, page_name):
                 flush()
                 print(f"    - 跳过：「{real_name}」属于「{current_group}」，"
                       f"集数 {len(new_eps)} 超过 {MAX_EPISODES} 集(期) 上限 ")
-                ok += 1
+                skipped += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # ===== 先跨分类按 URL 全局检索（再按名称）=====
-            matched_group, existing = find_existing_global(data, real_name, url, buf.append)
+            # ===== 先跨分类按 URL 全局检索（再按名称+年份）=====
+            matched_group, existing = find_existing_global(
+                data, real_name, url, rec_date=rec.get("date"), log=buf.append
+            )
 
             effective_group = matched_group if existing else current_group
             if existing and matched_group != current_group:
@@ -990,7 +1051,7 @@ def process_list_page(data, list_url, group, page_name):
                 if any(keyword == region_clean for keyword in filter_regions):
                     flush()
                     print(f"    - 跳过：地区为「{region}」，在过滤列表中")
-                    ok += 1
+                    skipped += 1
                     time.sleep(SLEEP_BETWEEN)
                     continue
 
@@ -1006,16 +1067,24 @@ def process_list_page(data, list_url, group, page_name):
                         flush()
                         print(f"    - 跳过：地区未知，但类型「{type_text}」含"
                               f"「{matched_kw}」，判定为国产内容")
-                        ok += 1
+                        skipped += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
 
             if existing:
-                new_max  = get_max_episode_number(new_eps)
+                new_max  = episode_progress(new_eps)
                 now_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 # ① 先补全缺失字段
                 fields_changed = merge_missing_fields(existing, rec, buf.append)
+
+                # ①b 封面图缺失时补图
+                if not existing.get("image") and rec.get("image"):
+                    local = download_and_localize_image(rec["image"])
+                    if local:
+                        existing["image"] = local
+                        fields_changed = True
+                        buf.append(f"    [字段补全] image: {local}")
 
                 playlist = existing.setdefault("playlist", [])
                 gd_index = next(
@@ -1024,13 +1093,16 @@ def process_list_page(data, list_url, group, page_name):
                 )
                 old_eps = playlist[gd_index].get("episodes", {}) if gd_index is not None else None
 
+                # URL 是否需要补写（用于判定「有没有实际变更」）
+                url_missing = not has_existing_site_url(existing, url)
+
                 # ② 其它渠道（不含 gdefud 自己的旧数据）的最大集数
                 existing_max = 0
                 for pl in playlist:
                     if pl.get("name") == PLAYLIST_NAME:
                         continue
                     existing_max = max(existing_max,
-                                       get_max_episode_number(pl.get("episodes", {})))
+                                       episode_progress(pl.get("episodes", {})))
 
                 old_info = existing.get("info", "")
 
@@ -1041,12 +1113,13 @@ def process_list_page(data, list_url, group, page_name):
 
                         eps_changed  = (gd_index is None) or (old_eps != new_eps)
                         pos_changed  = (gd_index is not None and gd_index != 0)
-                        info_changed = (new_info_text != old_info)
+                        info_changed = not same_progress_info(new_info_text, old_info)
 
-                        if not (eps_changed or pos_changed or info_changed or fields_changed):
+                        if not (eps_changed or pos_changed or info_changed
+                                or fields_changed or url_missing):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
-                            ok += 1
+                            skipped += 1
                             time.sleep(SLEEP_BETWEEN)
                             continue
 
@@ -1057,10 +1130,11 @@ def process_list_page(data, list_url, group, page_name):
                         existing["update"] = now_str
                         buf.append(f"    [{matched_group}] 新抓取集数 {new_max} >= 其它渠道最大 "
                                    f"{existing_max}，插入并置顶")
-                        save_json(data)
+                        mark_dirty(data)
                         flush()
                         if action == "moved":
-                            print(f"    ✅ 更新({matched_group})：gdefud 已更新并置顶到 playlist 首位")
+                            print(f"    ✅ 更新({matched_group})：gdefud 已更新并置顶到 playlist 首位"
+                                  f"{f'（补写 {url_key}）' if url_key else ''}")
                         else:
                             print(f"    ✅ 更新({matched_group})：gdefud 作为新渠道写入 "
                                   f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
@@ -1068,10 +1142,10 @@ def process_list_page(data, list_url, group, page_name):
                     else:
                         # 集数不足 -> 插入但不置顶，info 不动
                         eps_changed = (gd_index is None) or (old_eps != new_eps)
-                        if not (eps_changed or fields_changed):
+                        if not (eps_changed or fields_changed or url_missing):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
-                            ok += 1
+                            skipped += 1
                             time.sleep(SLEEP_BETWEEN)
                             continue
 
@@ -1079,10 +1153,11 @@ def process_list_page(data, list_url, group, page_name):
                         existing["update"] = now_str
                         buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
                                    f"{existing_max}，插入但不置顶")
-                        save_json(data)
+                        mark_dirty(data)
                         flush()
                         if action == "updated":
-                            print(f"    ✅ 更新({matched_group})：gdefud 渠道已就地更新（位置不变）")
+                            print(f"    ✅ 更新({matched_group})：gdefud 渠道已就地更新（位置不变）"
+                                  f"{f'（补写 {url_key}）' if url_key else ''}")
                         else:
                             print(f"    ✅ 更新({matched_group})：gdefud 作为新渠道写入 "
                                   f"{url_key or '(已有URL)'}，追加到 playlist 末尾")
@@ -1095,10 +1170,11 @@ def process_list_page(data, list_url, group, page_name):
                     pos_changed  = (gd_index is not None and gd_index != 0)
                     info_changed = bool(scraped_info and not old_info)
 
-                    if not (eps_changed or pos_changed or info_changed or fields_changed):
+                    if not (eps_changed or pos_changed or info_changed
+                            or fields_changed or url_missing):
                         flush()
                         print(f"    - 无字段变更，跳过：{real_name}")
-                        ok += 1
+                        skipped += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
 
@@ -1107,23 +1183,24 @@ def process_list_page(data, list_url, group, page_name):
                         existing["info"] = scraped_info
                         buf.append(f"    [info补充] 「」 -> 「{scraped_info}」")
                     existing["update"] = now_str
-                    save_json(data)
+                    mark_dirty(data)
                     flush()
                     if action == "moved":
-                        print(f"    ✅ 更新(Movie)：gdefud 已更新并置顶到 playlist 首位")
+                        print(f"    ✅ 更新(Movie)：gdefud 已更新并置顶到 playlist 首位"
+                              f"{f'（补写 {url_key}）' if url_key else ''}")
                     else:
                         print(f"    ✅ 更新(Movie)：gdefud 作为新渠道写入 "
                               f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
                     ok += 1
 
             else:
-                # 新增记录（保持不变）
+                # 新增记录
                 flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(current_group, []).append(rec)
                 print(f"    ✅ 新增 -> {current_group} (共 {len(new_eps)} 集) "
                       f"[真实名称: {real_name}] [URL: {rec['url']}]")
-                save_json(data)
+                mark_dirty(data)
                 ok += 1
 
         except Exception as e:
@@ -1132,7 +1209,9 @@ def process_list_page(data, list_url, group, page_name):
             fail += 1
         time.sleep(SLEEP_BETWEEN)
 
-    return ok, fail
+    # 本页处理完强制落盘一次
+    mark_dirty(data, force=True)
+    return ok, fail, skipped
 
 
 # ============== 补全模式 ==============
@@ -1185,7 +1264,7 @@ def backfill_existing(data):
 
             need = (not item.get("导演") and not item.get("主演")
                     and not item.get("类型") and not item.get("地区")
-                    and not item.get("intro"))
+                    and not item.get("intro")) or not item.get("image")
             if not need:
                 continue
 
@@ -1200,7 +1279,7 @@ def backfill_existing(data):
                 if fill_empty_fields(item, fields, img_url):
                     item["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     updated += 1
-                    save_json(data)
+                    mark_dirty(data)
                     print(f"    ✅ 已补全 (导演:{item.get('导演')} 类型:{item.get('类型')} 地区:「{item.get('地区')}」)")
                 else:
                     print("    - 未发现可补全内容")
@@ -1208,6 +1287,7 @@ def backfill_existing(data):
                 print(f"    ✗ 失败: {e}")
             time.sleep(SLEEP_BETWEEN)
 
+    mark_dirty(data, force=True)
     print(f"\n[补全模式] 完成：扫描 {total} 条候选，成功更新 {updated} 条。")
 
 
@@ -1223,14 +1303,17 @@ def main():
         print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
         return
 
-    total_ok, total_fail = 0, 0
+    total_ok, total_fail, total_skip = 0, 0, 0
     for list_url, group, page_name in LIST_PAGES:
-        ok, fail = process_list_page(data, list_url, group, page_name)
-        total_ok += ok
+        ok, fail, skipped = process_list_page(data, list_url, group, page_name)
+        total_ok   += ok
         total_fail += fail
+        total_skip += skipped
 
+    flush_pending()
     print("\n====================================")
-    print(f"所有抓取任务完成! 成功 {total_ok} 条，失败 {total_fail} 条。数据已实时保存在 {JSON_PATH}")
+    print(f"所有抓取任务完成! 成功 {total_ok} 条，跳过 {total_skip} 条，失败 {total_fail} 条。"
+          f"数据已保存在 {JSON_PATH}")
 
 
 if __name__ == "__main__":

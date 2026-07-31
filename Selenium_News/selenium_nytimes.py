@@ -63,6 +63,9 @@ GENERIC_LABELS = {
 }
 
 # ================= 工具函数 =================
+class EmptyResultError(Exception):
+    """过滤前抓取到 0 条数据,视为抓取失败,需要重试"""
+    pass
 
 def open_html_file(file_path):
     # <--- 跨平台修改：处理 Windows 路径反斜杠和 file:// 格式 --->
@@ -181,11 +184,18 @@ def scrape_nytimes(old_content, current_datetime, formatted_datetime, current_ye
             time.sleep(0.5)
         print("滚动完成，开始抓取。")
 
-        # --- 抓取新内容 ---
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "a")))
+        try:
+            wait.until(EC.presence_of_element_located(
+                (By.CSS_SELECTOR, f"a[href*='/{current_year}/']")
+            ))
+        except TimeoutException:
+            print("⚠️ 等待文章链接超时,仍尝试直接抓取...")
 
-        # 查找所有 href 中包含当前年份的链接
         link_elements = driver.find_elements(By.CSS_SELECTOR, f"a[href*='/{current_year}/']")
+
+        # 兜底:万一年份跨年/链接格式变了,退回抓所有带 /20xx/ 的链接
+        if not link_elements:
+            link_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='/20']")
 
         raw_data_list = []
 
@@ -236,6 +246,23 @@ def scrape_nytimes(old_content, current_datetime, formatted_datetime, current_ye
             except Exception:
                 continue
 
+        # ===== 关键:过滤前为 0 条,判定为抓取失败,交给外层重试 =====
+        if len(raw_data_list) == 0:
+            page_len = len(driver.page_source or "")
+
+            try:
+                dump = os.path.join(DOWNLOADS_DIR, f"nyt_empty_{formatted_datetime}_{int(time.time())}.html")
+                with open(dump, "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+                print(f"   已保存空结果页面快照: {dump}")
+            except Exception:
+                pass
+
+            raise EmptyResultError(
+                f"过滤前抓取到 0 条原始数据(匹配 /{current_year}/ 的链接数={len(link_elements)}, "
+                f"page_source 长度={page_len}),可能是页面未加载完成或被反爬拦截"
+            )
+        
         print(f"提取到 {len(raw_data_list)} 条原始数据，开始排重过滤...")
 
         # 过滤逻辑（保持原样）
@@ -286,9 +313,12 @@ def scrape_nytimes(old_content, current_datetime, formatted_datetime, current_ye
 
         return new_rows, new_rows1
 
+    except EmptyResultError as e:
+        print(f"⚠️ 抓取结果为空: {e}")
+        raise
     except Exception as e:
         print("抓取过程中出现错误:", e)
-        raise  # 抛出异常，交给外层重试逻辑处理
+        raise
 
     finally:
         if driver:
@@ -329,8 +359,9 @@ def main():
         except Exception as e:
             print(f"❌ 第 {attempt} 次尝试失败: {type(e).__name__}: {e}")
             if attempt < MAX_RETRIES:
-                print(f"   等待 {RETRY_DELAY} 秒后重建浏览器重试...")
-                time.sleep(RETRY_DELAY)
+                wait_sec = RETRY_DELAY * attempt      # 5s → 10s → ...
+                print(f"   等待 {wait_sec} 秒后重建浏览器重试...")
+                time.sleep(wait_sec)
             else:
                 print("   已达到最大重试次数，放弃本次抓取。")
 

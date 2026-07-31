@@ -24,24 +24,32 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 #   - 比 gdefud 更高的渠道 → 加在 gdefud 前面
 #   - 介于 gdefud 与云播线路之间的渠道 → 加在 gdefud 后面
 # 整个这一档都排在「云播线路」系列之上。
-TOP_PRIORITY_CHANNELS = ['gdefud', 'mcm', '6vdy', 'meiju8']
+TOP_PRIORITY_CHANNELS = ['huxitech', 'gdefud', 'meiju8', 'cifppc', 'chnland', '6vdy']
 
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。
 CLOUD_SERIES_PREFIX = '云播线路'
 
 # 云播线路系列之后的优先级(越靠前越高);未列出的渠道再排在这些后面,保持原序。
-CHANNEL_PRIORITY = ['huxitech', 'chnland']
+CHANNEL_PRIORITY = []
+
+# ===== Drama / Anime 特殊规则:按集数抢占最高优先级 =====
+# 当项目(仅限下列分类)的 playlist 中,同时出现 GROUP 里的渠道 >= MIN_HIT 个时,
+# 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
+# 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
+EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime'}
+EPISODE_COUNT_PRIORITY_GROUP = ('huxitech', 'chnland', 'gdefud')
+EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
-# Movie：至少需要这么多个完整渠道（可改）
+# Movie：至少需要这么多个完整渠道（可改 / 可被命令行覆盖）
 MOVIE_REQUIRED_CHANNELS = 2
 
 # 剧集类分类
 SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
 EPISODE_THRESHOLD = 20          # 集数阈值
-SERIES_REQUIRED_SHORT = 1       # 集数 <= 阈值时，需要的完整渠道数（可改）
-SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改）
+SERIES_REQUIRED_SHORT = 1       # 集数 <= 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
+SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
 
 # ===== Show 全量抓取白名单 =====
 # 只要项目的 name 在这个集合里，Show 分类就【全量抓取】，忽略"末尾5条"的裁剪。
@@ -118,37 +126,71 @@ def get_required_channel_count(category, episode_count):
 
     return DEFAULT_REQUIRED_CHANNELS
 
+def get_episode_count_priority_names(playlists, category,
+                                     categories=EPISODE_COUNT_PRIORITY_CATEGORIES,
+                                     group=EPISODE_COUNT_PRIORITY_GROUP,
+                                     min_hit=EPISODE_COUNT_PRIORITY_MIN_HIT):
+    """
+    判断该项目是否触发"按集数排序"的特殊规则。
+    返回:命中的渠道名集合(set);未触发则返回空 set。
+    注意:episodes 为空的渠道不算命中。
+    """
+    if category not in categories:
+        return set()
+
+    hit = set()
+    for pl in playlists:
+        name = pl.get('name') or ''
+        if name in group and (pl.get('episodes') or {}):
+            hit.add(name)
+
+    if len(hit) >= min_hit:
+        return hit
+    return set()
 
 def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
                                cloud_prefix=CLOUD_SERIES_PREFIX,
-                               top_priority=TOP_PRIORITY_CHANNELS):
+                               top_priority=TOP_PRIORITY_CHANNELS,
+                               episode_priority_names=None):
     """
     按优先级排序渠道:
-    - 第 0 档: TOP_PRIORITY_CHANNELS(比云播线路更高), 组内按列表顺序
-    - 第 1 档: 「云播线路」系列, 组内按原始 JSON 顺序
-    - 第 2 档: priority 列表里的渠道(越靠前优先级越高)
-    - 第 3 档: 未列出的渠道, 保持原始顺序
+    - 第 0 档: 触发"按集数排序"规则的渠道(huxitech/chnland/gdefud 中命中的那些),
+               集数多的在前;集数相同则按 top_priority 顺序
+    - 第 1 档: TOP_PRIORITY_CHANNELS,组内按列表顺序
+    - 第 2 档: 「云播线路」系列,组内按原始 JSON 顺序
+    - 第 3 档: priority 列表里的渠道
+    - 第 4 档: 未列出的渠道,保持原始顺序
     """
+    episode_priority_names = episode_priority_names or set()
     indexed = list(enumerate(playlists))
+
+    def top_idx(name):
+        # 不在 top_priority 里的,排到该档最后
+        return top_priority.index(name) if name in top_priority else len(top_priority)
 
     def sort_key(pair):
         original_idx, pl = pair
         name = pl.get('name') or ''
 
-        # 第 0 档: 比云播线路更高优先级的渠道, 组内按 top_priority 列表顺序
+        # 第 0 档:按集数从多到少(负号实现降序),集数相同回落到固定优先级顺序
+        if name in episode_priority_names:
+            ep_count = len(pl.get('episodes', {}) or {})
+            return (0, -ep_count, top_idx(name), original_idx)
+
+        # 第 1 档:比云播线路更高优先级的固定渠道
         if name in top_priority:
-            return (0, top_priority.index(name), original_idx)
+            return (1, top_priority.index(name), 0, original_idx)
 
-        # 第 1 档: 云播线路系列, 组内按原始顺序
+        # 第 2 档:云播线路系列,组内按原始顺序
         if name.startswith(cloud_prefix):
-            return (1, original_idx, 0)
+            return (2, original_idx, 0, 0)
 
-        # 第 2 档: 显式列在 priority 里的渠道
+        # 第 3 档:显式列在 priority 里的渠道
         if name in priority:
-            return (2, priority.index(name), original_idx)
+            return (3, priority.index(name), 0, original_idx)
 
-        # 第 3 档: 未列出的渠道排最后, 保持原顺序
-        return (3, 0, original_idx)
+        # 第 4 档:其它,保持原顺序
+        return (4, 0, 0, original_idx)
 
     indexed.sort(key=sort_key)
     return [pl for _, pl in indexed]
@@ -156,12 +198,14 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
 
 def pick_playlists_to_scan(playlists, blacklist_url, required_count,
                            item_label, category, show_last_n,
-                           full_scan=False):
+                           full_scan=False,
+                           episode_priority_names=None):     # 【新增】
     """
     按优先级顺序收集"完整无黑名单"的渠道……
-    full_scan=True 时，Show 也走全量抓取。
     """
-    ordered = sort_playlists_by_priority(playlists)
+    ordered = sort_playlists_by_priority(
+        playlists, episode_priority_names=episode_priority_names   # 【新增】
+    )
 
     viable = []
     for pl in ordered:
@@ -238,8 +282,9 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
 
 
 def main():
-    global MOVIE_REQUIRED_CHANNELS, SERIES_REQUIRED_SHORT
-    
+    # 【修改】把 SERIES_REQUIRED_LONG 也纳入可被命令行覆盖的全局变量
+    global MOVIE_REQUIRED_CHANNELS, SERIES_REQUIRED_SHORT, SERIES_REQUIRED_LONG
+
     # ============ 解析命令行参数 ============
     parser = argparse.ArgumentParser(
         description='扫描 OVideos.json 中的视频链接，按渠道优先级与数量要求处理黑名单与 url_mapping。'
@@ -268,6 +313,13 @@ def main():
         default=SERIES_REQUIRED_SHORT,
         help=f'剧集类(<= {EPISODE_THRESHOLD} 集)至少需要的完整渠道数（默认 {SERIES_REQUIRED_SHORT}）'
     )
+    # 【新增】剧集类长剧（> 阈值）所需完整渠道数，可被命令行覆盖
+    parser.add_argument(
+        '--series-long-channels',
+        type=int,
+        default=SERIES_REQUIRED_LONG,
+        help=f'剧集类(> {EPISODE_THRESHOLD} 集)至少需要的完整渠道数（默认 {SERIES_REQUIRED_LONG}）'
+    )
     args = parser.parse_args()
 
     SHOW_LAST_N = args.show_last_n
@@ -276,6 +328,7 @@ def main():
     # 命令行可覆盖配置常量
     MOVIE_REQUIRED_CHANNELS = args.movie_channels
     SERIES_REQUIRED_SHORT = args.series_short_channels
+    SERIES_REQUIRED_LONG = args.series_long_channels
 
     # 定义文件路径
     ovideos_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
@@ -374,6 +427,18 @@ def main():
             is_full_scan = (category == 'Show'
                             and item_name in SHOW_FULL_SCAN_WHITELIST)
 
+            # ====== 【新增】Drama/Anime:按集数抢占最高优先级 ======
+            ep_priority_names = get_episode_count_priority_names(playlists, category)
+            if ep_priority_names:
+                detail = ', '.join(
+                    f"{pl.get('name')}({len(pl.get('episodes', {}) or {})}集)"
+                    for pl in sort_playlists_by_priority(
+                        playlists, episode_priority_names=ep_priority_names)
+                    if (pl.get('name') or '') in ep_priority_names
+                )
+                print(f"  [集数优先] {item_label} 命中 {len(ep_priority_names)} 个渠道,"
+                      f"改按集数排序:{detail}")
+
             if is_full_scan:
                 print(f"  [项目] {item_label} 集数≈{episode_count}，"
                       f"需要 {required_count} 个完整渠道 [命中白名单→全量抓取]")
@@ -385,7 +450,8 @@ def main():
             playlists_to_scan = pick_playlists_to_scan(
                 playlists, blacklist_url, required_count,
                 item_label, category, SHOW_LAST_N,
-                full_scan=is_full_scan
+                full_scan=is_full_scan,
+                episode_priority_names=ep_priority_names   # 【新增】
             )
 
             if not playlists_to_scan:

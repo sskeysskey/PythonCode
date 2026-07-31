@@ -5,6 +5,7 @@ import glob
 import subprocess
 import webbrowser
 import pyautogui
+pyautogui.FAILSAFE = False  # <<<< 加在这里
 import numpy as np
 import platform
 from datetime import datetime, timedelta

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-huxitech.com 单个详情页抓取脚本（交互式）
+cifppc.com 单个详情页抓取脚本（交互式）
 运行后依次输入：详情页 URL、目标分类(Movie/Drama/Show/Anime)
 抓取后的新增/更新规则完全沿用 Crawl_huxitech.py
 """
@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 from datetime import datetime
 
 # ============== 配置（与原程序保持一致）==============
-DOMAIN        = "https://www.huxitech.com"
+DOMAIN        = "https://www.cifppc.com"
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "huxitech"
@@ -64,7 +64,7 @@ _chrome_cookies = None
 def _load_chrome_cookies():
     """从本机 Chrome 读取 huxitech 的 Cookie（含 cf_clearance）"""
     try:
-        cj = browser_cookie3.chrome(domain_name="huxitech.com")
+        cj = browser_cookie3.chrome(domain_name="cifppc.com")
         cookies = {c.name: c.value for c in cj}
         if cookies:
             print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: "

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-huxitech.com 分类页（电影/电视剧/综艺/动漫 + 混合页37）爬取脚本
+cifppc.com 分类页（电影/电视剧/综艺/动漫 + 混合页37）爬取脚本
 基于 Crawl_chnland.py 改写
 """
 
@@ -47,7 +47,7 @@ def stop_caffeinate():
 atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
-DOMAIN        = "https://www.huxitech.com"
+DOMAIN        = "https://www.cifppc.com"
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "huxitech"
@@ -71,23 +71,23 @@ SITE_PRIORITY = {
 # 分类页 -> 分组
 #   group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
 LIST_PAGES = [
-    ("https://www.huxitech.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
-    ("https://www.huxitech.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
-    ("https://www.huxitech.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
-    ("https://www.huxitech.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
-    ("https://www.huxitech.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
-    ("https://www.huxitech.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
+    ("https://www.cifppc.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
+    ("https://www.cifppc.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
+    ("https://www.cifppc.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
+    ("https://www.cifppc.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
+    ("https://www.cifppc.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
+    ("https://www.cifppc.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
 ]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
 # 针对特定列表页的地区过滤覆盖（key = 列表页 URL，value = 该页要屏蔽的地区名单）
 FILTER_REGIONS_OVERRIDE = {
     # 电影(35)：放开「日本」，其余保持屏蔽
-    "https://www.huxitech.com/vodshow/35--time---------.html":
+    "https://www.cifppc.com/vodshow/35--time---------.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
 
     # 电影(1)：只屏蔽「泰国和中国」，其余地区全部放开
-    "https://www.huxitech.com/vodshow/1--time---------2026.html":
+    "https://www.cifppc.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
 }
 

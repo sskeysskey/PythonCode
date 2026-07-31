@@ -263,8 +263,10 @@ CURRENT_YEAR = str(time.localtime().tm_year)
 # ==========================================
 # 【新增】：剧集数量限制配置
 # ==========================================
-DRAMA_MAX_EPISODES_LIMIT = 50  # 电视剧分类最大剧集限制（超过则跳过不抓）
-ANIME_MAX_EPISODES_LIMIT = 30  # 动漫分类最大剧集限制（超过则跳过不抓）
+DRAMA_MAX_EPISODES_LIMIT = 25  # 电视剧分类最大剧集限制（超过则跳过不抓）
+ANIME_MAX_EPISODES_LIMIT = 25  # 动漫分类最大剧集限制（超过则跳过不抓）
+# 剧集数白名单：命中此列表的名称，不受剧集数量上限过滤
+EPISODE_WHITELIST = {"海贼王"}
 
 
 # Drama / Anime / Show 黑名单地区：只要精准匹配这些，就跳过不抓取
@@ -1149,13 +1151,19 @@ def process_item(item: dict, cat_name: str,
         # =============================================================
         if detail.get("playlist"):
             max_episodes = max(len(p.get("episodes", {})) for p in detail["playlist"])
+            video_name = item["name"]
+            # 判断是否命中白名单，命中则跳过集数校验
+            in_ep_whitelist = video_name in EPISODE_WHITELIST
 
-            if cat_name == "Drama" and max_episodes > DRAMA_MAX_EPISODES_LIMIT:
-                log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {DRAMA_MAX_EPISODES_LIMIT})", force=True)
-                return "skipped"
-            elif cat_name == "Anime" and max_episodes > ANIME_MAX_EPISODES_LIMIT:
-                log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {item['name']} (最大集数: {max_episodes} > {ANIME_MAX_EPISODES_LIMIT})", force=True)
-                return "skipped"
+            if not in_ep_whitelist:
+                if cat_name == "Drama" and max_episodes > DRAMA_MAX_EPISODES_LIMIT:
+                    log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {video_name} (最大集数: {max_episodes} > {DRAMA_MAX_EPISODES_LIMIT})", force=True)
+                    return "skipped"
+                elif cat_name == "Anime" and max_episodes > ANIME_MAX_EPISODES_LIMIT:
+                    log(f"  ({idx_i}/{total}) [跳过-剧集数超限] {video_name} (最大集数: {max_episodes} > {ANIME_MAX_EPISODES_LIMIT})", force=True)
+                    return "skipped"
+            else:
+                log(f"  ({idx_i}/{total}) ✅[剧集白名单放行] {video_name}，忽略集数限制 {max_episodes}", force=True)
 
         log(f"  ({idx_i}/{total}) {'✅' if tag == '[新增]' else ''}{tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
 

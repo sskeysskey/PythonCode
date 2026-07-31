@@ -1,18 +1,51 @@
 import os
 import re
+import sys
 import time
+import tempfile
+import subprocess
+import webbrowser
+from datetime import datetime
+
 import pyautogui
 import pyperclip
-import webbrowser
-import subprocess
 import tkinter as tk
 from tkinter import messagebox
-from datetime import datetime
 from bs4 import BeautifulSoup
-import sys
-import tempfile 
 
-# ================= 配置区域 (跨平台修改) =================
+# ================= 配置区域 (跨平台) =================
+
+INJECT_MARK = "news-tools"   # 用于标记“由本脚本注入的 style / script”
+
+USER_HOME = os.path.expanduser("~")
+BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
+NEWS_DIR = os.path.join(BASE_CODING_DIR, "News")
+WEBSITE_NEWS_DIR = os.path.join(BASE_CODING_DIR, "Website", "news")
+
+if os.name == 'nt':
+    TEMP_DIR = tempfile.gettempdir()
+else:
+    TEMP_DIR = "/tmp"
+
+TODAY_CHN_TXT = os.path.join(NEWS_DIR, "today_chn.txt")
+TODAY_ALL_HTML = os.path.join(NEWS_DIR, "today_all.html")
+TODAY_ENG_HTML = os.path.join(NEWS_DIR, "today_eng.html")
+TODAY_WSJ_HTML = os.path.join(NEWS_DIR, "today_wsjcn.html")
+TODAY_DW_HTML = os.path.join(NEWS_DIR, "today_dwcn.html")
+TODAY_RFI_HTML = os.path.join(NEWS_DIR, "today_rficn.html")
+TODAY_BBC_HTML = os.path.join(NEWS_DIR, "today_bbccn.html")
+
+PROCESS_ENG_TXT = os.path.join(NEWS_DIR, "today_eng.txt")
+PROCESS_JPN_TXT = os.path.join(NEWS_DIR, "today_jpn.txt")
+RESULT_ENG_HTML = os.path.join(NEWS_DIR, "today_eng.html")
+RESULT_JPN_HTML = os.path.join(NEWS_DIR, "today_jpn.html")
+
+CHINESE_NEWS_FILES = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML, TODAY_BBC_HTML]
+
+MINIMAL_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Today News</title></head>
+<body><table border="1"><thead><tr><th>site</th><th>Title</th></tr></thead><tbody></tbody></table></body>
+</html>"""
 
 # ================= JS 定义 =================
 js_script = """
@@ -23,7 +56,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.body.appendChild(btn);
 
     const checkboxes = document.querySelectorAll('.news-checkbox');
-    
+
     function updateCount() {
         const count = document.querySelectorAll('.news-checkbox:checked').length;
         btn.innerText = `导出已选文章 (${count})`;
@@ -55,17 +88,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const jsonString = JSON.stringify(selectedData, null, 2);
 
-        // 1. 复制到剪贴板
         navigator.clipboard.writeText(jsonString).catch(err => {
             console.error('剪贴板复制失败:', err);
         });
 
-        // 2. 触发 JSON 文件下载
         const blob = new Blob([jsonString], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = "__FILENAME_PLACEHOLDER__.json"; // 文件名将由 Python 动态注入
+        a.download = "__FILENAME_PLACEHOLDER__.json";
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -75,65 +106,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 """
-# ============================================
-
-# 1. 动态获取主目录
-USER_HOME = os.path.expanduser("~")
-
-# 2. 定义基础 Coding 目录
-BASE_CODING_DIR = os.path.join(USER_HOME, "Coding")
-
-# 3. 具体文件路径
-NEWS_DIR = os.path.join(BASE_CODING_DIR, "News")
-WEBSITE_NEWS_DIR = os.path.join(BASE_CODING_DIR, "Website", "news")
-
-# 4. 临时目录
-if os.name == 'nt':
-    TEMP_DIR = tempfile.gettempdir()
-else:
-    TEMP_DIR = "/tmp"
-
-# 具体文件路径
-TODAY_CHN_TXT = os.path.join(NEWS_DIR, "today_chn.txt")
-TODAY_ALL_HTML = os.path.join(NEWS_DIR, "today_all.html")
-TODAY_ENG_HTML = os.path.join(NEWS_DIR, "today_eng.html")
-TODAY_WSJ_HTML = os.path.join(NEWS_DIR, "today_wsjcn.html")
-TODAY_DW_HTML = os.path.join(NEWS_DIR, "today_dwcn.html")
-TODAY_RFI_HTML = os.path.join(NEWS_DIR, "today_rficn.html")
-TODAY_BBC_HTML = os.path.join(NEWS_DIR, "today_bbccn.html")
-
-# 临时中间文件
-PROCESS_ENG_TXT = os.path.join(NEWS_DIR, "today_eng.txt")
-PROCESS_JPN_TXT = os.path.join(NEWS_DIR, "today_jpn.txt")
-RESULT_ENG_HTML = os.path.join(NEWS_DIR, "today_eng.html")
-RESULT_JPN_HTML = os.path.join(NEWS_DIR, "today_jpn.html")
-
-# ========================================================
-
-def add_css_to_soup(soup, css_string):
-    """将CSS字符串添加到BeautifulSoup对象的<head>中"""
-    if not soup.head:
-        head_tag = soup.new_tag("head")
-        if soup.html: 
-            soup.html.insert(0, head_tag)
-        else: 
-            soup.insert(0, head_tag)
-    else:
-        head_tag = soup.head
-    
-    style_tag = soup.new_tag("style")
-    style_tag.string = css_string
-    head_tag.append(style_tag)
-
-def get_unique_filepath(directory, basename, extension):
-    """生成一个唯一的文件路径"""
-    filepath = os.path.join(directory, f"{basename}{extension}")
-    counter = 1
-    while os.path.exists(filepath):
-        new_basename = f"{basename}({counter})"
-        filepath = os.path.join(directory, f"{new_basename}{extension}")
-        counter += 1
-    return filepath
 
 # ================= CSS 定义 =================
 css = """
@@ -188,7 +160,6 @@ td.title-eng {
     color: #666;
     font-size: 0.9em;
 }
-/* 追加到现有 CSS 变量的末尾 */
 .checkbox-cell {
     text-align: center;
     width: 40px;
@@ -216,7 +187,25 @@ td.title-eng {
     background-color: #357abd;
 }
 """
-# ============================================
+
+# ================= 通用小工具 =================
+
+def show_error(message):
+    """跨平台错误弹窗（mac 用原生对话框）"""
+    print(message)
+    root = tk.Tk()
+    root.withdraw()
+    if sys.platform == 'darwin':
+        try:
+            safe_msg = message.replace('"', "'")
+            applescript_code = f'display dialog "{safe_msg}" buttons {{"OK"}} default button "OK"'
+            subprocess.run(['osascript', '-e', applescript_code], check=True)
+        except Exception:
+            messagebox.showerror("错误", message)
+    else:
+        messagebox.showerror("错误", message)
+    root.destroy()
+
 
 def delete_done_txt_files(directory):
     if not os.path.exists(directory):
@@ -230,396 +219,379 @@ def delete_done_txt_files(directory):
     except Exception as e:
         print(f"在删除文件时发生错误：{e}")
 
-def get_clipboard_data_list():
-    """
-    使用 pyperclip 替代 pbpaste，兼容 Windows
-    """
-    data = pyperclip.paste()
-    if not data:
-        return []
-    return data.splitlines()
 
-# --- 主逻辑 ---
-
-# ============ 新增：纯中文模式检测 ============
-# CHINESE_ONLY_MODE = False
-# if (not os.path.exists(TODAY_CHN_TXT)
-#     and not os.path.exists(TODAY_ALL_HTML)
-#     and not os.path.exists(TODAY_ENG_HTML)):
-#     chinese_candidates = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML, TODAY_BBC_HTML]
-#     if any(os.path.exists(f) for f in chinese_candidates):
-#         CHINESE_ONLY_MODE = True
-#         print("⚠️ 未检测到英文/翻译文件，进入纯中文合并模式。")
-
-# if CHINESE_ONLY_MODE:
-#     # 构造一个最小 HTML 框架（有 thead/tbody，方便后面 CSS 样式生效）
-#     minimal_html = """<!DOCTYPE html>
-# <html>
-# <head><meta charset="utf-8"><title>Today News</title></head>
-# <body>
-# <div class="container">
-# <table>
-# <thead><tr><th>Site</th><th>Title</th></tr></thead>
-# <tbody></tbody>
-# </table>
-# </div>
-# </body>
-# </html>"""
-#     soup_init = BeautifulSoup(minimal_html, 'html.parser')
-
-#     now = datetime.now()
-#     time_str = now.strftime("%y%m%d")
-#     base_filename = f"TodayCNH_{time_str}"
-#     base_file_path = os.path.join(NEWS_DIR, f"{base_filename}.html")
-
-#     # 若今天已存在目标文件，就直接复用（让后续合并逻辑追加新内容）
-#     if not os.path.exists(base_file_path):
-#         with open(base_file_path, 'w', encoding='utf-8') as f:
-#             f.write(str(soup_init))
-#         print(f"已创建空白主文件：{base_file_path}")
-#     else:
-#         print(f"复用已存在的主文件：{base_file_path}")
-
-#     txt_file_path = base_file_path  # 交给下面的中文合并逻辑处理
-
-# else:
-
-# 1. 读取翻译后的中文内容
-if not os.path.exists(TODAY_CHN_TXT):
-    print(f"错误：未找到文件 {TODAY_CHN_TXT}")
-    sys.exit(1)
-
-with open(TODAY_CHN_TXT, 'r', encoding='utf-8') as file:
-    lines = file.readlines()
-    non_empty_lines = [line for line in lines if line.strip()]
-
-content_to_copy = ''.join(non_empty_lines).rstrip('\n')
-pyperclip.copy(content_to_copy)
-
-# 获取剪贴板内容
-translated_texts = get_clipboard_data_list()
-translated_texts = [line for line in translated_texts if line.strip() != '']
-
-# 2. 读取HTML文件内容
-try:
-    with open(TODAY_ALL_HTML, 'r', encoding='utf-8') as file:
-        html_content = file.read()
-except FileNotFoundError:
+def safe_remove(path):
     try:
-        print(f"未找到 {os.path.basename(TODAY_ALL_HTML)}，尝试打开 {os.path.basename(TODAY_ENG_HTML)}")
-        with open(TODAY_ENG_HTML, 'r', encoding='utf-8') as file:
-            html_content = file.read()
-    except FileNotFoundError:
-        print(f"未找到 {os.path.basename(TODAY_ENG_HTML)}，无法继续处理。")
-        sys.exit(1)
+        os.remove(path)
+    except (FileNotFoundError, OSError):
+        pass
 
-# --- 核心修改部分 START ---
-try:
-    soup = BeautifulSoup(html_content, 'html.parser')
-    target_links = [a for a in soup.find_all('a') if a.get('target') == '_blank']
-    
-    # 检查数量匹配
-    if len(target_links) == len(translated_texts):
-        
-        # 1. 添加表头
-        table = soup.find('table')
-        if table:
-            thead = table.find('thead')
-            if thead:
-                header_row = thead.find('tr')
-                if header_row:
-                    new_th = soup.new_tag('th')
-                    new_th.string = "Title_eng"
-                    header_row.append(new_th)
 
-        # 2. 遍历链接替换
-        for i, link in enumerate(target_links):
-            eng_text = link.get_text(strip=True)
-            chn_text = translated_texts[i]
-            chn_text = re.sub(r'^\d+[、.。\s：:\)）]+\s*', '', chn_text)
-            
-            link.string = chn_text
-            
-            parent_td = link.find_parent('td')
-            if parent_td:
-                parent_tr = parent_td.find_parent('tr')
-                if parent_tr:
-                    new_td = soup.new_tag('td')
-                    new_td.string = eng_text
-                    new_td['class'] = 'title-eng'
-                    parent_tr.append(new_td)
-        
-        # --- 保存文件 ---
-        try:
-            with open(TODAY_ALL_HTML, 'w', encoding='utf-8') as file:
-                file.write(str(soup))
-            print("文件已成功更新。")
-            
-            temp_files_to_delete = [TODAY_CHN_TXT, PROCESS_ENG_TXT, PROCESS_JPN_TXT, RESULT_ENG_HTML, RESULT_JPN_HTML]
-            for file_to_delete in temp_files_to_delete:
-                try:
-                    os.remove(file_to_delete)
-                except FileNotFoundError:
-                    pass
-            print("临时文件已成功删除。")
-        except IOError as e:
-            print(f"文件操作失败: {e}")
+# ================= 幂等化处理的核心工具 =================
 
-        # 生成带时间戳的最终文件
-        now = datetime.now()
-        time_str = now.strftime("%y%m%d")
-        base_filename = f"TodayCNH_{time_str}"
-        file_extension = ".html"
-        
-        base_file_path = os.path.join(NEWS_DIR, f"{base_filename}{file_extension}")
-        
-        # 检查是否合并
-        if os.path.exists(base_file_path):
-            print(f"找到已存在的文件：{base_file_path}，将追加新内容。")
-            with open(base_file_path, 'r', encoding='utf-8') as existing_file:
-                existing_html = existing_file.read()
-            
-            existing_soup = BeautifulSoup(existing_html, 'html.parser')
-            existing_table = existing_soup.find('table')
-            new_table = soup.find('table')
-            
-            if existing_table and new_table:
-                rows_to_append = new_table.find_all('tr')[1:]
-                if not rows_to_append:
-                     rows_to_append = new_table.find_all('tr')
+def cells(tr):
+    """只取当前行的直接子单元格，避免嵌套表格干扰"""
+    return tr.find_all(['td', 'th'], recursive=False)
 
-                for row in rows_to_append: 
-                    existing_table.append(row.extract())
 
-                print(f"已将新内容追加到 {base_file_path}")
-                with open(base_file_path, 'w', encoding='utf-8') as file:
-                    file.write(str(existing_soup))
-                txt_file_path = base_file_path
+def remove_injected_assets(soup):
+    """删除本脚本以前注入过的 style / script（含没有标记的历史文件）"""
+    for tag in soup.find_all('style'):
+        content = tag.string or ''
+        if tag.get('data-injected') == INJECT_MARK or '.floating-btn' in content:
+            tag.decompose()
+    for tag in soup.find_all('script'):
+        content = tag.string or ''
+        if tag.get('data-injected') == INJECT_MARK or 'floating-btn' in content:
+            tag.decompose()
+    # 运行期生成的按钮理论上不会被保存，保险起见也清一下
+    for btn in soup.find_all(class_='floating-btn'):
+        btn.decompose()
+
+
+def strip_checkbox_cells(scope):
+    """去掉所有已存在的勾选框列（表头和内容行都清），保证不会重复插入"""
+    if scope is None:
+        return
+    for cell in scope.find_all(['td', 'th']):
+        classes = cell.get('class') or []
+        if 'checkbox-cell' in classes:
+            cell.decompose()
+    for cb in scope.find_all('input'):
+        classes = cb.get('class') or []
+        if 'news-checkbox' in classes:
+            cb.decompose()
+
+
+def split_header_and_rows(table):
+    """
+    把表格拆成 (表头行, 内容行列表)。
+    - 凡是含 <th> 的行都视为表头；只保留第一个，其余全部丢弃（解决 <th>site</th> 出现两次）
+    - 返回的 Tag 全部已从原文档 extract 出来
+    """
+    if table is None:
+        return None, []
+    header = None
+    body = []
+    for tr in table.find_all('tr'):
+        if tr.find('th') is not None:
+            if header is None:
+                header = tr
             else:
-                txt_file_path = get_unique_filepath(NEWS_DIR, base_filename, file_extension)
-                with open(txt_file_path, 'w', encoding='utf-8') as file:
-                    file.write(str(soup))
+                tr.extract()          # 多余的表头行直接扔掉
         else:
-            print(f"未找到已存在文件，将创建新文件：{base_file_path}")
-            with open(base_file_path, 'w', encoding='utf-8') as file:
-                file.write(str(soup))
-            txt_file_path = base_file_path
+            body.append(tr)
+    if header is not None:
+        header = header.extract()
+    body = [tr.extract() for tr in body]
+    return header, body
 
-        # 删除临时文件
-        for file_to_delete in [TODAY_ALL_HTML, TODAY_CHN_TXT, PROCESS_ENG_TXT, PROCESS_JPN_TXT, RESULT_ENG_HTML, RESULT_JPN_HTML]:
-            try:
-                os.remove(file_to_delete)
-            except FileNotFoundError:
-                pass
-        
-        delete_done_txt_files(TEMP_DIR)
 
+def row_signature(tr):
+    """用于去重：优先用链接 href，其次用整行文本"""
+    a = tr.find('a')
+    href = a.get('href') if a else None
+    if href:
+        return ('href', href.strip())
+    return ('text', tr.get_text(strip=True))
+
+
+def ensure_head(soup):
+    if soup.head:
+        return soup.head
+    head = soup.new_tag('head')
+    if soup.html:
+        soup.html.insert(0, head)
     else:
-        raise IndexError(f"翻译完的内容行数与原英文链接的数量不匹配，请检查。当前HTML中有 {len(target_links)} 个链接，但是翻译文本有 {len(translated_texts)} 行。")
+        soup.insert(0, head)
+    return head
 
-except IndexError as e:
-    print(e)
-    # <--- 这里恢复了原有的逻辑，但加了平台判断以兼容 Windows --->
-    root = tk.Tk()
-    root.withdraw()
-    
-    if sys.platform == 'darwin':
-        # 在 macOS 上保持您喜欢的原生 AppleScript 弹窗
+
+def ensure_body(soup):
+    if soup.body:
+        return soup.body
+    body = soup.new_tag('body')
+    if soup.html:
+        soup.html.append(body)
+    else:
+        soup.append(body)
+    return body
+
+
+def add_css_to_soup(soup, css_string):
+    head = ensure_head(soup)
+    style_tag = soup.new_tag("style")
+    style_tag['data-injected'] = INJECT_MARK
+    style_tag.string = css_string
+    head.append(style_tag)
+
+
+def render_document(soup, table, header_row, rows, output_path):
+    """
+    统一渲染出口（幂等）：
+    去重 -> 补齐列 -> 重建 thead/tbody -> 加勾选框 -> 注入 CSS/JS -> 写盘
+    """
+    # 1. 去重（同一 href 只保留第一次出现的，通常是已翻译的老行）
+    seen = set()
+    unique_rows = []
+    for tr in rows:
+        sig = row_signature(tr)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        unique_rows.append(tr)
+
+    # 2. 兜底表头
+    if header_row is None:
+        header_row = soup.new_tag('tr')
+        for name in ('site', 'Title'):
+            th = soup.new_tag('th')
+            th.string = name
+            header_row.append(th)
+
+    # 3. 再次清干净勾选框（关键：防止重复）
+    strip_checkbox_cells(header_row)
+    for tr in unique_rows:
+        strip_checkbox_cells(tr)
+
+    # 4. 列数对齐（中文行 2 列 / 英文行 3 列，统一补齐）
+    col_counts = [len(cells(tr)) for tr in unique_rows] + [len(cells(header_row))]
+    max_cols = max(col_counts) if col_counts else 2
+
+    while len(cells(header_row)) < max_cols:
+        th = soup.new_tag('th')
+        th.string = 'Title_eng' if len(cells(header_row)) == 2 else ''
+        header_row.append(th)
+
+    for tr in unique_rows:
+        while len(cells(tr)) < max_cols:
+            tr.append(soup.new_tag('td'))
+
+    # 5. 重建表格结构（thead + tbody，保证 CSS 隔行变色生效）
+    table.clear()
+    if not table.get('border'):
+        table['border'] = '1'
+    thead = soup.new_tag('thead')
+    thead.append(header_row)
+    table.append(thead)
+
+    tbody = soup.new_tag('tbody')
+    for tr in unique_rows:
+        tbody.append(tr)
+    table.append(tbody)
+
+    # 6. 插入勾选框列（此时全表一定没有勾选框，插一次绝不重复）
+    th_select = soup.new_tag('th')
+    th_select['class'] = 'checkbox-cell'
+    th_select.string = '选择'
+    header_row.insert(0, th_select)
+
+    for tr in unique_rows:
+        td_select = soup.new_tag('td')
+        td_select['class'] = 'checkbox-cell'
+        checkbox = soup.new_tag('input')
+        checkbox['type'] = 'checkbox'
+        checkbox['class'] = 'news-checkbox'
+        td_select.append(checkbox)
+        tr.insert(0, td_select)
+
+    # 7. 注入 CSS / JS（先删旧的再加新的）
+    remove_injected_assets(soup)
+    add_css_to_soup(soup, css)
+
+    body = ensure_body(soup)
+    script_tag = soup.new_tag("script")
+    script_tag['data-injected'] = INJECT_MARK
+    base_name = os.path.splitext(os.path.basename(output_path))[0]
+    script_tag.string = js_script.replace('__FILENAME_PLACEHOLDER__', base_name)
+    body.append(script_tag)
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(str(soup))
+
+    print(f"已写入：{output_path}（共 {len(unique_rows)} 条，去重丢弃 {len(rows) - len(unique_rows)} 条）")
+
+
+# ================= 业务逻辑 =================
+
+def load_translations():
+    """读取 today_chn.txt，复制到剪贴板并返回行列表（保持你原来的行为）"""
+    with open(TODAY_CHN_TXT, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+    non_empty_lines = [line for line in lines if line.strip()]
+    content_to_copy = ''.join(non_empty_lines).rstrip('\n')
+    pyperclip.copy(content_to_copy)
+
+    data = pyperclip.paste() or ''
+    return [line for line in data.splitlines() if line.strip() != '']
+
+
+def read_source_html():
+    """优先 today_all.html，其次 today_eng.html"""
+    if os.path.exists(TODAY_ALL_HTML):
+        with open(TODAY_ALL_HTML, 'r', encoding='utf-8') as f:
+            return f.read()
+    print(f"未找到 {os.path.basename(TODAY_ALL_HTML)}，尝试 {os.path.basename(TODAY_ENG_HTML)}")
+    with open(TODAY_ENG_HTML, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
+def apply_translations(soup, links, translated_texts):
+    """把中文回填到 <a>，并在行尾追加 title-eng 列"""
+    for i, link in enumerate(links):
+        eng_text = link.get_text(strip=True)
+        chn_text = re.sub(r'^\d+[、.。\s：:\)）]+\s*', '', translated_texts[i])
+        link.string = chn_text
+
+        parent_td = link.find_parent('td')
+        if parent_td:
+            parent_tr = parent_td.find_parent('tr')
+            if parent_tr:
+                new_td = soup.new_tag('td')
+                new_td.string = eng_text
+                new_td['class'] = 'title-eng'
+                parent_tr.append(new_td)
+
+
+def collect_chinese_rows():
+    """读取 WSJ / DW / RFI / BBC 中文文件的内容行，读完删除源文件"""
+    cn_rows = []
+    for cn_file in CHINESE_NEWS_FILES:
+        if not os.path.exists(cn_file):
+            continue
         try:
-            applescript_code = f'display dialog "{str(e)}" buttons {{"OK"}} default button "OK"'
-            subprocess.run(['osascript', '-e', applescript_code], check=True)
-        except Exception:
-            # 万一 AppleScript 失败，回退到 Tkinter
-            messagebox.showerror("错误", str(e))
-    else:
-        # 在 Windows/Linux 上使用 Tkinter 弹窗，防止报错
-        messagebox.showerror("错误", str(e))
-        
-    root.destroy()
+            print(f"读取并合并中文文件: {os.path.basename(cn_file)}")
+            with open(cn_file, 'r', encoding='utf-8') as f:
+                cn_soup = BeautifulSoup(f.read(), 'html.parser')
+            table_cn = cn_soup.find('table')
+            if table_cn is None:
+                continue
+            strip_checkbox_cells(table_cn)
+            _, rows = split_header_and_rows(table_cn)
+            cn_rows.extend(rows)
+            safe_remove(cn_file)
+        except Exception as e:
+            print(f"处理文件 {os.path.basename(cn_file)} 时出错: {e}")
+    return cn_rows
 
-# --- 核心修改部分 END ---
 
-if 'txt_file_path' in locals() and os.path.exists(txt_file_path):
-    # --- 步骤 1: 处理中文文件合并 (WSJ, DW, RFI) ---
-    # 定义需要合并的中文文件列表，按你希望的显示顺序排列
-    chinese_news_files = [TODAY_WSJ_HTML, TODAY_DW_HTML, TODAY_RFI_HTML, TODAY_BBC_HTML]
-    
-    # 读取主文件（刚才生成的包含英文翻译的文件）
-    try:
-        # 读取主文件 (此时包含已翻译的英文内容)
-        with open(txt_file_path, 'r', encoding='utf-8') as f_main:
-            main_html_content = f_main.read()
-        
-        soup_main = BeautifulSoup(main_html_content, 'html.parser')
-        table_main = soup_main.find('table')
-
-        if table_main:
-            # === A. 拆解英文表格 ===
-            # 获取所有行
-            all_eng_rows = table_main.find_all('tr')
-            header_row = None
-            eng_content_rows = []
-
-            if all_eng_rows:
-                # 尝试找到表头行
-                # 逻辑：如果某一行包含 th，那它就是表头
-                header_candidate = all_eng_rows[0]
-                if header_candidate.find('th'):
-                    header_row = header_candidate.extract()
-                    # 剩下的行是内容
-                    eng_content_rows = [row.extract() for row in all_eng_rows[1:]]
-                else:
-                    # 没有表头的情况
-                    eng_content_rows = [row.extract() for row in all_eng_rows]
-            
-            # === B. 收集中文行 ===
-            chinese_content_rows = []
-            files_merged = False
-            
-            # 遍历每一个中文文件
-            for cn_file_path in chinese_news_files:
-                if os.path.exists(cn_file_path):
-                    try:
-                        print(f"读取并合并中文文件: {os.path.basename(cn_file_path)}")
-                        with open(cn_file_path, 'r', encoding='utf-8') as f_cn:
-                            cn_html_content = f_cn.read()
-                        
-                        soup_cn = BeautifulSoup(cn_html_content, 'html.parser')
-                        table_cn = soup_cn.find('table')
-                        
-                        if table_cn:
-                            cn_rows = table_cn.find_all('tr')
-                            # 跳过中文文件的表头 (通常第一行是 site, title)
-                            start_idx = 0
-                            if cn_rows and cn_rows[0].find('th'):
-                                start_idx = 1
-                            
-                            # 提取内容行
-                            for row in cn_rows[start_idx:]:
-                                chinese_content_rows.append(row.extract())
-                            
-                            files_merged = True
-                            
-                            # 合并后删除源文件
-                            try:
-                                os.remove(cn_file_path)
-                            except OSError:
-                                pass
-                    except Exception as e_merge:
-                        print(f"处理文件 {os.path.basename(cn_file_path)} 时出错: {e_merge}")
-
-            # === C. 重组表格 (完美保留 CSS 结构) ===
-            table_main.clear() # 清空旧结构
-            
-            # 1. 重建 thead (确保表头样式生效)
-            if header_row:
-                new_thead = soup_main.new_tag('thead')
-                new_thead.append(header_row)
-                table_main.append(new_thead)
-            
-            # 2. 重建 tbody (确保隔行变色样式生效)
-            new_tbody = soup_main.new_tag('tbody')
-            
-            # 先加中文
-            for row in chinese_content_rows:
-                new_tbody.append(row)
-            # 后加英文
-            for row in eng_content_rows:
-                new_tbody.append(row)
-                
-            table_main.append(new_tbody)
-            
-            # 写入文件
-            if files_merged or header_row:
-                with open(txt_file_path, 'w', encoding='utf-8') as f_out:
-                    f_out.write(str(soup_main))
-                print("表格已成功重组，并保留了 thead/tbody 结构。")
-
-        else:
-            print("主文件中未找到表格，跳过合并。")
-
-    except Exception as e_main_process:
-        print(f"合并重组流程出错: {e_main_process}")
-
-    # --- 步骤 2: 添加 CSS、勾选框和 JS ---
-    try:
-        with open(txt_file_path, 'r', encoding='utf-8') as f_current_html:
-            html_content_for_css = f_current_html.read()
-        
-        soup_for_final = BeautifulSoup(html_content_for_css, 'html.parser')
-        
-        # 1. 注入 CSS
-        add_css_to_soup(soup_for_final, css)
-        
-        # 2. 插入勾选框列
-        table = soup_for_final.find('table')
-        if table:
-            # 处理表头 (thead)
-            thead = table.find('thead')
-            if thead:
-                header_row = thead.find('tr')
-                if header_row:
-                    th_select = soup_for_final.new_tag('th')
-                    th_select.string = "选择"
-                    th_select['class'] = 'checkbox-cell'
-                    header_row.insert(0, th_select) # 插入到第一列
-            
-            # 处理内容行 (tbody)
-            tbody = table.find('tbody')
-            rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:] # 兼容没有 tbody 的情况
-            
-            for row in rows:
-                # 跳过可能被误判的表头行
-                if row.find('th'):
-                    continue
-                
-                td_select = soup_for_final.new_tag('td')
-                td_select['class'] = 'checkbox-cell'
-                
-                checkbox = soup_for_final.new_tag('input')
-                checkbox['type'] = 'checkbox'
-                checkbox['class'] = 'news-checkbox'
-                
-                td_select.append(checkbox)
-                row.insert(0, td_select) # 插入到第一列
-        
-        # 3. 注入 JavaScript 并动态替换文件名
-        script_tag = soup_for_final.new_tag("script")
-        # 提取当前 HTML 的文件名（不含 .html 后缀），例如 TodayCNH_240426
-        current_base_name = os.path.splitext(os.path.basename(txt_file_path))[0]
-        # 将 JS 中的占位符替换为实际文件名
-        final_js = js_script.replace('__FILENAME_PLACEHOLDER__', current_base_name)
-        script_tag.string = final_js
-        soup_for_final.body.append(script_tag)
-        
-        # 4. 保存最终文件
-        with open(txt_file_path, 'w', encoding='utf-8') as f_final_output:
-            f_final_output.write(str(soup_for_final))
-            
-        print(f"CSS样式、勾选框和JS交互已成功添加到 {txt_file_path}。")
-    except Exception as e:
-        print(f"后期处理(CSS/JS/Checkbox)发生错误: {e}")
-
-else:
-    print("错误：主要HTML文件路径未定义，流程失败。")
-
-# --- 后续操作：打开文件 ---
-if 'txt_file_path' in locals() and os.path.exists(txt_file_path):
-    print(f"准备在浏览器中打开文件: {txt_file_path}")
-    
-    real_path = os.path.realpath(txt_file_path)
+def open_in_browser(path):
+    print(f"准备在浏览器中打开文件: {path}")
+    real_path = os.path.realpath(path)
     if os.name == 'nt':
         url = 'file:///' + real_path.replace('\\', '/')
     else:
         url = 'file://' + real_path
-        
     webbrowser.open(url, new=2)
     time.sleep(0.5)
-
     try:
         modifier = 'command' if sys.platform == 'darwin' else 'ctrl'
         for _ in range(4):
             pyautogui.hotkey(modifier, '=')
-            time.sleep(0.2) 
+            time.sleep(0.2)
     except Exception:
         pass
+
+
+def main():
+    has_eng_source = os.path.exists(TODAY_ALL_HTML) or os.path.exists(TODAY_ENG_HTML)
+    has_chn_txt = os.path.exists(TODAY_CHN_TXT)
+    has_cn_files = any(os.path.exists(f) for f in CHINESE_NEWS_FILES)
+
+    new_soup = None
+    new_header = None
+    new_rows = []
+
+    if has_eng_source and not has_chn_txt:
+        show_error(f"检测到英文源文件，但未找到翻译结果：{TODAY_CHN_TXT}，流程中止。")
+        return
+
+    if has_eng_source and has_chn_txt:
+        translated_texts = load_translations()
+        html_content = read_source_html()
+
+        new_soup = BeautifulSoup(html_content, 'html.parser')
+        target_links = [a for a in new_soup.find_all('a') if a.get('target') == '_blank']
+
+        if len(target_links) != len(translated_texts):
+            show_error(
+                f"翻译完的内容行数与原英文链接的数量不匹配，请检查。"
+                f"当前HTML中有 {len(target_links)} 个链接，但是翻译文本有 {len(translated_texts)} 行。"
+            )
+            return
+
+        apply_translations(new_soup, target_links, translated_texts)
+
+        new_table = new_soup.find('table')
+        if new_table is None:
+            show_error("英文源文件中未找到 <table>，流程中止。")
+            return
+        strip_checkbox_cells(new_table)
+        new_header, new_rows = split_header_and_rows(new_table)
+        print(f"本次新增英文（已翻译）条目：{len(new_rows)}")
+    else:
+        if not has_cn_files:
+            show_error("既没有可用的英文/翻译文件，也没有中文新闻文件，流程中止。")
+            return
+        print("⚠️ 未检测到英文/翻译文件，进入纯中文合并模式。")
+
+    # ---------- 确定目标文件 & 容器 ----------
+    time_str = datetime.now().strftime("%y%m%d")
+    base_filename = f"TodayCNH_{time_str}"
+    target_path = os.path.join(NEWS_DIR, base_filename + ".html")
+
+    container_soup = None
+    container_table = None
+    old_header = None
+    old_rows = []
+
+    if os.path.exists(target_path):
+        print(f"找到已存在的文件：{target_path}，将进行合并（幂等重建）。")
+        with open(target_path, 'r', encoding='utf-8') as f:
+            container_soup = BeautifulSoup(f.read(), 'html.parser')
+        remove_injected_assets(container_soup)
+        container_table = container_soup.find('table')
+        if container_table is not None:
+            strip_checkbox_cells(container_table)      # ★ 关键：先把老的勾选框全部去掉
+            old_header, old_rows = split_header_and_rows(container_table)
+            print(f"已存在条目：{len(old_rows)}")
+        else:
+            container_soup = None
+
+    if container_table is None:
+        if new_soup is not None:
+            container_soup = new_soup
+            container_table = new_soup.find('table')
+        else:
+            container_soup = BeautifulSoup(MINIMAL_HTML, 'html.parser')
+            container_table = container_soup.find('table')
+
+    header_row = old_header if old_header is not None else new_header
+
+    # ---------- 中文站点合并 ----------
+    cn_rows = collect_chinese_rows()
+    print(f"本次新增中文条目：{len(cn_rows)}")
+
+    # 顺序：新中文 -> 旧内容 -> 新英文
+    all_rows = cn_rows + old_rows + new_rows
+
+    # ---------- 统一渲染 ----------
+    render_document(container_soup, container_table, header_row, all_rows, target_path)
+
+    # ---------- 清理临时文件 ----------
+    for f in (TODAY_ALL_HTML, TODAY_CHN_TXT, PROCESS_ENG_TXT, PROCESS_JPN_TXT,
+              RESULT_ENG_HTML, RESULT_JPN_HTML):
+        safe_remove(f)
+    delete_done_txt_files(TEMP_DIR)
+    print("临时文件已清理。")
+
+    # ---------- 打开 ----------
+    if os.path.exists(target_path):
+        open_in_browser(target_path)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        show_error(f"流程发生错误：{e}")
