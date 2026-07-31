@@ -24,7 +24,7 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 #   - 比 gdefud 更高的渠道 → 加在 gdefud 前面
 #   - 介于 gdefud 与云播线路之间的渠道 → 加在 gdefud 后面
 # 整个这一档都排在「云播线路」系列之上。
-TOP_PRIORITY_CHANNELS = ['huxitech', 'gdefud', 'meiju8', 'cifppc', 'chnland', '6vdy']
+TOP_PRIORITY_CHANNELS = ['huxitech', 'gdefud', 'meiju8', 'cifppc', 'chnland', 'xb6v']
 
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。

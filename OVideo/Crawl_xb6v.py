@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-6vdy.org 最新剧集、最新电影、小编推荐、首页 爬取脚本
+xb6v.com 最新剧集、最新电影、小编推荐、首页 爬取脚本
 （升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤）
 
 本次网络层加固（解决 SSLEOFError / 站点换域名 / 偶发抖动）：
@@ -66,12 +66,12 @@ def stop_caffeinate():
 atexit.register(stop_caffeinate)
 
 # ============== 配置 ==============
-BASE_URL    = "https://www.6vdy.org/qian50m.html"
-HOME_URL_6VDY = "https://www.6vdy.org/"
+BASE_URL    = "https://www.xb6v.com/qian50m.html"
+HOME_URL_6VDY = "https://www.xb6v.com/"
 JSON_PATH   = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 BLACKLIST_URL_PATH = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blacklist_url.json"
-PLAYLIST_NAME = "6vdy"
+PLAYLIST_NAME = "xb6v"
 REQUEST_TIMEOUT = (10, 25)   # (连接超时, 读取超时)
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版"]
@@ -88,12 +88,12 @@ MIN_RATING = 6.0
 MIN_RATING_7 = 7.0
 
 # ============== 镜像站识别（同源不同域名）==============
-MIRROR_DOMAINS = ("6vdy", "xb6v", "66ss", "6v520", "66s.cc")
+MIRROR_DOMAINS = ("xb6v", "6vdy", "66ss", "6v520", "66s.cc")
 
 # 镜像域名回退顺序（同一 path 依次尝试；第一个为首选主站）
 MIRROR_HOSTS = [
-    "www.6vdy.org",
     "www.xb6v.com",
+    "www.6vdy.org",
     "www.66ss.org",
     "www.6v520.tv",
 ]
@@ -1113,7 +1113,7 @@ def only_6vdy_hits_blacklist_url(existing, blacklist_urls):
 
     for k, v in existing.items():
         if (k == "url" or re.match(r"^url\d+$", k)) and v:
-            if "6vdy" in v and v in blacklist_urls:
+            if "xb6v" in v and v in blacklist_urls:
                 print(f"      [黑名单命中] 6vdy 字段「{k}」的 URL 在黑名单中：{v}")
                 return True
 
@@ -1329,7 +1329,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
     has_6vdy_url = False
     for k in url_keys:
         val = existing.get(k, "")
-        if "6vdy" in val or val == sub_url:
+        if "xb6v" in val or val == sub_url:
             has_6vdy_url = True
             break
 
@@ -1399,7 +1399,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         existing.update(new_ordered_dict)
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
-        insert_6vdy_playlist(playlist, new_pl)
+        insert_6vdy_playlist(playlist, new_pl, existing)
 
         print(f"      ✅[新增渠道] 已将 6vdy 写入 {new_url_key}")
 
@@ -1464,7 +1464,7 @@ def get_list_by_tab(tab_index):
 
 
 def get_homepage_list_6vdy():
-    """抓取 6vdy.org 首页 #post_container 中的所有条目"""
+    """抓取 xb6v.com 首页 #post_container 中的所有条目"""
     html, eff_url = fetch_ex(HOME_URL_6VDY)
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one("#post_container")
@@ -1702,7 +1702,7 @@ def backfill_existing(data):
             target_url = None
             for k in url_keys:
                 u = item.get(k, "")
-                if u and "6vdy" in u:
+                if u and "xb6v" in u:
                     target_url = u
                     break
             if not target_url:
