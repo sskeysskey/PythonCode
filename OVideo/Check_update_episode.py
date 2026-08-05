@@ -17,6 +17,48 @@ with open(file_path, 'r', encoding='utf-8') as f:
 # (\d+) 用于捕获数字，(第)? 用于可选地捕获“第”字
 pattern = re.compile(r"更新至(第)?(\d+)集")
 
+# 解析实际集数的辅助函数
+def get_actual_episode_count(episodes_dict):
+    if not episodes_dict:
+        return 0
+        
+    s_e_pattern = re.compile(r"S(\d+)E(\d+)", re.IGNORECASE)
+    
+    s_e_matches = []
+    ep_numbers = []
+    
+    for key in episodes_dict.keys():
+        # 1. 尝试匹配 S01E01 格式
+        s_e_match = s_e_pattern.search(key)
+        if s_e_match:
+            season = int(s_e_match.group(1))
+            episode = int(s_e_match.group(2))
+            s_e_matches.append((season, episode))
+            continue
+            
+        # 2. 尝试匹配 "第X集" 或纯数字
+        num_match = re.search(r"第(\d+)集", key)
+        if num_match:
+            ep_numbers.append(int(num_match.group(1)))
+        else:
+            # 提取键中的所有数字，取最后一个作为集数（如 "HD中字" 会被忽略，"08完结" 提取出 8）
+            nums = re.findall(r'\d+', key)
+            if nums:
+                ep_numbers.append(int(nums[-1]))
+
+    # 如果存在 S..E.. 格式，取最新一季的最大集数
+    if s_e_matches:
+        max_season = max(s_e_matches, key=lambda x: x[0])[0]
+        max_episode = max([ep for s, ep in s_e_matches if s == max_season])
+        return max_episode
+        
+    # 如果存在普通数字格式，取最大值
+    if ep_numbers:
+        return max(ep_numbers)
+        
+    # 如果都匹配不到，退回到字典长度
+    return len(episodes_dict)
+
 # 存储所有待修改的项目
 pending_modifications = []
 
@@ -33,9 +75,12 @@ for category, items in data.items():
         if not playlist:
             continue
         
+        # 3. 获取第一个渠道的实际集数
         first_channel = playlist[0]
         episodes = first_channel.get("episodes", {})
-        actual_count = len(episodes)
+        
+        # 使用新逻辑获取实际集数
+        actual_count = get_actual_episode_count(episodes)
         
         if actual_count >= 3:
             info = item.get("info", "")

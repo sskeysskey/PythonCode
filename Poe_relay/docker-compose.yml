@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    restart: always
+    ports:
+      - "80:3000"
+    environment:
+      - TZ=Asia/Shanghai
+      - JWT_SECRET=1234abcd
+      - ADMIN_PASSWORD=83o32683O326
+      - POE_KEY_1=sk-poe-wupWkYdv9cRfBxZWLHcVt3M0bFye2WPGJ4tvyA2knnI
+      - SELL_MARKUP=1.75
+      - BALANCE_SAFETY_RATIO=1.5 # 【新增】余额需 ≥ 预估 × 1.5 才允许发送
+      - DB_PATH=/app/data/app.db
+    volumes:
+      - ./data:/app/data

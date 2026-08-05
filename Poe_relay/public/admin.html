@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理后台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-slate-100 p-4">
+  <div id="app" class="max-w-5xl mx-auto"></div>
+  <script>
+    let atoken = sessionStorage.getItem('atoken') || '';
+    function h(t, a = {}, ...k) {
+      const e = document.createElement(t);
+      for (const x in a) {
+        if (x === 'class') e.className = a[x];
+        else if (x.startsWith('on')) e.addEventListener(x.slice(2).toLowerCase(), a[x]);
+        else if (x === 'html') e.innerHTML = a[x];
+        else e.setAttribute(x, a[x]);
+      }
+      k.flat().forEach(c => c != null && e.append(c.nodeType ? c : document.createTextNode(c)));
+      return e;
+    }
+    async function api(p, o = {}) {
+      const hd = Object.assign({ 'Content-Type': 'application/json' }, o.headers || {});
+      if (atoken) hd.Authorization = 'Bearer ' + atoken;
+      return fetch(p, { ...o, headers: hd });
+    }
+    const fmt = n => (n == null ? '-' : Number(n).toLocaleString());
+    const ts = t => t ? new Date(t).toLocaleString().slice(5) : '-';
+
+    function login() {
+      const app = document.getElementById('app'); app.innerHTML = '';
+      const pw = h('input', { type: 'password', class: 'border rounded px-3 py-2 mr-2', placeholder: '管理员密码' });
+      const err = h('span', { class: 'text-red-500 text-sm ml-2' });
+      const btn = h('button', {
+        class: 'bg-indigo-600 text-white rounded px-4 py-2', onClick: async () => {
+          const r = await fetch('/api/admin/login', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: pw.value })
+          });
+          const d = await r.json(); if (!r.ok) { err.textContent = d.error; return; }
+          atoken = d.token; sessionStorage.setItem('atoken', atoken); dash();
+        }
+      }, '登录');
+      pw.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+      app.append(h('div', { class: 'bg-white rounded-xl p-6 mt-20 shadow' },
+        h('h1', { class: 'text-xl font-bold mb-4' }, '管理后台'), pw, btn, err));
+    }
+
+    async function dash() {
+      const app = document.getElementById('app'); app.innerHTML = '';
+      const keysR = await api('/api/admin/keys'); if (keysR.status === 401) { atoken = ''; return login(); }
+      const keys = await keysR.json();
+      const stats = await (await api('/api/admin/stats')).json();
+      const usage = await (await api('/api/admin/usage')).json();
+      const calib = await (await api('/api/admin/calibration')).json();
+      const urlcal = await (await api('/api/admin/urlcalib')).json();
+      const settings = await (await api('/api/admin/settings')).json();
+      const problems = await (await api('/api/admin/problems')).json();
+      const praw = await (await api('/api/admin/poe-usage')).json();
+
+      const card = (title, node) => h('div', { class: 'bg-white rounded-xl p-5 shadow mb-4' },
+        h('h2', { class: 'font-bold mb-3' }, title), node);
+
+      /* ---------- 概览 ---------- */
+      const rc = stats.reconcile || {};
+      const overview = h('div', { class: 'text-sm grid grid-cols-2 gap-y-1' },
+        h('div', {}, '用户数'), h('div', { class: 'font-medium' }, stats.userCount),
+        h('div', {}, '用户未消费点数合计'), h('div', { class: 'font-medium' }, fmt(stats.totalUserCredits)),
+        h('div', {}, '累计调用次数'), h('div', { class: 'font-medium' }, stats.totalCalls),
+        h('div', {}, '累计生成图片 / 携带链接数'), h('div', { class: 'font-medium' }, fmt(stats.totalImages || 0) + ' 张 / ' + fmt(stats.totalUrls || 0) + ' 个'),
+        h('div', {}, '累计向用户扣点'), h('div', { class: 'font-medium' }, fmt(stats.totalChargedCredits)),
+        h('div', {}, '上游真实消耗(Poe积分)'), h('div', { class: 'font-medium text-indigo-600' }, fmt(stats.upstreamRealPoints)),
+        h('div', {}, '折算营收 / 成本(订阅口径)'), h('div', { class: 'font-medium' }, '¥' + fmt(stats.revenueRmb) + ' / ¥' + fmt(stats.costRmbSub)),
+        h('div', {}, '成本(API官价口径)'), h('div', { class: 'font-medium' }, '¥' + fmt(stats.costRmbApi)),
+        h('div', {}, '售价倍率 / 余额安全系数'), h('div', { class: 'font-medium' }, stats.markup + 'x / ' + stats.safetyRatio + 'x'),
+        h('div', {}, '模型目录'), h('div', { class: 'font-medium' },
+          fmt(stats.modelsCount) + ' 个'
+          + (stats.modelsLoadedAt ? '（' + ts(stats.modelsLoadedAt) + ' 更新）' : '')
+          + (stats.modelsError ? ' ⛔ ' + stats.modelsError : '')),
+        h('div', {}, '对账状态'), h('div', { class: 'font-medium' },
+          '已结算 ' + rc.settled + ' / 待对账 ' + rc.pending + ' / 未匹配 ' + rc.unmatched
+          + '（本地 Poe 条目 ' + fmt(rc.poeRows) + '，上次抓取 ' + ts(rc.lastFetched) + '，新增 ' + (rc.lastInserted || 0) + '）'
+          + '｜同步水位: ' + (rc.syncFloor == null ? '未知' : (rc.syncFloor === 0 ? '已到最早' : ts(rc.syncFloor)))
+          + (rc.disabled ? ' ⛔已暂停' : ''))
+      );
+      const mkBtn = (label, cls, fn) => {
+        const b = h('button', { class: 'mt-3 mr-2 rounded px-3 py-1 text-sm ' + cls, onClick: async () => { b.textContent = '处理中…'; await fn(); dash(); } }, label);
+        return b;
+      };
+      const btns = h('div', {},
+        mkBtn('立即对账', 'bg-indigo-600 text-white', () => api('/api/admin/reconcile', { method: 'POST', body: JSON.stringify({}) })),
+        mkBtn('深度对账(回溯全部历史)', 'bg-indigo-800 text-white', () => api('/api/admin/reconcile', { method: 'POST', body: JSON.stringify({ deep: true }) })),
+        mkBtn('重试未匹配', 'bg-amber-500 text-white', () => api('/api/admin/reconcile/retry', { method: 'POST' })),
+        mkBtn('回滚并重跑最近24h对账', 'bg-slate-200', async () => {
+          if (!confirm('会把最近24小时内所有记录的扣费恢复成对账前的原始值，然后重新对账。继续？')) return;
+          await api('/api/admin/reconcile/reset', { method: 'POST', body: JSON.stringify({ hours: 24 }) });
+          await api('/api/admin/reconcile', { method: 'POST', body: JSON.stringify({ deep: true }) });
+        })
+      );
+      const recMsg = rc.lastError ? h('div', { class: 'text-xs text-red-500 mt-2' }, '上次错误: ' + rc.lastError) : null;
+
+      /* ---------- 对账诊断 ---------- */
+      const pb = h('div', { class: 'text-xs space-y-2' });
+      if (!problems.length) pb.append(h('div', { class: 'text-emerald-600' }, '✅ 当前没有待处理 / 未匹配的记录'));
+      problems.forEach(p => {
+        const idIn = h('input', { class: 'border rounded px-2 py-1 text-xs w-72', placeholder: 'query_id（多个用逗号分隔）' });
+        const msg = h('span', { class: 'ml-2 text-slate-500' });
+        const box = h('div', { class: 'border rounded p-2' });
+        box.append(h('div', { class: 'flex justify-between' },
+          h('span', { class: 'font-medium' }, '#' + p.id + ' · ' + p.model + ' · ' + ts(p.created_at)),
+          h('span', { class: p.status === 'unmatched' ? 'text-red-500' : 'text-slate-400' },
+            p.status + (p.settle_note ? ' / ' + p.settle_note : ''))));
+        box.append(h('div', { class: 'text-slate-500' },
+          '预测 ' + Math.round(p.pred_points || 0) + ' 积分 · 已扣 ' + fmt(p.charged_credits) + ' 点 · 链接 ' + (p.url_count || 0)
+          + ' · 历史覆盖: ' + (p.covered ? '是（Poe 很可能真的收了 0 积分）' : '否（该时段历史还没同步全，先点“深度对账”）')));
+        if (p.candidates.length) {
+          box.append(h('div', { class: 'text-slate-400 mt-1' }, '附近的 Poe 条目：'));
+          p.candidates.forEach(c => box.append(h('div', { class: 'flex justify-between gap-2 pl-2' },
+            h('span', { class: 'truncate' },
+              new Date(c.creation_time).toLocaleTimeString() + ' · ' + c.bot_name
+              + ' [' + (c.source_kind || '?') + '/' + (c.usage_type || '') + '] '
+              + (c.log_id ? ('已绑 #' + c.log_id) : '未绑定')),
+            h('button', {
+              class: 'text-indigo-600 underline whitespace-nowrap',
+              onClick: () => { idIn.value = idIn.value ? (idIn.value + ',' + c.query_id) : c.query_id; }
+            }, c.cost_points + ' 积分 · 选它'))));
+        }
+        const bind = h('button', {
+          class: 'bg-indigo-600 text-white rounded px-2 py-1', onClick: async () => {
+            const r = await api('/api/admin/reconcile/bind', { method: 'POST', body: JSON.stringify({ logId: p.id, queryIds: idIn.value }) });
+            const d = await r.json(); msg.textContent = r.ok ? ('已按 ' + d.realPoints + ' 积分结算') : d.error;
+          }
+        }, '绑定并结算');
+        const zero = h('button', {
+          class: 'bg-slate-200 rounded px-2 py-1', onClick: async () => {
+            if (!confirm('确认按 0 积分结算并把已扣的点数全额退回用户？')) return;
+            const r = await api('/api/admin/reconcile/points', { method: 'POST', body: JSON.stringify({ logId: p.id, points: 0 }) });
+            const d = await r.json(); msg.textContent = r.ok ? '已按0结算并退款' : d.error;
+          }
+        }, '按0结算(退款)');
+        box.append(h('div', { class: 'mt-1 flex items-center flex-wrap gap-1' }, idIn, bind, zero, msg));
+        pb.append(box);
+      });
+
+      /* ---------- Poe 原始条目 ---------- */
+      const rawBox = h('div', { class: 'text-xs max-h-72 overflow-auto' });
+      const rt = h('table', { class: 'w-full' });
+      rt.append(h('tr', { class: 'text-left text-slate-400' },
+        h('th', { class: 'py-1' }, '时间'), h('th', {}, 'bot'), h('th', {}, 'usage_type'),
+        h('th', {}, '判定'), h('th', {}, '积分'), h('th', {}, '绑定'), h('th', {}, 'raw')));
+      praw.forEach(x => {
+        const cell = h('td', { class: 'text-slate-400 cursor-pointer underline' }, '查看');
+        cell.addEventListener('click', () => alert(x.raw || '(无)'));
+        rt.append(h('tr', { class: 'border-t' },
+          h('td', { class: 'py-1 whitespace-nowrap' }, ts(x.creation_time)),
+          h('td', { class: 'truncate max-w-[130px]' }, x.bot_name),
+          h('td', {}, x.usage_type || '(空)'),
+          h('td', { class: x.source_kind === 'chat' ? 'text-slate-400' : 'text-indigo-600' }, x.source_kind || '?'),
+          h('td', {}, x.cost_points),
+          h('td', {}, x.log_id ? ('#' + x.log_id) : '-'),
+          cell));
+      });
+      rawBox.append(h('div', { class: 'text-slate-400 mb-1' },
+        '若“判定”列大量出现 unknown，说明 Poe 的 usage_type 字段和预期不同，点 raw 看真实字段名再告诉我调整。'), rt);
+
+      /* ---------- Key ---------- */
+      const keyList = h('div', { class: 'text-sm space-y-1' });
+      keys.keys.forEach(k => keyList.append(h('div', { class: 'flex justify-between' },
+        h('span', {}, k.id + (k.healthy ? ' ✅' : ' ⚠️')),
+        h('span', {}, fmt(k.balance) + ' 积分 ≈ $' + (k.balance ? (k.balance / keys.pointsPerUsd).toFixed(2) : '0')))));
+      const refresh = h('button', {
+        class: 'mt-3 bg-slate-200 rounded px-3 py-1 text-sm',
+        onClick: async () => { await api('/api/admin/refresh', { method: 'POST' }); dash(); }
+      }, '刷新余额');
+
+      /* ---------- 模型库 ---------- */
+      const mq = h('input', { class: 'border rounded px-2 py-1 text-sm w-56 mr-2', placeholder: '搜索模型，如 opus / imagen / flux' });
+      const mout = h('div', { class: 'text-xs mt-2 max-h-56 overflow-auto space-y-0.5' });
+      async function doSearch() {
+        const r = await api('/api/admin/models?q=' + encodeURIComponent(mq.value.trim()));
+        const d = await r.json();
+        mout.innerHTML = '';
+        mout.append(h('div', { class: 'text-slate-400 mb-1' }, '目录共 ' + d.total + ' 个；匹配 ' + d.list.length + ' 个'));
+        if (!d.list.length) mout.append(h('div', { class: 'text-amber-600' }, '没找到。请在下方“自定义模型”里手动添加。'));
+        d.list.forEach(m => mout.append(h('div', { class: 'flex justify-between gap-2' },
+          h('span', { class: 'truncate' }, (m.kind === 'image' ? '🖼 ' : '') + m.id + (m.custom ? ' [自定义]' : '') + (m.owned_by ? ' · ' + m.owned_by : '')),
+          h('span', { class: 'text-slate-400 whitespace-nowrap' },
+            m.kind === 'image'
+              ? (m.perImage + ' 积分/张 (' + m.src + ')')
+              : (m.inPer1k + '/' + m.outPer1k + ' 积分·千词元 (' + m.src + ')')))));
+      }
+      mq.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+      const msearch = h('button', { class: 'bg-slate-200 rounded px-3 py-1 text-sm mr-2', onClick: doSearch }, '搜索');
+      const mref = h('button', {
+        class: 'bg-indigo-600 text-white rounded px-3 py-1 text-sm', onClick: async () => {
+          mref.textContent = '拉取中…';
+          const r = await api('/api/admin/models/refresh', { method: 'POST' });
+          const d = await r.json();
+          alert(r.ok ? ('已重新拉取，共 ' + d.count + ' 个模型') : ('失败: ' + d.error));
+          dash();
+        }
+      }, '重新拉取 Poe 模型列表');
+
+      /* ---------- 自定义模型 ---------- */
+      const cm = h('textarea', { class: 'w-full border rounded p-2 text-sm font-mono', rows: '4' });
+      cm.value = (settings.customModels || [])
+        .map(x => [x.id, x.input, x.output, x.owned_by, x.imagePoints || 0].join(', ')).join('\n');
+      const cmsg = h('span', { class: 'text-sm ml-2' });
+      const csave = h('button', {
+        class: 'mt-2 bg-indigo-600 text-white rounded px-3 py-1 text-sm', onClick: async () => {
+          const list = cm.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+            const p = l.split(/[,，\t]+/).map(s => s.trim());
+            return {
+              id: p[0], input: parseFloat(p[1]) || 0, output: parseFloat(p[2]) || 0,
+              owned_by: p[3] || 'custom', imagePoints: parseFloat(p[4]) || 0
+            };
+          }).filter(x => x.id);
+          const r = await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ customModels: list }) });
+          const d = await r.json();
+          cmsg.textContent = r.ok ? ('已保存 ' + d.customModels.length + ' 个自定义模型') : d.error;
+        }
+      }, '保存');
+
+      /* ---------- 兑换码 ---------- */
+      const cr = h('input', { class: 'border rounded px-2 py-1 w-28 mr-2', placeholder: '面值(点)', value: '10000' });
+      const rmb = h('input', { class: 'border rounded px-2 py-1 w-28 mr-2', placeholder: '或按金额¥' });
+      const cnt = h('input', { class: 'border rounded px-2 py-1 w-20 mr-2', placeholder: '数量', value: '1' });
+      const out = h('textarea', { class: 'w-full border rounded p-2 mt-2 text-xs font-mono', rows: '4' });
+      const gen = h('button', {
+        class: 'bg-emerald-600 text-white rounded px-3 py-1 text-sm', onClick: async () => {
+          const r = await api('/api/admin/codes', {
+            method: 'POST', body: JSON.stringify({ credits: cr.value, rmb: rmb.value, count: cnt.value })
+          });
+          const d = await r.json();
+          out.value = '每张面值 ' + fmt(d.creditsEach) + ' 点\n' + (d.codes || []).join('\n');
+        }
+      }, '生成兑换码');
+
+      /* ---------- 充值 ---------- */
+      const un = h('input', { class: 'border rounded px-2 py-1 w-32 mr-2', placeholder: '用户名' });
+      const uc = h('input', { class: 'border rounded px-2 py-1 w-28 mr-2', placeholder: '点数' });
+      const md = h('select', { class: 'border rounded px-2 py-1 mr-2' },
+        h('option', { value: 'add' }, '增加'), h('option', { value: 'set' }, '设为'));
+      const tmsg = h('span', { class: 'text-sm ml-2' });
+      const top = h('button', {
+        class: 'bg-indigo-600 text-white rounded px-3 py-1 text-sm', onClick: async () => {
+          const r = await api('/api/admin/topup', {
+            method: 'POST', body: JSON.stringify({ username: un.value, credits: uc.value, mode: md.value })
+          });
+          const d = await r.json(); tmsg.textContent = r.ok ? ('成功，余额 ' + fmt(d.balance)) : d.error;
+        }
+      }, '执行');
+
+      /* ---------- 常用模型 ---------- */
+      const fm = h('textarea', { class: 'w-full border rounded p-2 text-sm font-mono', rows: '3' });
+      fm.value = (stats.featuredModels || []).join('\n');
+      const fmsg = h('span', { class: 'text-sm ml-2' });
+      const fsave = h('button', {
+        class: 'mt-2 bg-indigo-600 text-white rounded px-3 py-1 text-sm', onClick: async () => {
+          const list = fm.value.split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
+          const r = await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ featuredModels: list }) });
+          const d = await r.json();
+          fmsg.textContent = r.ok
+            ? ('已保存' + (d.missing && d.missing.length ? '，这些不在目录里（仍可用，按兜底价预估）: ' + d.missing.join(', ') : ''))
+            : d.error;
+        }
+      }, '保存');
+
+      /* ---------- 最近用量 ---------- */
+      const stMap = { settled: '已结算', pending: '对账中', unmatched: '未匹配', final: '已完成' };
+      const tb = h('table', { class: 'w-full text-xs' });
+      tb.append(h('tr', { class: 'text-left text-slate-400' },
+        h('th', { class: 'py-1' }, '时间'), h('th', {}, '用户'), h('th', {}, '模型'),
+        h('th', {}, 'in/out tok'), h('th', {}, '思考tok'), h('th', {}, '图'), h('th', {}, '链接'),
+        h('th', {}, '预测积分'), h('th', {}, 'Poe真实积分'),
+        h('th', {}, '预估扣点'), h('th', {}, '实扣'), h('th', {}, '状态')));
+      usage.forEach(x => tb.append(h('tr', { class: 'border-t' },
+        h('td', { class: 'py-1 whitespace-nowrap' }, ts(x.created_at)),
+        h('td', {}, x.username || '-'),
+        h('td', { class: 'truncate max-w-[130px]' }, (x.kind === 'image' ? '🖼 ' : '') + x.model),
+        h('td', {}, (x.prompt_tokens || 0) + '/' + (x.completion_tokens || 0)),
+        h('td', { class: 'text-slate-400' }, x.reasoning_tokens || '-'),
+        h('td', {}, (x.in_images || 0) + '/' + (x.out_images || 0)),
+        h('td', { class: x.url_raw_count ? 'text-amber-600' : '' },
+          (x.url_raw_count || 0) + (x.url_extra_points ? ('(+' + Math.round(x.url_extra_points) + ')') : '')),
+        h('td', {}, x.pred_points != null ? Math.round(x.pred_points) : '-'),
+        h('td', { class: 'font-medium text-indigo-600' }, x.real_points != null ? Math.round(x.real_points) : '-'),
+        h('td', { class: 'text-slate-400' }, x.est_credits == null ? '-' : x.est_credits),
+        h('td', {}, x.charged_credits),
+        h('td', { class: x.status === 'settled' ? 'text-emerald-600' : (x.status === 'unmatched' ? 'text-red-500' : 'text-slate-400') },
+          (stMap[x.status] || x.status || '-') + (x.settle_note ? ('·' + x.settle_note) : '')))));
+
+      /* ---------- 校准 ---------- */
+      const cb = h('div', { class: 'text-xs space-y-1' });
+      if (!calib.length) cb.append(h('div', { class: 'text-slate-400' }, '暂无样本（完成几次对话并对账后自动生成）'));
+      calib.forEach(c => cb.append(h('div', { class: 'flex justify-between' },
+        h('span', {}, c.model), h('span', {}, '系数 ' + Number(c.factor).toFixed(3) + ' · 样本 ' + c.samples))));
+
+      const ub = h('div', { class: 'text-xs space-y-1' });
+      ub.append(h('div', { class: 'text-slate-400' }, '默认值 ' + fmt(urlcal.defaultTokens) + ' 词元/链接；下面是各模型自动学到的真实值'));
+      if (!urlcal.rows.length) ub.append(h('div', { class: 'text-slate-400' }, '暂无样本（发一条带链接的消息并完成对账后自动生成）'));
+      urlcal.rows.forEach(c => ub.append(h('div', { class: 'flex justify-between' },
+        h('span', {}, c.model),
+        h('span', {}, Math.round(c.tokens) + ' 词元/链接 ≈ ' + fmt(c.pointsPerUrl) + ' 积分 · 样本 ' + c.samples))));
+
+      app.append(
+        h('h1', { class: 'text-2xl font-bold mb-4' }, '管理后台'),
+        card('运营概览', h('div', {}, overview, btns, recMsg)),
+        card('⚠️ 对账诊断（待对账 / 未匹配，可手工绑定或按0结算退款）', pb),
+        card('Poe 原始用量条目（最近 60 条，用于核对字段与人工绑定）', rawBox),
+        card('API Key 状态', h('div', {}, keyList, refresh)),
+        card('模型库', h('div', {}, mq, msearch, mref, mout)),
+        card('自定义模型（每行：模型ID, 输入积分/千词元, 输出积分/千词元, 厂商, 每张图片积分）',
+          h('div', {}, cm, csave, cmsg,
+            h('div', { class: 'text-[11px] text-slate-400 mt-2' }, '文本模型例：Claude-Opus-5, 300, 1500, anthropic, 0'),
+            h('div', { class: 'text-[11px] text-slate-400' }, '图片模型例：Nano-Banana-Pro, 0, 0, google, 900'),
+            h('div', { class: 'text-[11px] text-slate-400' }, 'ID 必须和 Poe 里的名字完全一致，否则对账匹配不上。'))),
+        card('常用模型（首页置顶，每行一个）', h('div', {}, fm, fsave, fmsg)),
+        card('生成兑换码（填点数，或只填金额自动换算）', h('div', {}, cr, rmb, cnt, gen, out)),
+        card('给用户改余额', h('div', {}, un, uc, md, top, tmsg)),
+        card('最近 50 次调用（用 Poe真实积分 与 Poe 后台核对）', h('div', { class: 'overflow-auto' }, tb)),
+        card('模型费率自动校准系数', cb),
+        card('🔗 链接抓取成本自动校准（需求2 的学习结果）', ub)
+      );
+      doSearch();
+    }
+    if (atoken) dash(); else login();
+  </script>
+</body>
+
+</html>

@@ -24,21 +24,21 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 #   - 比 gdefud 更高的渠道 → 加在 gdefud 前面
 #   - 介于 gdefud 与云播线路之间的渠道 → 加在 gdefud 后面
 # 整个这一档都排在「云播线路」系列之上。
-TOP_PRIORITY_CHANNELS = ['huxitech', 'gdefud', 'meiju8', 'cifppc', 'chnland', 'xb6v']
+TOP_PRIORITY_CHANNELS = ['gdefud', 'huxitech', 'meiju8', 'cifppc', 'xb6v']
 
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。
 CLOUD_SERIES_PREFIX = '云播线路'
 
 # 云播线路系列之后的优先级(越靠前越高);未列出的渠道再排在这些后面,保持原序。
-CHANNEL_PRIORITY = []
+CHANNEL_PRIORITY = ['chnland']
 
 # ===== Drama / Anime 特殊规则:按集数抢占最高优先级 =====
 # 当项目(仅限下列分类)的 playlist 中,同时出现 GROUP 里的渠道 >= MIN_HIT 个时,
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime'}
-EPISODE_COUNT_PRIORITY_GROUP = ('huxitech', 'chnland', 'gdefud')
+EPISODE_COUNT_PRIORITY_GROUP = ('huxitech', 'chnland', 'gdefud', 'xb6v')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====

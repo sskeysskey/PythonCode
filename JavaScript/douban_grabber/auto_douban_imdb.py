@@ -237,6 +237,22 @@ def update_douban(item, scraped) -> bool:
         print(f"  │ alias   : 不满足写入条件，保持原样（抓到：{alias or '空'}）")
 
     print("  └──────────────────────────────────────")
+
+    # 新增：简介 (intro)
+    intro = str(scraped.get('intro', '')).strip()
+    if _should_write(item.get('intro'), intro):
+        old_intro = item.get('intro', '')
+        item['intro'] = intro
+        changed = True
+        # 截断显示，避免控制台输出太长
+        old_display = (old_intro[:15] + '...') if len(old_intro) > 15 else (old_intro or '空')
+        new_display = (intro[:15] + '...') if len(intro) > 15 else intro
+        print(f"  │ 简介    : {old_display} -> {new_display}")
+    else:
+        print(f"  │ 简介    : 不满足写入条件，保持原样（抓到长度：{len(intro)}）")
+
+    print("  └──────────────────────────────────────")
+    
     return changed
 
 

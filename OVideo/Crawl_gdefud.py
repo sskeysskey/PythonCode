@@ -1127,7 +1127,13 @@ def process_list_page(data, list_url, group, page_name):
                         if info_changed:
                             existing["info"] = new_info_text
                             buf.append(f"    [info更新] 「{old_info}」 -> 「{new_info_text}」")
-                        existing["update"] = now_str
+
+                        # Drama/Anime 只有在 new_max 严格大于 existing_max 时才更新时间
+                        if matched_group in ("Drama", "Anime") and new_max <= existing_max:
+                            pass
+                        else:
+                            existing["update"] = now_str
+
                         buf.append(f"    [{matched_group}] 新抓取集数 {new_max} >= 其它渠道最大 "
                                    f"{existing_max}，插入并置顶")
                         mark_dirty(data)
@@ -1150,7 +1156,11 @@ def process_list_page(data, list_url, group, page_name):
                             continue
 
                         url_key, action = upsert_gdefud_channel(existing, new_eps, url)
-                        existing["update"] = now_str
+
+                        # 此处 new_max < existing_max，Drama/Anime 绝对不更新时间
+                        if matched_group not in ("Drama", "Anime"):
+                            existing["update"] = now_str
+
                         buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
                                    f"{existing_max}，插入但不置顶")
                         mark_dirty(data)
@@ -1164,11 +1174,21 @@ def process_list_page(data, list_url, group, page_name):
                         ok += 1
 
                 else:
-                    # ===== 电影：直接插入并置顶，info 仅在为空时补 =====
+                    # ===== 电影：直接插入并置顶，尝试根据集数更新 info =====
                     scraped_info = rec.get("info", "")
+                    
+                    # 尝试根据集数生成新的 info
+                    new_info_text = build_progress_info(new_eps, old_info)
+                    if new_info_text:
+                        final_info = new_info_text
+                    elif not old_info and scraped_info:
+                        final_info = scraped_info
+                    else:
+                        final_info = old_info
+
                     eps_changed  = (gd_index is None) or (old_eps != new_eps)
                     pos_changed  = (gd_index is not None and gd_index != 0)
-                    info_changed = bool(scraped_info and not old_info)
+                    info_changed = not same_progress_info(final_info, old_info)
 
                     if not (eps_changed or pos_changed or info_changed
                             or fields_changed or url_missing):
@@ -1180,8 +1200,8 @@ def process_list_page(data, list_url, group, page_name):
 
                     url_key, action = promote_gdefud_to_front(existing, new_eps, url)
                     if info_changed:
-                        existing["info"] = scraped_info
-                        buf.append(f"    [info补充] 「」 -> 「{scraped_info}」")
+                        existing["info"] = final_info
+                        buf.append(f"    [info更新] 「{old_info}」 -> 「{final_info}」")
                     existing["update"] = now_str
                     mark_dirty(data)
                     flush()

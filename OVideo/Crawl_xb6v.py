@@ -1107,7 +1107,7 @@ def record_hits_blacklist_url(existing, blacklist_urls):
     return False
 
 
-def only_6vdy_hits_blacklist_url(existing, blacklist_urls):
+def only_6vdy_hits_blacklist_url(existing, blacklist_urls, new_pl=None):
     if not blacklist_urls:
         return False
 
@@ -1124,8 +1124,16 @@ def only_6vdy_hits_blacklist_url(existing, blacklist_urls):
         if isinstance(eps, dict):
             for ep_name, ep_url in eps.items():
                 if ep_url in blacklist_urls:
-                    print(f"      [黑名单命中] 6vdy 渠道的集「{ep_name}」"
-                          f"URL 在黑名单中：{ep_url}")
+                    print(f"      [黑名单命中] 6vdy 渠道的集「{ep_name}」URL 在黑名单中：{ep_url}")
+                    return True
+
+    # 新增：检查即将插入的新抓取列表
+    if new_pl and new_pl.get("name") == PLAYLIST_NAME:
+        eps = new_pl.get("episodes", {})
+        if isinstance(eps, dict):
+            for ep_name, ep_url in eps.items():
+                if ep_url in blacklist_urls:
+                    print(f"      [黑名单命中] 6vdy 新抓取的集「{ep_name}」URL 在黑名单中：{ep_url}")
                     return True
 
     return False
@@ -1220,14 +1228,14 @@ def get_max_other_playlist_ep_count(playlist):
 def insert_6vdy_playlist(playlist, new_pl, existing):
     """
     6vdy集数 > 其他渠道最大集数 → 强制置顶；
-    ⚠️新增：如果6vdy命中黑名单URL，**取消强制置顶，直接走兜底排序**
+    如果6vdy命中黑名单URL，**取消强制置顶，直接走兜底排序**
     """
     vdy_eps = new_pl.get("episodes", {})
     vdy_cnt = get_real_episode_count(vdy_eps)
     max_other = get_max_other_playlist_ep_count(playlist)
 
-    # 关键新增：只要6vdy渠道命中黑名单，直接禁用强制置顶逻辑
-    hit_black = only_6vdy_hits_blacklist_url(existing, BLACKLIST_URLS)
+    # 关键修改：传入 new_pl，确保能检测到新抓取的集是否在黑名单中
+    hit_black = only_6vdy_hits_blacklist_url(existing, BLACKLIST_URLS, new_pl)
     if hit_black:
         print(f"      [排序规则] 检测到6vdy渠道命中黑名单URL，禁用强制置顶，执行兜底排序")
     elif vdy_cnt > max_other:
@@ -1266,23 +1274,41 @@ def should_touch_update_on_episode_change(playlist, new_6vdy_count):
 
 
 def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                             info_updated, movie_info_updated):
+                             info_updated, movie_info_updated, matched_group, old_max_episodes):
+    # 关键新增：如果命中黑名单，绝对不允许刷新 update 时间戳
+    new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
+    if only_6vdy_hits_blacklist_url(existing, BLACKLIST_URLS, new_pl):
+        print("      [时间戳跳过] 6vdy 渠道命中黑名单 URL，禁止刷新 update 时间戳")
+        return False
+
     touch = False
-    if movie_info_updated:
-        touch = True
-    elif info_updated:
-        if should_touch_update_on_episode_change(playlist, len(new_6vdy_episodes)):
+    new_6vdy_count = get_real_episode_count(new_6vdy_episodes)
+
+    if matched_group in ["Drama", "Anime"]:
+        # 针对 Drama 和 Anime：新抓取集数必须严格大于已有所有渠道的最大集数
+        if new_6vdy_count > old_max_episodes:
             touch = True
-            print("      ✅[时间戳] 集数更新且6vdy集数大于其他所有渠道最大值 → 刷新 update")
+            print(f"      ✅[时间戳] {matched_group} 新集数({new_6vdy_count}) > 旧最大集数({old_max_episodes}) → 刷新 update")
         else:
-            print("      [时间戳] 集数更新但6vdy集数未超过其他渠道最大值 → 保持 update 不变")
+            print(f"      [时间戳] {matched_group} 新集数({new_6vdy_count}) 未超过旧最大集数({old_max_episodes}) → 保持 update 不变")
+    else:
+        # 其他类型（Movie、Show）保持原有逻辑
+        if movie_info_updated:
+            touch = True
+        elif info_updated:
+            if should_touch_update_on_episode_change(playlist, new_6vdy_count):
+                touch = True
+                print("      ✅[时间戳] 集数更新且6vdy集数大于其他所有渠道最大值 → 刷新 update")
+            else:
+                print("      [时间戳] 集数更新但6vdy集数未超过其他渠道最大值 → 保持 update 不变")
+            
     if touch:
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("      ✅[字段更新] 已同步更新「update」时间戳")
     return touch
 
 
-def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
+def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_group):
     # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = False
 
@@ -1334,6 +1360,14 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
             break
 
     playlist = existing.setdefault("playlist", [])
+    
+    # 【新增】在修改 playlist 之前，计算当前所有渠道的最大集数
+    old_max_episodes = 0
+    for pl in playlist:
+        eps = pl.get("episodes", {})
+        cnt = get_real_episode_count(eps)
+        if cnt > old_max_episodes:
+            old_max_episodes = cnt
 
     if has_6vdy_url:
         old_6vdy_eps = {}
@@ -1367,8 +1401,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
+        # 【修改】传入 matched_group 和 old_max_episodes
         if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                                    info_updated, movie_info_updated):
+                                    info_updated, movie_info_updated, matched_group, old_max_episodes):
             fields_updated = True
 
         return "updated"
@@ -1408,8 +1443,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec):
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
+        # 【修改】传入 matched_group 和 old_max_episodes
         if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                                    info_updated, movie_info_updated):
+                                    info_updated, movie_info_updated, matched_group, old_max_episodes):
             fields_updated = True
 
         return "channel_added"
@@ -1561,7 +1597,8 @@ def process_items(data, items, tab_name):
                     continue
 
             if existing:
-                status = process_existing_record(existing, new_6vdy_eps, url, rec)
+                # 【修改】传入 matched_group
+                status = process_existing_record(existing, new_6vdy_eps, url, rec, matched_group)
                 if status == "updated":
                     print(f"    ✅ 更新({matched_group})：6vdy 渠道发现新剧集，已覆盖更新")
                     save_json(data)

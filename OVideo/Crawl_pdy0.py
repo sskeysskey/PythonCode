@@ -33,10 +33,10 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 # 当条目重新抓取时，这些源会从旧数据中保留下来，
 # 只更新这个集合之外的源。后续要新增其它外部源，直接加进来即可。
 # 【修改】：将 "6vdy" 也加入受保护源，防止在更新时被覆盖或删除
-PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
+PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland", "gdefud", "huxitech"}
 
 # 受保护域名（用于"同名且 URL 仅来自这些域名"的特殊合并规则）
-PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org")
+PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org", "xb6v.com", "gdefud.com", "cifppc.com")
 
 
 def get_all_url_keys(item: dict) -> list[str]:
@@ -266,7 +266,7 @@ CURRENT_YEAR = str(time.localtime().tm_year)
 DRAMA_MAX_EPISODES_LIMIT = 25  # 电视剧分类最大剧集限制（超过则跳过不抓）
 ANIME_MAX_EPISODES_LIMIT = 25  # 动漫分类最大剧集限制（超过则跳过不抓）
 # 剧集数白名单：命中此列表的名称，不受剧集数量上限过滤
-EPISODE_WHITELIST = {"海贼王"}
+EPISODE_WHITELIST = {"test"}
 
 
 # Drama / Anime / Show 黑名单地区：只要精准匹配这些，就跳过不抓取
@@ -389,7 +389,7 @@ def get_url_path(url: str) -> str:
         return url
 
 
-def download_cover(img_url: str, video_id: str) -> str:
+def download_cover(img_url: str, video_id: str, log_prefix: str = "") -> str:
     """
     图片下载 - 新策略(节省时间):
       1) curl_cffi 单次尝试(chrome 指纹)
@@ -399,35 +399,37 @@ def download_cover(img_url: str, video_id: str) -> str:
     if not img_url:
         return ""
 
+    # 内部打印函数，确保序号只在第一行打印，后续行保持缩进
+    def _print(msg):
+        nonlocal log_prefix
+        if log_prefix:
+            print(f"{log_prefix} {msg}")
+            log_prefix = "    "  # 打印过一次后替换为空白缩进
+        else:
+            print(f"     {msg}")
 
     ensure_dir(COVER_IMAGE_DIR)
-
 
     base = img_url.split("?")[0].split("#")[0]
     ext = os.path.splitext(base)[1].lower()
     if ext not in ALLOWED_IMG_EXT:
         ext = ".jpg"
 
-
     filename = f"{video_id}{ext}"
     filepath = os.path.join(COVER_IMAGE_DIR, filename)
-
 
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
         return filename
 
-
     headers = dict(HEADERS)
     headers["Referer"] = DETAIL_BASE_URL
     headers["Connection"] = "close"
-
 
     url_candidates = [img_url]
     if img_url.startswith("https://"):
         url_candidates.append("http://" + img_url[8:])
     elif img_url.startswith("http://"):
         url_candidates.append("https://" + img_url[7:])
-
 
     def _save(content: bytes) -> bool:
         if not content or len(content) < 200:
@@ -440,7 +442,6 @@ def download_cover(img_url: str, video_id: str) -> str:
             os.remove(filepath)
         return False
 
-
     # ---------- 策略 1:curl_cffi 单次快速尝试 ----------
     for url in url_candidates:
         try:
@@ -452,25 +453,22 @@ def download_cover(img_url: str, video_id: str) -> str:
                 verify=False,
             )
             if resp.status_code == 200 and _save(resp.content):
-                print(f"     [封面已下载|curl_cffi/chrome] {filename}")
+                _print(f"[封面已下载|curl_cffi/chrome] {filename}")
                 return filename
             else:
-                print(f"     [curl_cffi HTTP {resp.status_code}] {url}")
+                _print(f"[curl_cffi HTTP {resp.status_code}] {url}")
         except Exception as e:
             short = str(e).split("See https")[0].strip()
-            print(f"     [curl_cffi 单次失败] {short}")
-
+            _print(f"[curl_cffi 单次失败 | {filename}] {short}")
 
     # ---------- 策略 2:第三方图片代理(主要兜底,经验证最稳) ----------
-    print("     [快速降级] 直接走第三方图片代理...")
+    _print("[快速降级] 直接走第三方图片代理...")
     parsed = urlparse(img_url)
     host_and_path = parsed.netloc + parsed.path
     if parsed.query:
         host_and_path += "?" + parsed.query
 
-
     proxy_headers = {"User-Agent": HEADERS["User-Agent"]}
-
 
     for proxy_tpl in IMAGE_PROXY_TEMPLATES:
         proxy_url = proxy_tpl.format(host_and_path=host_and_path)
@@ -494,17 +492,15 @@ def download_cover(img_url: str, video_id: str) -> str:
                 if resp.status_code == 200 and _save(resp.content):
                     via = proxy_tpl.split("/?")[0]
                     method = "curl_cffi" if use_curl else "requests"
-                    print(f"     [封面已下载|proxy/{method}] {filename} via {via}")
+                    _print(f"[封面已下载|proxy/{method}] {filename} via {via}")
                     return filename
                 else:
-                    print(f"     [proxy HTTP {resp.status_code}] {proxy_url[:100]}")
+                    _print(f"[proxy HTTP {resp.status_code}] {proxy_url[:100]}")
             except Exception as e:
-                print(f"     [proxy 失败] {str(e)[:120]}")
-
+                 _print(f"[proxy 失败 | {filename}] {str(e)[:120]}")
 
     # ---------- 策略 3:深度兜底(仅当代理也挂了才执行) ----------
-    print("     [深度兜底] 代理也失败,尝试 TLS 降级 + 多 impersonate 重试...")
-
+    _print("[深度兜底] 代理也失败,尝试 TLS 降级 + 多 impersonate 重试...")
 
     # 3a) 自定义 TLS Adapter
     for url in url_candidates:
@@ -512,11 +508,10 @@ def download_cover(img_url: str, video_id: str) -> str:
             resp = _tls_session.get(url, headers=headers,
                                     timeout=REQUEST_TIMEOUT, verify=False)
             if resp.status_code == 200 and _save(resp.content):
-                print(f"     [封面已下载|tls_session] {filename}")
+                _print(f"[封面已下载|tls_session] {filename}")
                 return filename
         except Exception as e:
-            print(f"     [tls_session 失败] {str(e)[:120]}")
-
+            _print(f"[tls_session 失败] {str(e)[:120]}")
 
     # 3b) 标准 requests
     for url in url_candidates:
@@ -524,11 +519,10 @@ def download_cover(img_url: str, video_id: str) -> str:
             resp = _std_session.get(url, headers=headers,
                                     timeout=REQUEST_TIMEOUT, verify=False)
             if resp.status_code == 200 and _save(resp.content):
-                print(f"     [封面已下载|requests] {filename}")
+                _print(f"[封面已下载|requests] {filename}")
                 return filename
         except Exception as e:
             pass
-
 
     return ""
 
@@ -907,10 +901,9 @@ def parse_detail_page(html: str, name: str, url: str,
         if img_url.startswith("//"):
             img_url = "https:" + img_url
 
-    if img_url:
-        video_id = extract_video_id(url, name)
-        data["image"] = download_cover(img_url, video_id)
-        time.sleep(SLEEP_BETWEEN_REQUESTS)
+    # 不在这里直接下载，将图片URL暂存，交由外层决定是否下载
+    data["_img_url"] = img_url
+    data["image"] = ""
 
     # 剧情介绍
     intro_box = soup.select_one("div.more-box.zksq-content")
@@ -1029,20 +1022,29 @@ def process_item(item: dict, cat_name: str,
         if item["region"] in FILTER_REGIONS:
             log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
             return "skipped"
-    elif cat_name == "Drama":
-        if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
-            log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
-            return "skipped"
-        if item["region"] in FILTER_REGIONS:
-            log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
-            return "skipped"
-    elif cat_name == "Anime":
-        if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
-            log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (评分: {item['score']} < {MIN_SCORE_LIMIT})")
-            return "skipped"
-        if item["region"] in FILTER_REGIONS:
-            log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
-            return "skipped"
+        elif cat_name == "Drama":
+            if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
+                log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                return "skipped"
+            if item["region"] in FILTER_REGIONS:
+                # 【新增】：如果评分大于 7.0，则破格放行
+                if item["score"] > 7.0:
+                    log(f"  ({idx_i}/{total}) ✅[破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
+                else:
+                    log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
+                    return "skipped"
+        elif cat_name == "Anime":
+            if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
+                log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (评分: {item['score']} < {MIN_SCORE_LIMIT})")
+                return "skipped"
+            if item["region"] in FILTER_REGIONS:
+                # 【新增】：如果评分大于 7.0，则破格放行
+                if item["score"] > 7.0:
+                    log(f"  ({idx_i}/{total}) ✅[破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
+                else:
+                    log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
+                    return "skipped"
+
     else:
         # 电影分类：评分过滤（首页时 skip_score_filter=True 不过滤）
         if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
@@ -1165,7 +1167,23 @@ def process_item(item: dict, cat_name: str,
             else:
                 log(f"  ({idx_i}/{total}) ✅[剧集白名单放行] {video_name}，忽略集数限制 {max_episodes}", force=True)
 
-        log(f"  ({idx_i}/{total}) {'✅' if tag == '[新增]' else ''}{tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
+        # =============================================================
+        # 【新增】：所有过滤条件通过后，决定是否下载图片
+        # =============================================================
+        img_url = detail.pop("_img_url", "")
+        # 如果是更新且旧数据已经有图片，则直接复用，不下载
+        if is_update and old_data and old_data.get("image"):
+            detail["image"] = old_data.get("image")
+        else:
+            # 如果是新增项目，或者已有项目但缺少图片，则执行下载
+            if img_url:
+                video_id = extract_video_id(item["url"], item["name"])
+                # 将序号作为 log_prefix 传给下载函数，去掉原先单独的准备下载日志
+                detail["image"] = download_cover(img_url, video_id, log_prefix=f"  ({idx_i}/{total})")
+                time.sleep(SLEEP_BETWEEN_REQUESTS)
+
+        # 去掉这行日志前面的 ({idx_i}/{total}) 序号
+        log(f"   {'✅' if tag == '[新增]' else ''}{tag} {item['name']}  {item['url']}  info={item['info']}", force=True)
 
         # ===== 任何更新名字 name 不要改 =====
         if is_update:
@@ -1188,23 +1206,58 @@ def process_item(item: dict, cat_name: str,
         # 合并播放源：完整保留旧playlist原有顺序，不再置顶重排受保护源
         if old_entry:
             old_playlist = old_entry.get("playlist", [])
-            # 本次抓取出来的所有非受保护源
-            new_candidate_sources = [
-                p for p in detail.get("playlist", [])
+            
+            # 本次抓取出来的所有非受保护源，转为字典方便查找
+            new_candidate_dict = {
+                p["name"]: p for p in detail.get("playlist", [])
                 if p.get("name") not in PROTECTED_SOURCES
-            ]
+            }
 
-            # 收集旧playlist已存在的源名称，用于去重
-            old_source_names = {item["name"] for item in old_playlist}
-            # 只保留旧playlist不存在的新渠道
-            new_playlist = [
-                item for item in new_candidate_sources
-                if item["name"] not in old_source_names
-            ]
+            final_playlist = []
+            old_source_names = set()
 
-            # 旧playlist顺序完全不动，末尾追加新增渠道
-            final_playlist = old_playlist.copy()
-            final_playlist.extend(new_playlist)
+            # 1. 遍历旧 playlist，保持原有顺序
+            for old_p in old_playlist:
+                name = old_p.get("name")
+                old_source_names.add(name)
+                
+                if name in PROTECTED_SOURCES:
+                    # 受保护源：无条件保留旧数据
+                    final_playlist.append(old_p)
+                else:
+                    # 非受保护源：如果本次抓取到了新数据，则用新数据覆盖（更新集数）；否则保留旧的
+                    if name in new_candidate_dict:
+                        final_playlist.append(new_candidate_dict[name])
+                    else:
+                        final_playlist.append(old_p)
+
+            # 2. 追加旧 playlist 中完全不存在的新增渠道
+            for name, new_p in new_candidate_dict.items():
+                if name not in old_source_names:
+                    final_playlist.append(new_p)
+                    
+            # 重新生成 new_candidate_sources 供后续 info 校验使用
+            new_candidate_sources = list(new_candidate_dict.values())
+
+            # ==========================================
+            # 【新增】：寻找拥有最大集数的渠道并置顶
+            # ==========================================
+            if final_playlist:
+                max_ep_count = -1
+                max_ep_idx = -1
+                # 遍历寻找集数最大的渠道
+                for i, p in enumerate(final_playlist):
+                    ep_count = len(p.get("episodes", {}))
+                    if ep_count > max_ep_count:
+                        max_ep_count = ep_count
+                        max_ep_idx = i
+                
+                # 如果找到了最大集数的渠道，将其移出并插入到第0位
+                if max_ep_idx > 0:  # >0 说明它不在第一位才需要移动
+                    top_channel = final_playlist.pop(max_ep_idx)
+                    final_playlist.insert(0, top_channel)
+                    print(f"     [渠道置顶] 将拥有最大集数({max_ep_count}集)的渠道 '{top_channel['name']}' 置于首位")
+
             detail["playlist"] = final_playlist
 
             protected_in_old = [
@@ -1215,10 +1268,9 @@ def process_item(item: dict, cat_name: str,
             print(f"     [保留受保护源] {kept_names} (维持原有顺序，新增渠道追加至末尾)")
 
             # ==========================================
-            # 【新增】：info 更新前，比较"自己渠道"与"受保护渠道"的集数
-            #   - own_max_ep：本次抓到的自己渠道(非受保护源)最大集数
-            #   - protected_max_ep：受保护源(6vdy/chnland等)最大集数
-            #   - 若 own_max_ep <= protected_max_ep，只更新内容(playlist)，不更新 info
+            # 【修改】：info 更新前，进行双重集数校验
+            #   1. 自己渠道集数 vs 受保护渠道集数
+            #   2. 自己渠道真实集数 vs 抓取到的新 info 宣称集数
             # ==========================================
             protected_max_ep = max(
                 (len(p.get("episodes", {})) for p in protected_in_old),
@@ -1229,13 +1281,40 @@ def process_item(item: dict, cat_name: str,
                 default=0
             )
             old_info_val = old_entry.get("info", "")
-            if own_max_ep <= protected_max_ep:
-                if detail.get("info") != old_info_val:
-                    print(f"     [Info保持] 自己渠道集数({own_max_ep}) <= 受保护渠道集数({protected_max_ep})，"
-                          f"保留旧info '{old_info_val}'，本次仅更新内容不更新info")
+            new_info_val = detail.get("info", "")
+            
+            # 提取新/旧 info 中的数字（如“更新至第05集”提取出 5）
+            new_info_num = 0
+            match_new = re.search(r'(?:更新至|第)?(\d+)(?:集|期)?', new_info_val)
+            if match_new:
+                new_info_num = int(match_new.group(1))
+                
+            old_info_num = 0
+            match_old = re.search(r'(?:更新至|第)?(\d+)(?:集|期)?', old_info_val)
+            if match_old:
+                old_info_num = int(match_old.group(1))
+
+            # 真实的最大集数（无论是自己抓的还是受保护源的）
+            actual_max_ep = max(own_max_ep, protected_max_ep)
+
+            # 如果新宣称的集数大于真实拥有的最大集数，说明是虚假更新
+            if new_info_num > 0 and actual_max_ep < new_info_num:
+                if new_info_val != old_info_val:
+                    print(f"     [Info保持] 虚假更新拦截！真实最大集数({actual_max_ep}) < 宣称集数({new_info_num})，"
+                          f"保留旧info '{old_info_val}'")
                 detail["info"] = old_info_val
+            
+            # 如果新 info 的集数并没有比旧 info 大（或者无法提取数字但内容不同且自己集数不占优）
+            elif new_info_num <= old_info_num and own_max_ep <= protected_max_ep:
+                if new_info_val != old_info_val:
+                    print(f"     [Info保持] 新info集数({new_info_num}) 未超过 旧info集数({old_info_num})，"
+                          f"且自己渠道集数({own_max_ep}) <= 受保护渠道({protected_max_ep})，保留旧info '{old_info_val}'")
+                detail["info"] = old_info_val
+                
+            # 其他情况（新 info 集数更大且真实集数达标，或者自己渠道集数反超了受保护渠道），正常更新
             else:
-                print(f"     ✅[Info更新] 自己渠道集数({own_max_ep}) > 受保护渠道集数({protected_max_ep})，正常更新 info")
+                if new_info_val != old_info_val:
+                    print(f"     ✅[Info更新] 允许更新 info: '{old_info_val}' -> '{new_info_val}' (真实最大集数: {actual_max_ep})")
 
         # =====================【修复位置开始】=====================
         # 受保护源合并、info回滚逻辑全部执行完成后，再打印真实变更日志
@@ -1349,7 +1428,7 @@ def process_item(item: dict, cat_name: str,
                 if not old_upk:
                     print(f"     ✅[新增 update_pk 并更新] -> {new_upk}")
                 else:
-                    print(f"     ✅[update_pk 变化] {old_upk} → {new_upk}")
+                    print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
         # =============================================================
         # 跨分类数据写入与索引重构

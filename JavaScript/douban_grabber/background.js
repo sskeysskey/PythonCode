@@ -123,6 +123,15 @@ function scrapeDoubanPage() {
     return out;
   }
 
+  // 10：提取剧情简介 (intro)
+  function extractIntro() {
+    const el = document.querySelector('span[property="v:summary"]');
+    if (!el) return '';
+    // 获取文本并清理多余的空白字符和换行
+    let text = el.textContent || el.innerText || '';
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
   return {
     type: 'douban',
     name: extractName(),
@@ -134,6 +143,7 @@ function scrapeDoubanPage() {
     starring: extractStarring(),
     genres: extractGenres(),
     reviews: extractReviews(),
+    intro: extractIntro(), // <--- 新增这行
     url: location.href,
     grabbed_at: new Date().toISOString()
   };
