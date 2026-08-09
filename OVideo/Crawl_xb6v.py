@@ -1139,7 +1139,7 @@ def only_6vdy_hits_blacklist_url(existing, blacklist_urls, new_pl=None):
     return False
 
 
-def update_info_field_if_needed(existing, new_playlist):
+def update_info_field_if_needed(existing, new_playlist, old_vdy_cnt):
     if not new_playlist:
         return False
 
@@ -1149,18 +1149,12 @@ def update_info_field_if_needed(existing, new_playlist):
         return False
 
     vdy_pl = None
-    old_vdy_cnt = 0
     for pl in new_playlist:
         if pl.get("name") == PLAYLIST_NAME:
             vdy_pl = pl
             break
 
-    existing_playlist = existing.get("playlist", [])
-    for old_pl in existing_playlist:
-        if old_pl.get("name") == PLAYLIST_NAME:
-            old_eps = old_pl.get("episodes", {})
-            old_vdy_cnt = get_real_episode_count(old_eps)
-            break
+    # 删除了原来在这里遍历 existing_playlist 计算 old_vdy_cnt 的代码，直接使用传入的参数
 
     if vdy_pl is None:
         print(f"      [info字段跳过] playlist 中不含 6vdy 渠道，不更新 info")
@@ -1377,6 +1371,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
                 old_6vdy_eps = pl.get("episodes", {})
                 old_6vdy_idx = idx
                 break
+        
+        # 提前计算旧的 6vdy 集数
+        old_vdy_cnt = get_real_episode_count(old_6vdy_eps)
 
         if new_6vdy_episodes == old_6vdy_eps:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
@@ -1396,7 +1393,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
         else:
             insert_6vdy_playlist(playlist, new_pl, existing)
 
-        info_updated = update_info_field_if_needed(existing, playlist)
+        # 传入提前计算好的 old_vdy_cnt
+        info_updated = update_info_field_if_needed(existing, playlist, old_vdy_cnt)
         movie_info_updated = False
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
@@ -1438,7 +1436,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
 
         print(f"      ✅[新增渠道] 已将 6vdy 写入 {new_url_key}")
 
-        info_updated = update_info_field_if_needed(existing, playlist)
+        # 新增渠道时，旧集数自然为 0
+        info_updated = update_info_field_if_needed(existing, playlist, 0)
         movie_info_updated = False
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
