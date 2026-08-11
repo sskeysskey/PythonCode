@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
 """
 gdefud.com 分类页（电影/电视剧/综艺/动漫）爬取脚本
-基于 Crawl_huxitech.py 改写（结构同为 stui 模板 + Cloudflare 防护）
+—— Cloudflare Turnstile 版：推荐「手动过一次验证 + CDP 附着 + curl_cffi 高速通道」
+
+【推荐用法（方案 2）】
+    1) 彻底退出 Chrome：osascript -e 'quit app "Google Chrome"'
+    2) python Crawl_gdefud.py open        # 用脚本 profile 启动带调试端口的 Chrome
+    3) 在弹出的窗口里手动勾选过 Cloudflare 验证（一次就过）
+    4) 窗口别关，另开终端： python Crawl_gdefud.py cdp fast
+
+其它用法：
+    python Crawl_gdefud.py                 # 正常抓取（自动弹出真实 Chrome 窗口）
+    python Crawl_gdefud.py backfill        # 补全模式
+    python Crawl_gdefud.py cdp             # 附着到你手动启动的 Chrome
+    python Crawl_gdefud.py headless        # 无头模式（不推荐，容易被 CF 拦）
+    python Crawl_gdefud.py fast            # 开启 curl_cffi 加速通道（失败会自动降级）
+参数可组合，例如：python Crawl_gdefud.py cdp fast backfill
 """
 
 import os
@@ -9,14 +23,16 @@ import re
 import sys
 import json
 import time
-from curl_cffi import requests as cffi
-import browser_cookie3
+import socket
 import platform
 import subprocess
 import atexit
 from urllib.parse import urljoin
+from urllib.request import urlopen
 from bs4 import BeautifulSoup, NavigableString, Tag
 from datetime import datetime
+
+from curl_cffi import requests as cffi   # 仅在 FAST 模式下使用
 
 # ================= 防止系统休眠控制 =================
 _caffeinate_proc = None
@@ -49,15 +65,59 @@ JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.jso
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "gdefud"
 SITE_KEY      = "gdefud"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN  = 1.0
 
 # 网络重试
 MAX_RETRIES   = 3
-RETRY_BACKOFF = 2.0     # 第 n 次失败后等待 RETRY_BACKOFF * n 秒
+RETRY_BACKOFF = 5.0     # 第 n 次失败后等待 RETRY_BACKOFF * n 秒
 
 # 落盘节流：每 N 条变更写一次磁盘（1 = 实时写盘）
 SAVE_EVERY    = 1
+
+# ============== 浏览器 / Cloudflare 相关配置 ==============
+USER_DATA_DIR   = os.path.expanduser("~/.gdefud_chrome_profile")
+BROWSER_CHANNEL = "chrome"
+HEADLESS        = False
+CDP_PORT        = 9222
+CDP_ENDPOINT    = f"http://127.0.0.1:{CDP_PORT}"
+USE_CDP         = False
+FAST_MODE       = False
+NAV_TIMEOUT_MS  = 60000
+
+# —— curl_cffi 指纹（按你实际 Chrome 大版本，从前往后自动降级尝试）——
+FAST_IMPERSONATE_CANDIDATES = ["chrome131", "chrome124", "chrome120", "chrome116", "chrome"]
+FAST_RESYNC_INTERVAL = 300      # 每 300 秒从浏览器重新同步一次 cookie
+FAST_MAX_RESYNC_FAIL = 3        # 连续 N 次同步后仍 403，则本次运行不再用 FAST
+
+# —— 人机验证等待策略 ——
+CHALLENGE_WAIT        = 600    # 整体最长等待（秒）
+CHALLENGE_GRACE       = 10     # 一旦检测到验证页，至少保留 10 秒给你点击
+PASS_STABLE_HITS      = 3      # 连续 N 次都判定为"站点正常页"才算真的过了
+POLL_INTERVAL         = 1.5    # 轮询间隔（秒）
+SITE_READY_TIMEOUT    = 8      # 非挑战页时，最多等 8 秒等站点结构渲染出来
+PAGE_SETTLE           = 1.0    # goto 之后静置秒数
+
+# CDP 模式下默认不自动点（避免干扰用户手点导致 Turnstile 重置）
+AUTO_CLICK_TURNSTILE   = True
+AUTO_CLICK_FIRST_DELAY = 8
+AUTO_CLICK_EVERY       = 15
+
+# 判定「这是 Cloudflare 挑战页」的特征串（仅用于 FAST 通道的纯文本判定）
+CHALLENGE_MARKERS = (
+    "Just a moment",
+    "challenges.cloudflare.com/turnstile",
+    "__cf_chl",
+    "cf_chl_opt",
+    "cf-challenge",
+    "challenge-platform",
+    "Checking your browser",
+    "Verifying you are human",
+    "Enable JavaScript and cookies to continue",
+    "需要先验证您是真人",
+    "正在验证您是否是真人",
+)
+SITE_MARKERS = ("stui-", "vodshow", "vodplay", "stui-vodlist")
 
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
                    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
@@ -68,7 +128,6 @@ WHITELIST_NAMES = [
 ]
 
 # 分类页 -> 分组
-#   group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
 LIST_PAGES = [
     ("https://gdefud.com/vodshow/1--time---------2026.html", "Movie", "电影"),
     ("https://gdefud.com/vodshow/2--time---------2026.html", "Drama", "电视剧"),
@@ -77,33 +136,18 @@ LIST_PAGES = [
 ]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
-# 针对特定列表页的地区过滤覆盖（key = 列表页 URL，value = 该页要屏蔽的地区名单）
 FILTER_REGIONS_OVERRIDE = {
-    # 电影(1)：只屏蔽「泰国和中国」，其余地区全部放开
     "https://gdefud.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
-
-    # 电视剧(2)：
     "https://gdefud.com/vodshow/2--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "台湾", "中国台湾", "日本"],
 }
 
-# 视为"空值"的占位文案
 EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
 
-# 无效的集名（需要从 playlist 中过滤掉）
 INVALID_EPISODE_NAMES = {
     "立即播放", "收藏", "播放", "倒序", "正序", "排序",
     "下载", "分享", "报错", "举报", "评论",
-}
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/150.0.0.0 Safari/537.36"
-    ),
-    "Referer": DOMAIN,
 }
 
 
@@ -113,8 +157,568 @@ class FetchError(Exception):
 
 
 class NoRetryFetchError(FetchError):
-    """客户端错误（403/404 等），重试无意义"""
+    """客户端错误（404 等），重试无意义"""
     pass
+
+
+# ==========================================================
+#              CDP：启动 / 探测你手动开的 Chrome
+# ==========================================================
+def cdp_alive(port=CDP_PORT, timeout=1.0):
+    """探测调试端口是否可用"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            pass
+    except Exception:
+        return False
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+            json.loads(r.read().decode("utf-8", "ignore"))
+        return True
+    except Exception:
+        return False
+
+
+def cdp_launch_command():
+    return (
+        'open -na "Google Chrome" --args \\\n'
+        f'  --user-data-dir="{USER_DATA_DIR}" \\\n'
+        f'  --remote-debugging-port={CDP_PORT} \\\n'
+        f'  {DOMAIN}/'
+    )
+
+
+def launch_chrome_for_cdp(open_url=True):
+    """用脚本的 profile 启动一个带调试端口的真实 Chrome（macOS: open -na）"""
+    os.makedirs(USER_DATA_DIR, exist_ok=True)
+
+    if cdp_alive():
+        print(f">>> [CDP] 端口 {CDP_PORT} 已在监听，无需重复启动。")
+        print(">>> [CDP] 请在该 Chrome 窗口打开 https://gdefud.com/ 手动过一次验证。")
+        return True
+
+    print(">>> [CDP] 正在启动 Chrome（若已有 Chrome 在运行，请先 ⌘Q 完全退出！）")
+    args = [
+        f"--user-data-dir={USER_DATA_DIR}",
+        f"--remote-debugging-port={CDP_PORT}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if open_url:
+        args.append(DOMAIN + "/")
+
+    try:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", "-na", "Google Chrome", "--args"] + args)
+        else:
+            subprocess.Popen(["google-chrome"] + args)
+    except Exception as e:
+        print(f"!!! 启动失败：{e}\n请手动执行：\n{cdp_launch_command()}")
+        return False
+
+    for _ in range(30):
+        time.sleep(1)
+        if cdp_alive():
+            print(f">>> [CDP] Chrome 已就绪（端口 {CDP_PORT}）")
+            print(">>> 请在窗口里手动勾选过 Cloudflare 验证，然后另开终端执行：")
+            print("        python Crawl_gdefud.py cdp fast")
+            return True
+
+    print("!!! 等待调试端口超时。可能是已有 Chrome 实例占用了 profile。")
+    print("    请先执行：osascript -e 'quit app \"Google Chrome\"'  再重试。")
+    print("    或手动执行：\n" + cdp_launch_command())
+    return False
+
+
+# ==========================================================
+#                     真实浏览器抓取层
+# ==========================================================
+# 用 DOM 结构判定页面状态，比字符串匹配可靠得多
+_STATE_JS = """
+() => {
+  const q = s => !!document.querySelector(s);
+  const hasSite = q('ul.stui-vodlist') || q('[class*="stui-content_detail"]') ||
+                  q('[class*="stui-content__detail"]') || q('[class*="stui-pannel_bd"]') ||
+                  q('[class*="stui-pannel__bd"]') || q('[class*="stui-header"]') ||
+                  q('a[href*="/vodplay/"]') || q('a[href*="/voddetail/"]') ||
+                  q('a[href*="/vodshow/"]');
+  const cfFrame = Array.from(document.querySelectorAll('iframe'))
+                       .some(f => (f.src || '').includes('challenges.cloudflare.com'));
+  const hasChl  = cfFrame || q('#challenge-form') || q('#challenge-running') ||
+                  q('#cf-challenge-running') || q('.cf-turnstile') ||
+                  q('#turnstile-wrapper') || q('#challenge-stage');
+  const title   = document.title || '';
+  const titleChl = /just a moment|attention required|checking your browser|verify|请稍候|稍等|安全检查/i.test(title);
+  const len = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+  return { hasSite, hasChl, titleChl, len, title };
+}
+"""
+
+def _looks_like_challenge(html: str) -> bool:
+    if not html or len(html) < 200:
+        return True
+    head = html[:8000]
+    hit_challenge = any(m in head for m in CHALLENGE_MARKERS)
+    if not hit_challenge:
+        return False
+    # 挑战特征命中，但页面里同时有站点结构 -> 认为已经是正常页
+    if any(m in html for m in SITE_MARKERS):
+        return False
+    return True
+
+
+class BrowserFetcher:
+    """用真实 Chrome 抓取；遇到 Cloudflare 挑战时暂停等待人工处理"""
+
+    def __init__(self):
+        self._pw = None
+        self._ctx = None
+        self._page = None
+        self._browser = None
+        self.ua = ""
+        self._fast = None
+        self._fast_ok = False
+        self._fast_disabled = False
+        self._fast_sync_at = 0.0
+        self._fast_resync_fail = 0
+        self._impersonate = None
+
+    # ---------- 生命周期 ----------
+    def start(self):
+        if self._ctx is not None:
+            return
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("!!! 未安装 playwright，请先执行：pip install playwright")
+            raise
+
+        self._pw = sync_playwright().start()
+
+        if USE_CDP:
+            if not cdp_alive():
+                print("\n!!! 没有检测到可用的 Chrome 调试端口 "
+                      f"{CDP_ENDPOINT}\n")
+                print("请先执行：")
+                print("    osascript -e 'quit app \"Google Chrome\"'")
+                print("    python Crawl_gdefud.py open")
+                print("或手动执行：")
+                print(cdp_launch_command())
+                raise FetchError("CDP 端口不可用")
+
+            print(f">>> [浏览器] 正在附着到已运行的 Chrome：{CDP_ENDPOINT}")
+            self._browser = self._pw.chromium.connect_over_cdp(CDP_ENDPOINT)
+            self._ctx = (self._browser.contexts[0]
+                         if self._browser.contexts else self._browser.new_context())
+        else:
+            os.makedirs(USER_DATA_DIR, exist_ok=True)
+            print(f">>> [浏览器] 启动真实 Chrome（profile: {USER_DATA_DIR}）")
+            launch_kwargs = dict(
+                user_data_dir=USER_DATA_DIR,
+                headless=HEADLESS,
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1360, "height": 900},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--start-maximized",
+                ],
+                ignore_default_args=["--enable-automation"],
+            )
+            if BROWSER_CHANNEL:
+                launch_kwargs["channel"] = BROWSER_CHANNEL
+            try:
+                self._ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+            except Exception as e:
+                print(f">>> [浏览器] 用系统 Chrome 启动失败({e})，改用 Playwright 自带 Chromium")
+                launch_kwargs.pop("channel", None)
+                self._ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+
+        self._ctx.set_default_timeout(NAV_TIMEOUT_MS)
+        self._ctx.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+
+        if not USE_CDP:
+            # CDP 模式下页面已经是"真人环境"，不再注入任何脚本，避免额外指纹
+            try:
+                self._ctx.add_init_script(
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                )
+            except Exception:
+                pass
+
+        # 优先复用一个已经打开在目标站点的标签页（CDP 模式下就是你手动过验证的那个）
+        self._page = self._pick_page()
+
+        try:
+            self.ua = self._page.evaluate("() => navigator.userAgent") or ""
+        except Exception:
+            self.ua = ""
+
+        self._report_clearance()
+
+        # 预热首页，一次性把 Cloudflare 验证过掉
+        print(">>> [浏览器] 预热首页，检查 Cloudflare 状态 ...")
+        try:
+            self.get_html(DOMAIN + "/", warmup=True)
+            print(">>> [浏览器] 已可正常访问站点 ✅")
+        except Exception as e:
+            print(f">>> [浏览器] 预热异常（不致命，继续）：{e}")
+
+        if FAST_MODE:
+            self._sync_fast_session()
+
+    def _pick_page(self):
+        pages = [p for p in self._ctx.pages if not p.is_closed()]
+        for p in pages:
+            try:
+                if "gdefud" in (p.url or ""):
+                    return p
+            except Exception:
+                continue
+        if pages:
+            return pages[0]
+        return self._ctx.new_page()
+
+    def _report_clearance(self):
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
+        if "cf_clearance" in cookies:
+            print(">>> [Cloudflare] 已检测到 cf_clearance cookie ✅（本次应无需再验证）")
+        else:
+            print(">>> [Cloudflare] 未检测到 cf_clearance cookie ⚠️")
+            if USE_CDP:
+                print("    建议：先在这个 Chrome 窗口打开 https://gdefud.com/ 手动过一次验证。")
+
+    def close(self):
+        try:
+            if self._ctx and not USE_CDP:
+                self._ctx.close()
+            # USE_CDP 模式：绝不关闭用户的浏览器，保留 cf_clearance
+        except Exception:
+            pass
+        try:
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        self._ctx = self._pw = self._page = self._browser = None
+
+    # ---------- 页面状态判定 ----------
+    def _page_state(self):
+        """返回 (state, html)，state ∈ {'site', 'challenge', 'unknown'}"""
+        try:
+            info = self._page.evaluate(_STATE_JS)
+        except Exception:
+            return "unknown", ""
+        try:
+            html = self._page.content()
+        except Exception:
+            html = ""
+        try:
+            cf_frame = any("challenges.cloudflare.com" in (f.url or "")
+                           for f in self._page.frames)
+        except Exception:
+            cf_frame = False
+
+        if info.get("hasSite"):
+            return "site", html
+        if info.get("hasChl") or info.get("titleChl") or cf_frame:
+            return "challenge", html
+        if info.get("len", 0) < 50:      # 白屏 / 还没渲染完
+            return "unknown", html
+        return "unknown", html
+
+    # ---------- 人工过验证 ----------
+    def _notify_challenge(self, url):
+        print("\a", end="", flush=True)      # 响一声提醒
+        print("\n" + "=" * 72)
+        print("  ⚠️  检测到 Cloudflare 人机验证页面，脚本已暂停")
+        print("  👉  请切到 Chrome 窗口，勾选 “确认您是真人 / Verify you are human”")
+        print(f"  ⏳  脚本至少会等你 {CHALLENGE_GRACE} 秒，最长等待 {CHALLENGE_WAIT} 秒。")
+        print(f"      URL: {url}")
+        if not USE_CDP:
+            print("-" * 72)
+            print("  💡 如果反复转圈永远过不了（Playwright 启动的浏览器易被识别），")
+            print("     强烈建议改用【手动过验证 + CDP 附着】：")
+            print("       1) osascript -e 'quit app \"Google Chrome\"'")
+            print("       2) python Crawl_gdefud.py open")
+            print("       3) 在窗口里手动过验证（一次就过）")
+            print("       4) python Crawl_gdefud.py cdp fast")
+        print("=" * 72 + "\n")
+        try:
+            self._page.bring_to_front()
+        except Exception:
+            pass
+        if platform.system() == "Darwin":
+            try:
+                subprocess.run(
+                    ["osascript", "-e", 'tell application "Google Chrome" to activate'],
+                    check=False, capture_output=True)
+            except Exception:
+                pass
+
+    def _try_click_turnstile(self) -> bool:
+        """只在 Turnstile 的 iframe 内点复选框；不乱点 body/label，避免把验证点重置"""
+        try:
+            for fr in self._page.frames:
+                if "challenges.cloudflare.com" not in (fr.url or ""):
+                    continue
+                for sel in ("input[type=checkbox]",
+                            "#challenge-stage input[type=checkbox]",
+                            "label.ctp-checkbox-label",
+                            "#cf-stage input"):
+                    try:
+                        loc = fr.locator(sel)
+                        if loc.count() > 0 and loc.first.is_visible():
+                            loc.first.click(timeout=2000)
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return False
+
+    def _wait_until_ready(self, url, _depth=0):
+        """
+        一直等到页面变成真正的站点页面为止。
+        """
+        soft_deadline = time.time() + SITE_READY_TIMEOUT
+        hard_deadline = time.time() + CHALLENGE_WAIT
+        challenge_seen = False
+        grace_until = 0.0
+        next_click_at = 0.0
+        last_tip = 0.0
+        stable = 0
+        html = ""
+
+        while True:
+            state, html = self._page_state()
+
+            # ---- 已是正常站点页 ----
+            if state == "site" and not (challenge_seen and time.time() < grace_until):
+                stable += 1
+                need = PASS_STABLE_HITS if challenge_seen else 1
+                if stable >= need:
+                    if challenge_seen:
+                        print("    ✅ 人机验证已通过，继续抓取\n")
+                        time.sleep(1.0)
+                        cur = (self._page.url or "").split("#")[0].rstrip("/")
+                        tgt = url.split("#")[0].rstrip("/")
+                        # 有时验证完会落到首页，需要重新打开目标页
+                        if _depth == 0 and cur != tgt:
+                            self._page.goto(url, wait_until="domcontentloaded",
+                                            timeout=NAV_TIMEOUT_MS)
+                            time.sleep(PAGE_SETTLE)
+                            return self._wait_until_ready(url, _depth=1)
+                        try:
+                            html = self._page.content()
+                        except Exception:
+                            pass
+                        if FAST_MODE:
+                            self._sync_fast_session()
+                    return html
+            else:
+                stable = 0
+
+            # ---- 仍在验证页 ----
+            if state == "challenge":
+                if not challenge_seen:
+                    challenge_seen = True
+                    self._notify_challenge(url)
+                    grace_until   = time.time() + CHALLENGE_GRACE
+                    next_click_at = time.time() + AUTO_CLICK_FIRST_DELAY
+                    last_tip = time.time()
+                if AUTO_CLICK_TURNSTILE and time.time() >= next_click_at:
+                    if self._try_click_turnstile():
+                        print("    [自动] 已尝试点击 Turnstile 复选框（你也可以自己点）")
+                    next_click_at = time.time() + AUTO_CLICK_EVERY
+
+            if challenge_seen:
+                if time.time() - last_tip > 20:
+                    print(f"    ... 仍在等待人机验证（剩余 {int(hard_deadline - time.time())}s）")
+                    last_tip = time.time()
+                if time.time() > hard_deadline:
+                    raise FetchError(f"等待 Cloudflare 人机验证超时: {url}")
+            else:
+                # 没检测到验证，但也没识别出站点结构：短等一会儿就放行，交给解析层
+                if time.time() > soft_deadline:
+                    return html
+
+            time.sleep(POLL_INTERVAL)
+
+    # ---------- 对外接口 ----------
+    def get_html(self, url, warmup=False):
+        self.start()
+
+        fast = self._fast_get(url)
+        if fast is not None:
+            return fast
+
+        resp = self._page.goto(url, wait_until="domcontentloaded",
+                               timeout=NAV_TIMEOUT_MS)
+        status = resp.status if resp else 0
+        if status == 404:
+            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+
+        time.sleep(PAGE_SETTLE)
+        html = self._wait_until_ready(url)      # 所有等待都在这里，绝不提前跳走
+
+        if status >= 500 or status == 429:
+            state, _ = self._page_state()
+            if state != "site":                 # CF 挑战页常返回 403/503，过了就不算错误
+                raise FetchError(f"HTTP {status}: {url}")
+
+        return html
+
+    # ---------- FAST 通道 ----------
+    def _make_fast_session(self):
+        """按候选指纹依次尝试创建 curl_cffi Session"""
+        last_err = None
+        candidates = ([self._impersonate] if self._impersonate else []) \
+                     + FAST_IMPERSONATE_CANDIDATES
+        for imp in candidates:
+            if not imp:
+                continue
+            try:
+                s = cffi.Session(impersonate=imp)
+                if self._impersonate != imp:
+                    print(f">>> [FAST] 使用 TLS 指纹: {imp}")
+                self._impersonate = imp
+                return s
+            except Exception as e:
+                last_err = e
+                continue
+        print(f">>> [FAST] 无法创建 curl_cffi Session：{last_err}")
+        return None
+
+    def _sync_fast_session(self, verbose=True):
+        """把浏览器的 cookie + UA 同步给 curl_cffi，作为加速通道"""
+        if self._fast_disabled or not FAST_MODE:
+            return
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
+        if not cookies:
+            self._fast_ok = False
+            if verbose:
+                print(">>> [FAST] 浏览器暂无 cookie，继续使用浏览器通道")
+            return
+
+        s = self._make_fast_session()
+        if s is None:
+            self._fast_ok = False
+            self._fast_disabled = True
+            return
+
+        s.headers.update({
+            "User-Agent": self.ua or s.headers.get("User-Agent", ""),
+            "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                       "image/avif,image/webp,*/*;q=0.8"),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": DOMAIN + "/",
+            "Upgrade-Insecure-Requests": "1",
+        })
+        self._fast = (s, cookies)
+        self._fast_ok = True
+        self._fast_sync_at = time.time()
+        if verbose:
+            has_clr = "cf_clearance" in cookies
+            print(f">>> [FAST] 已同步 {len(cookies)} 个 cookie 到快速通道 "
+                  f"(cf_clearance: {'有 ✅' if has_clr else '无 ⚠️'})")
+
+    def _fast_get(self, url, is_binary=False):
+        if not FAST_MODE or self._fast_disabled:
+            return None
+
+        # 定期从浏览器刷新一次 cookie（cf_clearance 会被服务端轮换）
+        if self._fast_ok and (time.time() - self._fast_sync_at > FAST_RESYNC_INTERVAL):
+            self._sync_fast_session(verbose=False)
+
+        if not (self._fast_ok and self._fast):
+            return None
+
+        s, cookies = self._fast
+        try:
+            r = s.get(url, cookies=cookies, timeout=REQUEST_TIMEOUT,
+                      allow_redirects=True)
+            if r.status_code in (403, 503):
+                print(f"    [FAST] HTTP {r.status_code}，重新同步 cookie 后本次降级浏览器通道")
+                self._fast_ok = False
+                self._sync_fast_session(verbose=False)
+                if self._fast_ok:
+                    self._fast_resync_fail += 1
+                    if self._fast_resync_fail >= FAST_MAX_RESYNC_FAIL:
+                        print("    [FAST] 连续多次被拦，本次运行关闭 FAST 通道")
+                        self._fast_ok = False
+                        self._fast_disabled = True
+                return None
+            if r.status_code == 404:
+                raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+            if r.status_code >= 400:
+                return None
+
+            if is_binary:
+                self._fast_resync_fail = 0
+                return r.content
+
+            if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                r.encoding = r.apparent_encoding or "utf-8"
+            if _looks_like_challenge(r.text):
+                print("    [FAST] 命中挑战页，重新同步 cookie 后本次降级浏览器通道")
+                self._fast_ok = False
+                self._sync_fast_session(verbose=False)
+                return None
+
+            self._fast_resync_fail = 0
+            return r.text
+        except NoRetryFetchError:
+            raise
+        except Exception as e:
+            print(f"    [FAST] 请求异常({e})，本次降级浏览器通道")
+            self._fast_ok = False
+            self._sync_fast_session(verbose=False)
+            return None
+
+    def get_bytes(self, url):
+        self.start()
+        fast = self._fast_get(url, is_binary=True)
+        if fast is not None:
+            return fast
+        r = self._ctx.request.get(url, timeout=REQUEST_TIMEOUT * 1000)
+        if r.status == 404:
+            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+        if r.status >= 400:
+            raise FetchError(f"HTTP {r.status}: {url}")
+        return r.body()
+
+
+_fetcher = BrowserFetcher()
+atexit.register(_fetcher.close)
+
+
+def fetch(url, is_binary=False):
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            if is_binary:
+                return _fetcher.get_bytes(url)
+            return _fetcher.get_html(url)
+        except NoRetryFetchError:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF * attempt
+                if "验证" in str(e) or "Cloudflare" in str(e):
+                    wait = max(wait, 15)   # 被 CF 拦过，多喘口气再来
+                print(f"    [重试 {attempt}/{MAX_RETRIES}] 请求失败: {e}，{wait:.1f}s 后重试")
+                time.sleep(wait)
+    raise last_err if last_err else FetchError(f"请求失败: {url}")
 
 
 # ============== 工具函数 ==============
@@ -131,7 +735,6 @@ def has_existing_site_url(item, target_url):
 
 
 def _url_keys_sorted(item):
-    """按 url, url1, url2 ... 的顺序返回键名列表"""
     return sorted(
         [k for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)],
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
@@ -139,10 +742,6 @@ def _url_keys_sorted(item):
 
 
 def _attach_url(existing, sub_url):
-    """
-    若 sub_url 不存在于 item 中，则分配一个新的 urlN 并保持字段顺序（插到最后一个 url 键之后），
-    返回新键名；若已存在则返回 None。
-    """
     if not sub_url or has_existing_site_url(existing, sub_url):
         return None
 
@@ -166,93 +765,16 @@ def _attach_url(existing, sub_url):
     return new_key
 
 
-# ============== 基于 curl_cffi 的会话（伪装 Chrome 指纹）==============
-# impersonate 的版本尽量贴近你真实 Chrome 大版本，可选：chrome124 / chrome131 / chrome
-_session = cffi.Session(impersonate="chrome")
-_chrome_cookies = None
-
-def _load_chrome_cookies():
-    """从本机 Chrome 读取 gdefud 的 Cookie（含 cf_clearance）"""
-    try:
-        cj = browser_cookie3.chrome(domain_name="gdefud.com")
-        cookies = {c.name: c.value for c in cj}
-        if cookies:
-            print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: "
-                  f"{list(cookies.keys())}")
-        else:
-            print(">>> [Cookie] 未读到 gdefud 的 cookie，请先在 Chrome 里手动过一次验证并浏览一下该站")
-        return cookies
-    except Exception as e:
-        print(f">>> [Cookie] 读取 Chrome cookie 失败: {e}")
-        return {}
-
-
-def fetch(url, is_binary=False):
-    """带退避重试的请求；403/404 不重试"""
-    global _chrome_cookies
-    if _chrome_cookies is None:
-        _chrome_cookies = _load_chrome_cookies()
-
-    last_err = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = _session.get(
-                url,
-                headers=HEADERS,
-                cookies=_chrome_cookies,
-                timeout=REQUEST_TIMEOUT,
-            )
-            status = resp.status_code
-
-            if status in (403, 404):
-                if status == 403:
-                    # 打印前 500 字符，判断是不是 Cloudflare 挑战页
-                    print(f"    [403调试] {resp.text[:500]}")
-                raise NoRetryFetchError(f"HTTP {status} (不重试): {url}")
-
-            if status == 429 or status >= 500:
-                raise FetchError(f"HTTP {status}: {url}")
-
-            resp.raise_for_status()
-
-            if is_binary:
-                return resp.content
-            if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
-                resp.encoding = resp.apparent_encoding or "utf-8"
-            return resp.text
-
-        except NoRetryFetchError:
-            raise
-        except Exception as e:
-            last_err = e
-            if attempt < MAX_RETRIES:
-                wait = RETRY_BACKOFF * attempt
-                print(f"    [重试 {attempt}/{MAX_RETRIES}] 请求失败: {e}，{wait:.1f}s 后重试")
-                time.sleep(wait)
-
-    raise last_err if last_err else FetchError(f"请求失败: {url}")
-
-
 def _re_class(base):
-    """
-    把单下划线写法的类名转成兼容"单/双下划线"的正则。
-    例如 "stui-content_detail" -> 同时匹配 stui-content_detail 和 stui-content__detail
-    """
     return re.compile(r"^" + base.replace("_", "_+") + r"$")
 
 
 def is_garbled(value):
-    """判断是否为乱码/无效值：
-       - 含 Unicode 替换字符 \ufffd (�)             -> 乱码
-       - 去掉空白/常见分隔符后，全由 '?'/'？' 组成    -> 乱码
-    """
     if not value:
         return False
     v = str(value)
-    # 出现替换字符一律判为乱码
     if "\ufffd" in v:
         return True
-    # 去掉空白与常见分隔符后判断
     stripped = re.sub(r"[\s/·,，、|\-]", "", v)
     if not stripped:
         return False
@@ -370,7 +892,6 @@ def download_and_localize_image(img_url):
 
 
 def episodes_are_numbered(episodes):
-    """判断选集是否是按 集/期 编号（用来排除电影的 HD / BD1080P / HD国语 之类）"""
     if not episodes:
         return False
     cnt = 0
@@ -378,12 +899,10 @@ def episodes_are_numbered(episodes):
         n = n.strip()
         if re.search(r"\d+\s*[集期话話]", n) or re.fullmatch(r"第?\s*\d{1,4}\s*", n):
             cnt += 1
-    # 至少一半的条目看起来像编号，才认为是连载型
     return cnt >= max(1, len(episodes) // 2)
 
 
 def detect_episode_unit(episodes, fallback_info=""):
-    """判断量词：期 / 集"""
     text = " ".join(episodes.keys())
     if "期" in text:
         return "期"
@@ -396,7 +915,6 @@ def detect_episode_unit(episodes, fallback_info=""):
 
 
 def info_episode_number(info):
-    """从 info 里提取当前进度数字（不会把年份 2026 当集数）"""
     if not info:
         return None
     for pat in (r"更新[至到]?\s*第?\s*(\d+)\s*[集期话話]",
@@ -408,48 +926,39 @@ def info_episode_number(info):
             return int(m.group(1))
     return None
 
+
 def same_progress_info(a, b):
-    """判断两个 info 是否表达相同的更新进度（忽略 01 vs 1 之类写法差异）"""
     na = info_episode_number(a)
     nb = info_episode_number(b)
     if na is not None and nb is not None:
         return na == nb
     return normalize_text(a or "") == normalize_text(b or "")
 
+
 def get_max_episode_number(episodes):
-    """
-    从选集字典的集名中提取最大集编号；
-    若所有集名都没有可用编号，返回 0（是否兜底由调用方决定）。
-    """
     max_num = 0
     for name in episodes.keys():
-        m = re.search(r'(\d+)\s*[集期话話]', name)   # 优先 "第20集" / "20期"
+        m = re.search(r'(\d+)\s*[集期话話]', name)
         if not m:
-            m = re.search(r'第\s*(\d+)', name)        # 其次 "第20"
+            m = re.search(r'第\s*(\d+)', name)
         if not m:
-            m = re.search(r'(\d+)', name)             # 最后任意数字
+            m = re.search(r'(\d+)', name)
         if m:
             max_num = max(max_num, int(m.group(1)))
     return max_num
 
 
 def episode_progress(episodes):
-    """用于渠道之间比较「谁更新得多」：
-    - 如果选集是编号型(有集/期标记)，优先集号；
-    - 如果是日期类等非编号选集，直接使用条目总数，避免把日期数字误判成巨大集数
-    """
     if not episodes:
         return 0
     if episodes_are_numbered(episodes):
         n = get_max_episode_number(episodes)
         return n if n > 0 else len(episodes)
     else:
-        # 非编号选集（例如纯日期），直接返回条目数量，不要解析里面的裸数字
         return len(episodes)
 
 
 def build_progress_info(episodes, old_info=""):
-    """根据选集生成「更新至第N集/期」；不适用或会造成降级时返回 None"""
     if not episodes_are_numbered(episodes):
         return None
     n = get_max_episode_number(episodes)
@@ -457,12 +966,11 @@ def build_progress_info(episodes, old_info=""):
         return None
     old_n = info_episode_number(old_info)
     if old_n is not None and n < old_n:
-        return None                      # 不允许把 info 往回退
+        return None
     return f"更新至第{n}{detect_episode_unit(episodes, old_info)}"
 
 
 def merge_missing_fields(existing, rec, log=print):
-    """只补空字段"""
     changed = False
     for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro", "date"]:
         new_val = rec.get(field)
@@ -480,10 +988,6 @@ def merge_missing_fields(existing, rec, log=print):
 
 
 def promote_gdefud_to_front(existing, new_episodes, sub_url):
-    """
-    把 gdefud 渠道放到 playlist 首位；URL 缺失时自动补一个 urlN。
-    返回 (url_key or None, action)，action ∈ {"moved", "inserted"}
-    """
     url_key  = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
     gd_index = next((i for i, pl in enumerate(playlist)
@@ -499,16 +1003,11 @@ def promote_gdefud_to_front(existing, new_episodes, sub_url):
 
 
 def upsert_gdefud_channel(existing, new_episodes, sub_url):
-    """
-    插入/更新 gdefud 渠道，但【不改变其在 playlist 中的位置】（不置顶）。
-    URL 缺失时自动补一个 urlN。
-    返回 (url_key or None, action)，action ∈ {"updated", "appended"}
-    """
     url_key  = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
     for pl in playlist:
         if pl.get("name") == PLAYLIST_NAME:
-            pl["episodes"] = new_episodes      # 就地更新，不动位置
+            pl["episodes"] = new_episodes
             return url_key, "updated"
 
     playlist.append({"name": PLAYLIST_NAME, "episodes": new_episodes})
@@ -516,7 +1015,6 @@ def upsert_gdefud_channel(existing, new_episodes, sub_url):
 
 
 def is_valid_episode_name(name):
-    """判断集名是否有效（过滤非正式集名）"""
     if not name:
         return False
     if name in INVALID_EPISODE_NAMES:
@@ -527,16 +1025,10 @@ def is_valid_episode_name(name):
 
 
 def filter_episodes(eps):
-    """过滤无效集名，只保留正式播放条目"""
     return {k: v for k, v in eps.items() if is_valid_episode_name(k)}
 
 
 def detect_group_by_episodes(episodes):
-    """
-    根据选集列表判定分类（用于 AUTO 混合页，本站暂未使用）：
-      - 集名含"集"字，且数量 > 2  -> Drama（电视剧）
-      - 其余（HD / HD中字 / HD国语 等，1~2 项） -> Movie（电影）
-    """
     names = list(episodes.keys())
     count = len(names)
     has_ji = any("集" in n for n in names)
@@ -552,7 +1044,6 @@ def get_list(list_url):
     soup = BeautifulSoup(html, "lxml")
     items = []
     for li in soup.select("ul.stui-vodlist li"):
-        # 标题在 detail 区域
         detail = li.find(class_=_re_class("stui-vodlist_detail"))
         h4a = None
         if detail:
@@ -566,7 +1057,6 @@ def get_list(list_url):
         if not href or not title:
             continue
 
-        # 缩略图（a.stui-vodlist_thumb，图片在 data-original 上）
         thumb = li.find(class_=_re_class("stui-vodlist_thumb"))
         info = ""
         img = ""
@@ -596,13 +1086,12 @@ def _clean_val(v):
     v = normalize_text(v)
     if v in EMPTY_VALUES:
         return ""
-    if is_garbled(v):        # 乱码直接丢弃
+    if is_garbled(v):
         return ""
     return v
 
 
 def parse_detail_fields(detail_div):
-    """解析 p.data 区域：类型/地区/年份(date)/主演/导演"""
     result = {"类型": [], "地区": "", "date": "", "主演": [], "导演": []}
     if detail_div is None:
         return result
@@ -622,7 +1111,6 @@ def parse_detail_fields(detail_div):
                 result["date"] = value
 
     def detect_field(text):
-        """根据 span 文本判断当前字段（兼容全/半角冒号与中英文）"""
         if not text:
             return None
         if re.search(r"类\s*型", text):
@@ -637,7 +1125,6 @@ def parse_detail_fields(detail_div):
             return "导演"
         return None
 
-    # 方法1：遍历 p.data 子节点
     p_tags = detail_div.select("p.data")
     if not p_tags:
         p_tags = detail_div.select("p")
@@ -666,7 +1153,6 @@ def parse_detail_fields(detail_div):
                     if val:
                         assign(current, val)
 
-    # 方法2：如果方法1全部为空，尝试全局搜索 span + 后续 <a>
     if not any([result["类型"], result["地区"], result["date"], result["主演"], result["导演"]]):
         for span in detail_div.find_all("span"):
             classes = span.get("class", []) or []
@@ -721,13 +1207,11 @@ def parse_intro(soup):
 
 
 def extract_episodes(soup):
-    """只抓取【云播资源】下面的选集，忽略高清资源，返回 {集名: 播放url}，已过滤无效集名"""
-    # 排除缩略图 / 大播放按钮里的链接（提到函数顶部，避免作用域隐患）
+    """只抓取【云播资源】下面的选集，返回 {集名: 播放url}"""
     exclude_pat = re.compile(r"stui-content_+thumb|play-btn|stui-vodlist_+thumb")
 
     best = {}
 
-    # 精准定位标题文字=云播资源对应的播放列表
     target_playlist_ul = None
     for head_div in soup.select(".stui-pannel_head.bottom-line.active"):
         h3_title = head_div.select_one("h3.title")
@@ -740,12 +1224,11 @@ def extract_episodes(soup):
                 target_playlist_ul = parent_box.select_one("ul.stui-content_playlist")
             break
 
-    # 解析云播资源下的剧集
     if target_playlist_ul:
         eps = {}
         for a in target_playlist_ul.select("li a[href]"):
             href = a.get("href", "")
-            if "/vodplay/" not in href:      # 过滤「收藏/报错」之类的按钮
+            if "/vodplay/" not in href:
                 continue
             if a.find_parent(class_=exclude_pat):
                 continue
@@ -758,7 +1241,6 @@ def extract_episodes(soup):
     if best:
         return filter_episodes(best)
 
-    # 策略2：兜底——只从 .stui-pannel_bd 内抓 /vodplay/ 链接
     pannel_bd = soup.find_all(class_=_re_class("stui-pannel_bd"))
     eps = {}
     for bd in pannel_bd:
@@ -772,7 +1254,6 @@ def extract_episodes(soup):
     if eps:
         return filter_episodes(eps)
 
-    # 策略3：全页面兜底
     eps = {}
     for a in soup.select('a[href*="/vodplay/"]'):
         if a.find_parent(class_=exclude_pat):
@@ -791,7 +1272,6 @@ def parse_real_name(soup, default_name):
     h1 = detail.find("h1", class_="title")
     if not h1:
         return default_name
-    # 只移除评分等附加 span，保留名字文本
     for sp in h1.find_all("span"):
         classes = sp.get("class", []) or []
         if any(("score" in c) or ("raty" in c) for c in classes):
@@ -804,7 +1284,6 @@ def parse_real_name(soup, default_name):
 
 
 def extract_image_from_detail(soup):
-    """从详情页提取封面图 URL"""
     thumb = soup.find(class_=_re_class("stui-vodlist_thumb"))
     if not thumb:
         return ""
@@ -818,7 +1297,6 @@ def extract_image_from_detail(soup):
 
 
 def extract_info_from_detail(soup):
-    """从详情页提取 info（pic-text 内容）"""
     thumb = soup.find(class_=_re_class("stui-vodlist_thumb"))
     if thumb:
         pic = thumb.select_one("span.pic-text")
@@ -837,12 +1315,10 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
     intro  = parse_intro(soup)
     episodes = extract_episodes(soup)
 
-    # info：优先列表页，其次详情页
     info = default_info
     if not info:
         info = extract_info_from_detail(soup)
 
-    # 封面图：优先列表页 img，其次详情页
     img_url = list_img
     if not img_url:
         img_url = extract_image_from_detail(soup)
@@ -881,7 +1357,6 @@ def load_json():
 
 
 def save_json(data):
-    """写临时文件 + os.replace 原子替换，避免中途中断损坏文件"""
     os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
     tmp = JSON_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -896,7 +1371,6 @@ _pending_data = None
 
 
 def mark_dirty(data, force=False):
-    """记录一次变更，达到 SAVE_EVERY 条或 force 时落盘"""
     global _pending_changes, _pending_data
     _pending_data = data
     _pending_changes += 1
@@ -906,7 +1380,6 @@ def mark_dirty(data, force=False):
 
 
 def flush_pending():
-    """程序结束（含异常退出）时把未落盘的变更写下去"""
     global _pending_changes
     if _pending_changes and _pending_data is not None:
         try:
@@ -927,14 +1400,12 @@ def _year(v):
 
 
 def find_existing_global(data, name, sub_url, rec_date=None, log=print):
-    # 生成【去所有空格】的标准化名称
     def normalize_name(s):
         return s.replace(" ", "").strip() if s else ""
 
     norm_name = normalize_name(name)
     new_year = _year(rec_date)
 
-    # 1. 优先跨分类按 URL 全局检索
     if sub_url:
         for group in ["Movie", "Drama", "Show", "Anime"]:
             for item in data.get(group, []):
@@ -948,7 +1419,6 @@ def find_existing_global(data, name, sub_url, rec_date=None, log=print):
                             f"抓取:「{name}」, 所在分类:{group})")
                     return group, item
 
-    # 2. 按【去空格名称】全局检索（同名需年份接近，避免翻拍误合并）
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             existing_raw_name = item.get("name", "")
@@ -1011,13 +1481,11 @@ def process_list_page(data, list_url, group, page_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # ===== AUTO 混合页：根据选集列表判定 电影/电视剧（本站未使用） =====
             current_group = group
             if group == "AUTO":
                 current_group = detect_group_by_episodes(new_eps)
                 buf.append(f"    [自动分类] 选集共 {len(new_eps)} 项，判定为「{current_group}」")
 
-            # ===== 集数上限过滤：Drama / Anime 超过 20 集(期) 直接跳过 =====
             MAX_EPISODES = 20
             if current_group in ("Drama", "Anime") and len(new_eps) > MAX_EPISODES:
                 flush()
@@ -1027,7 +1495,6 @@ def process_list_page(data, list_url, group, page_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # ===== 先跨分类按 URL 全局检索（再按名称+年份）=====
             matched_group, existing = find_existing_global(
                 data, real_name, url, rec_date=rec.get("date"), log=buf.append
             )
@@ -1037,17 +1504,14 @@ def process_list_page(data, list_url, group, page_name):
                 buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
                            f"将按「{matched_group}」规则处理（当前抓取分类为「{current_group}」）")
 
-            # 白名单直接放行，不检查地区
             if real_name in WHITELIST_NAMES:
                 buf.append(f"    白名单放行：{real_name}，跳过地区屏蔽")
-            # 若 JSON 中已存在（同 URL 或同名），跳过地区限制，正常更新
             elif current_group in ("Anime", "Drama", "Movie") and existing:
                 buf.append(f"    已存在记录，跳过地区屏蔽，继续更新：{real_name}")
             else:
                 region = rec.get("地区", "")
                 region_clean = region.strip()
 
-                # 1) 常规：地区直接命中过滤列表
                 if any(keyword == region_clean for keyword in filter_regions):
                     flush()
                     print(f"    - 跳过：地区为「{region}」，在过滤列表中")
@@ -1055,7 +1519,6 @@ def process_list_page(data, list_url, group, page_name):
                     time.sleep(SLEEP_BETWEEN)
                     continue
 
-                # 2) 地区未知（空或"未知"）时，回退到「类型」判断是否为国产内容
                 if region_clean in ("", "未知"):
                     cn_type_keywords = ["国产", "中国", "大陆", "内地"]
                     type_text = " ".join(rec.get("类型", []) or [])
@@ -1075,10 +1538,8 @@ def process_list_page(data, list_url, group, page_name):
                 new_max  = episode_progress(new_eps)
                 now_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # ① 先补全缺失字段
                 fields_changed = merge_missing_fields(existing, rec, buf.append)
 
-                # ①b 封面图缺失时补图
                 if not existing.get("image") and rec.get("image"):
                     local = download_and_localize_image(rec["image"])
                     if local:
@@ -1093,10 +1554,8 @@ def process_list_page(data, list_url, group, page_name):
                 )
                 old_eps = playlist[gd_index].get("episodes", {}) if gd_index is not None else None
 
-                # URL 是否需要补写（用于判定「有没有实际变更」）
                 url_missing = not has_existing_site_url(existing, url)
 
-                # ② 其它渠道（不含 gdefud 自己的旧数据）的最大集数
                 existing_max = 0
                 for pl in playlist:
                     if pl.get("name") == PLAYLIST_NAME:
@@ -1108,7 +1567,6 @@ def process_list_page(data, list_url, group, page_name):
 
                 if matched_group in ("Drama", "Anime", "Show"):
                     if new_max >= existing_max:
-                        # 集数 >= 现有最大 -> 插入并置顶，同时刷新 info
                         new_info_text = build_progress_info(new_eps, old_info) or old_info
 
                         eps_changed  = (gd_index is None) or (old_eps != new_eps)
@@ -1128,7 +1586,6 @@ def process_list_page(data, list_url, group, page_name):
                             existing["info"] = new_info_text
                             buf.append(f"    [info更新] 「{old_info}」 -> 「{new_info_text}」")
 
-                        # Drama/Anime 只有在 new_max 严格大于 existing_max 时才更新时间
                         if matched_group in ("Drama", "Anime") and new_max <= existing_max:
                             pass
                         else:
@@ -1146,7 +1603,6 @@ def process_list_page(data, list_url, group, page_name):
                                   f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
                         ok += 1
                     else:
-                        # 集数不足 -> 插入但不置顶，info 不动
                         eps_changed = (gd_index is None) or (old_eps != new_eps)
                         if not (eps_changed or fields_changed or url_missing):
                             flush()
@@ -1157,7 +1613,6 @@ def process_list_page(data, list_url, group, page_name):
 
                         url_key, action = upsert_gdefud_channel(existing, new_eps, url)
 
-                        # 此处 new_max < existing_max，Drama/Anime 绝对不更新时间
                         if matched_group not in ("Drama", "Anime"):
                             existing["update"] = now_str
 
@@ -1174,10 +1629,8 @@ def process_list_page(data, list_url, group, page_name):
                         ok += 1
 
                 else:
-                    # ===== 电影：直接插入并置顶，尝试根据集数更新 info =====
                     scraped_info = rec.get("info", "")
-                    
-                    # 尝试根据集数生成新的 info
+
                     new_info_text = build_progress_info(new_eps, old_info)
                     if new_info_text:
                         final_info = new_info_text
@@ -1214,7 +1667,6 @@ def process_list_page(data, list_url, group, page_name):
                     ok += 1
 
             else:
-                # 新增记录
                 flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 data.setdefault(current_group, []).append(rec)
@@ -1229,14 +1681,12 @@ def process_list_page(data, list_url, group, page_name):
             fail += 1
         time.sleep(SLEEP_BETWEEN)
 
-    # 本页处理完强制落盘一次
     mark_dirty(data, force=True)
     return ok, fail, skipped
 
 
 # ============== 补全模式 ==============
 def fetch_detail_data(url):
-    """请求一个 gdefud 详情页，返回 (字段字典, 远程图片URL)"""
     html = fetch(url)
     soup = BeautifulSoup(html, "lxml")
     detail = soup.find(class_=_re_class("stui-content_detail"))
@@ -1250,7 +1700,6 @@ def fetch_detail_data(url):
 
 
 def fill_empty_fields(item, fields, img_url=""):
-    """只补全空字段，已有的不动。返回是否发生过修改"""
     changed = False
     if not item.get("导演") and fields.get("导演"):
         item["导演"] = fields["导演"]; changed = True
@@ -1312,28 +1761,60 @@ def backfill_existing(data):
 
 
 # ============== 主流程 ==============
+def parse_cli():
+    global USE_CDP, HEADLESS, FAST_MODE, AUTO_CLICK_TURNSTILE
+    args = [a.lower().lstrip("-") for a in sys.argv[1:]]
+
+    if "open" in args or "launch" in args:
+        launch_chrome_for_cdp()
+        sys.exit(0)
+
+    if "cdp" in args:
+        USE_CDP = True
+        AUTO_CLICK_TURNSTILE = False   # 你手动点更稳，脚本不去干扰
+        print(">>> [模式] CDP：将附着到你手动启动的 Chrome（不会关闭它）")
+    if "headless" in args:
+        HEADLESS = True
+        print(">>> [模式] 无头（注意：可能无法通过 Cloudflare）")
+    if "fast" in args:
+        FAST_MODE = True
+        print(">>> [模式] FAST：启用 curl_cffi 加速通道")
+    if "click" in args:
+        AUTO_CLICK_TURNSTILE = True
+        print(">>> [模式] 允许脚本自动点击 Turnstile")
+
+    return "backfill" in args
+
+
 def main():
+    is_backfill = parse_cli()
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
     data = load_json()
 
-    if len(sys.argv) > 1 and sys.argv[1] in ("backfill", "--backfill"):
-        backfill_existing(data)
+    try:
+        _fetcher.start()   # 提前把浏览器和 Cloudflare 状态搞定
+
+        if is_backfill:
+            backfill_existing(data)
+            print("\n====================================")
+            print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
+            return
+
+        total_ok, total_fail, total_skip = 0, 0, 0
+        for list_url, group, page_name in LIST_PAGES:
+            ok, fail, skipped = process_list_page(data, list_url, group, page_name)
+            total_ok   += ok
+            total_fail += fail
+            total_skip += skipped
+
+        flush_pending()
         print("\n====================================")
-        print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
-        return
-
-    total_ok, total_fail, total_skip = 0, 0, 0
-    for list_url, group, page_name in LIST_PAGES:
-        ok, fail, skipped = process_list_page(data, list_url, group, page_name)
-        total_ok   += ok
-        total_fail += fail
-        total_skip += skipped
-
-    flush_pending()
-    print("\n====================================")
-    print(f"所有抓取任务完成! 成功 {total_ok} 条，跳过 {total_skip} 条，失败 {total_fail} 条。"
-          f"数据已保存在 {JSON_PATH}")
+        print(f"所有抓取任务完成! 成功 {total_ok} 条，跳过 {total_skip} 条，失败 {total_fail} 条。"
+              f"数据已保存在 {JSON_PATH}")
+    finally:
+        flush_pending()
+        _fetcher.close()
 
 
 if __name__ == "__main__":
