@@ -1005,13 +1005,26 @@ def promote_gdefud_to_front(existing, new_episodes, sub_url):
 def upsert_gdefud_channel(existing, new_episodes, sub_url):
     url_key  = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
-    for pl in playlist:
-        if pl.get("name") == PLAYLIST_NAME:
-            pl["episodes"] = new_episodes
-            return url_key, "updated"
 
-    playlist.append({"name": PLAYLIST_NAME, "episodes": new_episodes})
-    return url_key, "appended"
+    # 1. 如果已存在 gdefud，先将其移除（后续统一重新插入指定位置）
+    gd_index = next((i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME), None)
+    if gd_index is not None:
+        playlist.pop(gd_index)
+
+    # 2. 找到当前剩余渠道中集数最多的渠道索引（max_idx）
+    max_idx = 0
+    max_eps = -1
+    for i, pl in enumerate(playlist):
+        cnt = episode_progress(pl.get("episodes", {}))
+        if cnt > max_eps:
+            max_eps = cnt
+            max_idx = i
+
+    # 3. 插入到集数最多的渠道下方（即 max_idx + 1 位）
+    insert_pos = (max_idx + 1) if playlist else 0
+    playlist.insert(insert_pos, {"name": PLAYLIST_NAME, "episodes": new_episodes})
+
+    return url_key, "inserted_after_max"
 
 
 def is_valid_episode_name(name):
@@ -1617,15 +1630,11 @@ def process_list_page(data, list_url, group, page_name):
                             existing["update"] = now_str
 
                         buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
-                                   f"{existing_max}，插入但不置顶")
+                                   f"{existing_max}，插入到最大集数渠道下方")
                         mark_dirty(data)
                         flush()
-                        if action == "updated":
-                            print(f"    ✅ 更新({matched_group})：gdefud 渠道已就地更新（位置不变）"
-                                  f"{f'（补写 {url_key}）' if url_key else ''}")
-                        else:
-                            print(f"    ✅ 更新({matched_group})：gdefud 作为新渠道写入 "
-                                  f"{url_key or '(已有URL)'}，追加到 playlist 末尾")
+                        print(f"    ✅ 更新({matched_group})：gdefud 已插入/更新到最大集数渠道下方"
+                              f"{f'（补写 {url_key}）' if url_key else ''}")
                         ok += 1
 
                 else:

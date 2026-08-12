@@ -1223,6 +1223,7 @@ def insert_6vdy_playlist(playlist, new_pl, existing):
     """
     6vdy集数 > 其他渠道最大集数 → 强制置顶；
     如果6vdy命中黑名单URL，**取消强制置顶，直接走兜底排序**
+    兜底：优先查找 huxitech / gdefud，插到这两个中靠后的那一项后面；都没有则追加末尾
     """
     vdy_eps = new_pl.get("episodes", {})
     vdy_cnt = get_real_episode_count(vdy_eps)
@@ -1238,18 +1239,24 @@ def insert_6vdy_playlist(playlist, new_pl, existing):
         return
 
     # -------- 兜底排序逻辑（黑名单命中 OR 集数不占优都会走到这里） --------
-    chnland_idx = -1
-    for i, item in enumerate(playlist):
-        if item.get("name") == "chnland":
-            chnland_idx = i
-            break
-    if chnland_idx != -1:
-        playlist.insert(chnland_idx + 1, new_pl)
-        print(f"      [排序规则] 检测到 chnland，6vdy 放在它后面")
+    # 收集 huxitech / gdefud 在playlist中的索引
+    target_names = {"huxitech", "gdefud"}
+    target_indexes = []
+    for idx, item in enumerate(playlist):
+        pl_name = item.get("name", "")
+        if pl_name in target_names:
+            target_indexes.append(idx)
+
+    if target_indexes:
+        # 取两个渠道中靠后的那个索引
+        insert_pos = max(target_indexes) + 1
+        playlist.insert(insert_pos, new_pl)
+        found_names = [playlist[i].get("name") for i in target_indexes]
+        print(f"      [排序规则] 检测到渠道 {found_names}，6vdy 放在靠后一项之后（位置{insert_pos}）")
     else:
-        # 没有chnland，不插0号位置，追加到末尾，避免置顶
+        # 没有 huxitech / gdefud，追加到末尾
         playlist.append(new_pl)
-        print(f"      [排序规则] 未检测到 chnland，6vdy 添加到playlist末尾")
+        print(f"      [排序规则] 未检测到 huxitech/gdefud，6vdy 添加到playlist末尾")
 
 
 def should_touch_update_on_episode_change(playlist, new_6vdy_count):
