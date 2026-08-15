@@ -122,6 +122,13 @@ SITE_MARKERS = ("stui-", "vodshow", "vodplay", "stui-vodlist")
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
                    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
                    "阿松与阿暖", "红色珍珠", "飞越疯人院"]
+
+# URL 黑名单（在这里添加你要屏蔽的 URL 关键字，包含这些字串的 URL 将被跳过）
+BLACKLIST_URLS = [
+    "https://gdefud.com/voddetail/118212.html",
+    "https://gdefud.com/voddetail/118001.html",
+]
+
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
     "北斗神拳 拳王军杂兵们的挽歌", "麻辣教师第二季", "新攻壳机动队"
@@ -1464,8 +1471,15 @@ def process_list_page(data, list_url, group, page_name):
     ok, fail, skipped = 0, 0, 0
 
     for idx, (name, info, url, img) in enumerate(items, 1):
+        # 1. 名称黑名单判断
         if name in BLACKLIST_NAMES:
-            print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            print(f"  ({idx}/{len(items)}) {name} [在名称黑名单中，跳过]")
+            skipped += 1
+            continue
+
+        # 2. URL 黑名单判断（新增）
+        if any(bad_url in url for bad_url in BLACKLIST_URLS):
+            print(f"  ({idx}/{len(items)}) {name} [URL在黑名单中，跳过] -> {url}")
             skipped += 1
             continue
 
@@ -1580,9 +1594,14 @@ def process_list_page(data, list_url, group, page_name):
 
                 if matched_group in ("Drama", "Anime", "Show"):
                     if new_max >= existing_max:
-                        new_info_text = build_progress_info(new_eps, old_info) or old_info
-
+                        # 先判定集数是否变化，如果集数没变，就不去覆盖原有 info
                         eps_changed  = (gd_index is None) or (old_eps != new_eps)
+                        
+                        if eps_changed:
+                            new_info_text = build_progress_info(new_eps, old_info) or old_info
+                        else:
+                            new_info_text = old_info
+                            
                         pos_changed  = (gd_index is not None and gd_index != 0)
                         info_changed = not same_progress_info(new_info_text, old_info)
 
@@ -1639,16 +1658,21 @@ def process_list_page(data, list_url, group, page_name):
 
                 else:
                     scraped_info = rec.get("info", "")
-
-                    new_info_text = build_progress_info(new_eps, old_info)
-                    if new_info_text:
-                        final_info = new_info_text
-                    elif not old_info and scraped_info:
-                        final_info = scraped_info
-                    else:
-                        final_info = old_info
-
+                    # 先判断集数是否变化
                     eps_changed  = (gd_index is None) or (old_eps != new_eps)
+
+                    if eps_changed:
+                        new_info_text = build_progress_info(new_eps, old_info)
+                        if new_info_text:
+                            final_info = new_info_text
+                        elif not old_info and scraped_info:
+                            final_info = scraped_info
+                        else:
+                            final_info = old_info
+                    else:
+                        # 集数没变时，优先保留原有的 info（比如"已完结"）
+                        final_info = old_info if old_info else scraped_info
+
                     pos_changed  = (gd_index is not None and gd_index != 0)
                     info_changed = not same_progress_info(final_info, old_info)
 

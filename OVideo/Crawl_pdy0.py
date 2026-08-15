@@ -143,7 +143,7 @@ TASKS = [
         "jobs": [
             {"year": "",
              "categories": {
-                "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": False},
+                "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": True},
                 "Drama": {"id": 2, "enabled": True, "pages": 1},
                 "Show": {"id": 3, "enabled": True, "pages": 1},
                 "Anime": {"id": 4, "enabled": True, "pages": 1}
@@ -153,14 +153,16 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": False,
+        "enabled": True,
         "jobs": [
-            {"year": "",
+            {"year": "2026",
              "categories": {
-                 "Movie": {"id": 1, "enabled": True, "pages": 1},
-                 "Drama": {"id": 2, "enabled": True, "pages": 1},
-                 "Show": {"id": 3, "enabled": True, "pages": 1},
-                 "Anime": {"id": 4, "enabled": True, "pages": 1}
+                 # skip_score_filter=True  → 2026 新片不要求评分，直接抓取入库（旧片仍需评分）
+                 # skip_score_filter=False → 2026 新片也跟旧片一样到详情页拿最高分，高于 6.5 才抓
+                 "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": True},
+                 "Drama": {"id": 2, "enabled": True, "pages": 0},
+                 "Show": {"id": 3, "enabled": True, "pages": 0},
+                 "Anime": {"id": 4, "enabled": True, "pages": 0}
                  }
             },
         ]
@@ -253,9 +255,9 @@ COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_ima
 
 # 【新增】：最低评分过滤配置
 # 低于该分数的视频将直接在列表页阶段被过滤，不请求详情页
-MIN_SCORE_LIMIT = 6.0
+MIN_SCORE_LIMIT = 6.3
 # 非当前年份的旧片，豆瓣/IMDB 取最高分，低于此值则跳过不抓
-OLD_VIDEO_MIN_SCORE = 6.0
+OLD_VIDEO_MIN_SCORE = 6.3
 # 当前年份（综艺 Show 分类只抓当年内容，跨年自动跟随，无需改代码）
 CURRENT_YEAR = str(time.localtime().tm_year)
 
@@ -351,7 +353,7 @@ def should_skip_info_update(old_info: str, new_info: str) -> bool:
     pattern = r'(?:更新至|第)?(\d+)(?:集|期)?'
     
     old_match = re.search(pattern, old_info)
-    new_match = re.search(pattern, new_match) if 'new_match' in locals() else re.search(pattern, new_info)
+    new_match = re.search(pattern, new_info)
     
     if old_match and new_match:
         try:
@@ -743,7 +745,8 @@ def _find_span_by_label(info_block, label: str):
 
 def parse_detail_page(html: str, name: str, url: str,
                       info: str = "", base_url: str = DETAIL_BASE_URL,
-                      list_year: str = "") -> dict | None:
+                      list_year: str = "", skip_score_filter: bool = False,
+                      cat_name: str = "", sort_type: str = "") -> dict | None:
     soup = BeautifulSoup(html, "html.parser")
 
     # ====== 提取播放列表并校验（前置逻辑） ======
@@ -769,7 +772,6 @@ def parse_detail_page(html: str, name: str, url: str,
         "url": url,
         "info": info,
         "update": update_time,
-        "update_pk": update_time,
         "image": "",
         "导演": "",
         "编剧": [],
@@ -847,12 +849,14 @@ def parse_detail_page(html: str, name: str, url: str,
                 data["评分"]["豆瓣"] = score
 
     # =============================================================
-    # 【新增】：旧片评分过滤
-    #   - 取详情页 date 的年份；取不到则回退到列表页年份 list_year
-    #   - 若为当前年份（如 2026）：不要求评分，直接放行
-    #   - 若为 2025 及更早：豆瓣/IMDB 取最高分，低于 OLD_VIDEO_MIN_SCORE 则跳过
-    #     （两个平台都没分则视为不足，同样跳过）
-    #   注意：此过滤在封面下载之前，避免为被丢弃的条目浪费下载。
+    # 【修改后】评分过滤
+    #   A) 普通模式（其它分类 / score / index / hits&time 的非电影）：沿用旧逻辑
+    #   B) 电影 hits/time 模式（movie_region_mode）：
+    #        - 新片（detail_year == CURRENT_YEAR）：
+    #            * 地区在 FILTER_REGIONS 内  → 必须"有评分且 >= 门槛"，否则跳过
+    #            * 地区不在 FILTER_REGIONS 内 → "无评分"放行；"有评分但 < 门槛"才跳过
+    #        - 老片（detail_year != CURRENT_YEAR）→ 始终评分过滤（无评分视为不达标）
+    #   情色片始终放行（豁免）。
     # =============================================================
     detail_year = ""
     if data.get("date"):
@@ -862,31 +866,62 @@ def parse_detail_page(html: str, name: str, url: str,
     if not detail_year:
         detail_year = list_year  # 详情页拿不到年份时，回退用列表页年份
 
-        if detail_year and detail_year != CURRENT_YEAR:
-            candidate_scores = []
-            for platform in ("豆瓣", "IMDB"):
-                val = data["评分"].get(platform, "")
-                if val and val != "--":
-                    try:
-                        candidate_scores.append(float(val))
-                    except ValueError:
-                        pass
-            max_score = max(candidate_scores) if candidate_scores else 0.0
-            
-            # ==========================================
-            # 【新增规则】：即使评分低于6.0，只要类型包含“情色”，就不跳过
-            # ==========================================
-            is_erotic = False
-            types = data.get("类型", [])
-            for t in types:
-                if "情色" in t:
-                    is_erotic = True
-                    break
+    # 统一计算 豆瓣/IMDB 评分情况
+    candidate_scores = []
+    for platform in ("豆瓣", "IMDB"):
+        val = data["评分"].get(platform, "")
+        if val and val != "--":
+            try:
+                candidate_scores.append(float(val))
+            except ValueError:
+                pass
+    has_rating = len(candidate_scores) > 0
+    max_score = max(candidate_scores) if candidate_scores else 0.0
 
-            # 原来的逻辑：评分 < 6.0 就跳过
-            # 现在逻辑：评分 < 6.0 且 不是情色片 → 才跳过
+    # 情色片豁免
+    is_erotic = any("情色" in t for t in data.get("类型", []))
+
+    region = data.get("地区", "")
+    is_current_year = (detail_year == CURRENT_YEAR)
+    movie_region_mode = (cat_name == "Movie" and sort_type in ("hits", "time"))
+
+    if movie_region_mode:
+        if not is_erotic:
+            if is_current_year:
+                # ===== 2026 新片：地区感知过滤 =====
+                if region in FILTER_REGIONS:
+                    # 过滤地区（中国/泰国等）：必须有评分且 >= 门槛
+                    if (not has_rating) or (max_score < OLD_VIDEO_MIN_SCORE):
+                        log(f"     ⚠️[跳过-过滤地区新片评分不达标] {name} "
+                            f"(地区: {region or '未知'}, 有评分: {has_rating}, "
+                            f"最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
+                        return None
+                else:
+                    # 非过滤地区（美国/韩国等）：无评分放行；有评分但 < 门槛才跳过
+                    if has_rating and max_score < OLD_VIDEO_MIN_SCORE:
+                        log(f"     ⚠️[跳过-非过滤地区新片评分过低] {name} "
+                            f"(地区: {region or '未知'}, 最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})",
+                            force=True)
+                        return None
+            else:
+                # ===== 老片：始终评分过滤（无评分 → max_score=0 → 跳过）=====
+                if max_score < OLD_VIDEO_MIN_SCORE:
+                    log(f"     ⚠️[跳过-老片评分过低] {name} "
+                        f"(年份: {detail_year or '未知'}, 最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})",
+                        force=True)
+                    return None
+    else:
+        # ===== 原有逻辑：其它分类 / score / index 等，行为完全不变 =====
+        should_check_score = False
+        if detail_year:
+            if detail_year != CURRENT_YEAR:
+                should_check_score = True
+            elif not skip_score_filter:
+                should_check_score = True
+
+        if should_check_score:
             if max_score < OLD_VIDEO_MIN_SCORE and not is_erotic:
-                log(f"     ⚠️[跳过-旧片评分过低] {name} (年份: {detail_year}, "
+                log(f"     ⚠️[跳过-评分过低] {name} (年份: {detail_year}, "
                     f"豆瓣/IMDB最高分: {max_score} < {OLD_VIDEO_MIN_SCORE})", force=True)
                 return None
 
@@ -992,6 +1027,8 @@ def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
     elif sort_type == "hits":
         return f"{LIST_BASE_URL}/ms/{cat_id}--hits------{page}---.html"
     elif sort_type == "time":
+        if year:
+            return f"{LIST_BASE_URL}/ms/{cat_id}--time------{page}---{year}.html"
         return f"{LIST_BASE_URL}/ms/{cat_id}--time------{page}---.html"
     else:
         raise ValueError(f"未知的 sort_type: {sort_type}")
@@ -1003,51 +1040,58 @@ def build_list_url(cat_id: int, page: int, year: str, sort_type: str) -> str:
 # 【已重构】：单个条目的去重 + 详情抓取 + 合并 + 写入
 #   被 crawl_category（普通页）与 crawl_homepage（首页）共同复用。
 #   返回值: "new" / "updated" / "skipped"
-#   skip_score_filter=True 时不进行最低评分过滤（首页专用）。
+#   skip_score_filter=True 时不进行最低评分过滤（首页专用 / time电影新片专用）。
 # =============================================================
 def process_item(item: dict, cat_name: str,
                  all_data: dict, global_index: dict,
                  detail_base_url: str = DETAIL_BASE_URL,
                  skip_score_filter: bool = False,
-                 idx_i: int = 0, total: int = 0) -> str:
+                 idx_i: int = 0, total: int = 0,
+                 sort_type: str = "") -> str:          # ← 新增 sort_type
     # =============================================================
     # 分类过滤逻辑分流
+    # 【修复】：Drama / Anime 从 Show 内部拆出，成为独立的、与 Show 平级的
+    #          elif 分支，且位于电影 else 分支之前。
     # =============================================================
     if cat_name == "Show":
         # 综艺分类：不看评分，只抓当前年份（如 2026），跨年自动跟随
         if item["year"] != CURRENT_YEAR:
             log(f"  ({idx_i}/{total}) [跳过-年份不符] {item['name']} (年份: '{item['year']}' != '{CURRENT_YEAR}')")
             return "skipped"
-        # 添加地区过滤逻辑
+        # 地区过滤
         if item["region"] in FILTER_REGIONS:
             log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
             return "skipped"
-        elif cat_name == "Drama":
-            if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
-                log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+
+    elif cat_name == "Drama":
+        if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
+            log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
+            return "skipped"
+        if item["region"] in FILTER_REGIONS:
+            # 【规则】：如果评分大于 7.0，则破格放行
+            if item["score"] > 7.0:
+                log(f"  ({idx_i}/{total}) [破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
+            else:
+                log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
                 return "skipped"
-            if item["region"] in FILTER_REGIONS:
-                # 【新增】：如果评分大于 7.0，则破格放行
-                if item["score"] > 7.0:
-                    log(f"  ({idx_i}/{total}) ✅[破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
-                else:
-                    log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
-                    return "skipped"
-        elif cat_name == "Anime":
-            if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
-                log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (评分: {item['score']} < {MIN_SCORE_LIMIT})")
+
+    elif cat_name == "Anime":
+        if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
+            log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (评分: {item['score']} < {MIN_SCORE_LIMIT})")
+            return "skipped"
+        if item["region"] in FILTER_REGIONS:
+            # 【规则】：如果评分大于 7.0，则破格放行
+            if item["score"] > 7.0:
+                log(f"  ({idx_i}/{total}) [破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
+            else:
+                log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
                 return "skipped"
-            if item["region"] in FILTER_REGIONS:
-                # 【新增】：如果评分大于 7.0，则破格放行
-                if item["score"] > 7.0:
-                    log(f"  ({idx_i}/{total}) ✅[破格放行-高分黑名单地区] {item['name']} (地区: '{item['region']}', 评分: {item['score']} > 7.0)", force=True)
-                else:
-                    log(f"  ({idx_i}/{total}) [跳过-黑名单地区] {item['name']} (地区: '{item['region']}')")
-                    return "skipped"
 
     else:
-        # 电影分类：评分过滤（首页时 skip_score_filter=True 不过滤）
-        if (not skip_score_filter) and item["score"] < MIN_SCORE_LIMIT:
+        # 电影分类：评分过滤（skip_score_filter=True 时不过滤）
+        # 【说明】：列表页 "--"（→0.0）视为"暂无评分"，放行到详情页再判断；
+        #          只有列表页确实给出了评分、且低于门槛时，才在列表阶段跳过。
+        if (not skip_score_filter) and 0 < item["score"] < MIN_SCORE_LIMIT:
             log(f"  ({idx_i}/{total}) [跳过-评分过低] {item['name']} (当前评分: {item['score']} < {MIN_SCORE_LIMIT})")
             return "skipped"
 
@@ -1143,7 +1187,9 @@ def process_item(item: dict, cat_name: str,
     try:
         detail = parse_detail_page(detail_html, item["name"], item["url"],
                                    info=item["info"], base_url=detail_base_url,
-                                   list_year=item.get("year", ""))
+                                   list_year=item.get("year", ""),
+                                   skip_score_filter=skip_score_filter,
+                                   cat_name=cat_name, sort_type=sort_type)   # ← 新增这两个
 
         if detail is None:
             return "skipped"
@@ -1412,23 +1458,12 @@ def process_item(item: dict, cat_name: str,
 
         if "update" in detail:
             ordered_detail["update"] = detail["update"]
-        ordered_detail["update_pk"] = detail.get("update_pk", "")
 
         for k, v in detail.items():
             if k not in ordered_detail:
                 ordered_detail[k] = v
 
         detail = ordered_detail
-
-        # update_pk 变化提示
-        if is_update and old_entry:
-            old_upk = old_entry.get("update_pk", "")
-            new_upk = detail.get("update_pk", "")
-            if old_upk != new_upk:
-                if not old_upk:
-                    print(f"     ✅[新增 update_pk 并更新] -> {new_upk}")
-                else:
-                    print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
         # =============================================================
         # 跨分类数据写入与索引重构
@@ -1509,7 +1544,8 @@ def crawl_category(cat_name: str, cat_cfg: dict,
                 item, cat_name, all_data, global_index,
                 detail_base_url=DETAIL_BASE_URL,
                 skip_score_filter=cat_cfg.get("skip_score_filter", False),
-                idx_i=idx_i, total=len(items)
+                idx_i=idx_i, total=len(items),
+                sort_type=sort_type                 # ← 新增
             )
             if result == "new":
                 new_count += 1
@@ -1555,7 +1591,8 @@ def crawl_homepage(categories_cfg: dict, all_data: dict, global_index: dict):
                 item, cat_name, all_data, global_index,
                 detail_base_url=INDEX_BASE_URL,
                 skip_score_filter=True,   # 首页不看评分
-                idx_i=idx_i, total=len(items)
+                idx_i=idx_i, total=len(items),
+                sort_type="index"          # ← 新增
             )
             if result == "new":
                 new_n += 1
@@ -1571,7 +1608,12 @@ def crawl_homepage(categories_cfg: dict, all_data: dict, global_index: dict):
 def clean_existing_data(data: dict):
     for cat in data:
         if isinstance(data[cat], list):
-            data[cat] = [item for item in data[cat] if item.get("playlist")]
+            new_list = []
+            for item in data[cat]:
+                item.pop("update_pk", None)  # 删掉历史残留字段
+                if item.get("playlist"):
+                    new_list.append(item)
+            data[cat] = new_list
 
 
 # ==========================================

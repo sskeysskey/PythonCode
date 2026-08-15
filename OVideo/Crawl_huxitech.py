@@ -52,7 +52,12 @@ SITE_KEY      = "huxitech"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
-                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖"]
+                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱"]
+# 支持填写完整的 URL 或 URL 包含的关键词/路径片段（例如 "/voddetail/1234.html" 或特定 ID片段）
+BLACKLIST_URLS = [
+    "https://www.cifppc.com/voddetail/99927.html",
+]
+
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
     # "镖人 第二季"
@@ -996,8 +1001,14 @@ def process_list_page(data, list_url, group, page_name):
     ok, fail = 0, 0
 
     for idx, (name, info, url, img) in enumerate(items, 1):
+        # 1. 检查名称黑名单
         if name in BLACKLIST_NAMES:
-            print(f"  ({idx}/{len(items)}) {name} [在黑名单中，跳过]")
+            print(f"  ({idx}/{len(items)}) {name} [在名称黑名单中，跳过]")
+            continue
+
+        # ===== 2. 新增：检查 URL 黑名单 =====
+        if any(black_url in url for black_url in BLACKLIST_URLS if black_url):
+            print(f"  ({idx}/{len(items)}) {name} [URL 在黑名单中，跳过: {url}]")
             continue
 
         header = f"  ({idx}/{len(items)}) {name}  [{info}]"

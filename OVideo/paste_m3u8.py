@@ -32,9 +32,11 @@ def main():
     # 1. 查找 Downloads 目录下的 json 文件
     all_json_files = glob.glob(os.path.join(DOWNLOADS_DIR, '*.json'))
 
-    # --- 新增逻辑：过滤掉 kalshi_ 开头的文件 ---
-    # 使用列表推导式，只保留不以 'kalshi_' 开头的文件
-    json_files = [f for f in all_json_files if not os.path.basename(f).startswith('kalshi_')]
+    exclude_prefixes = {"kalshi_", "OVideos"}
+    json_files = [
+        f for f in all_json_files
+        if not any(os.path.basename(f).startswith(prefix) for prefix in exclude_prefixes)
+    ]
 
     if len(json_files) == 0:
         show_warning("Downloads 目录下没有找到有效的 json 文件（已排除 kalshi_ 相关文件）！")

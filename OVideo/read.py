@@ -38,7 +38,7 @@ CHANNEL_PRIORITY = ['chnland']
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime'}
-EPISODE_COUNT_PRIORITY_GROUP = ('huxitech', 'chnland', 'gdefud', 'xb6v')
+EPISODE_COUNT_PRIORITY_GROUP = ('gdefud', 'huxitech', 'xb6v')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
