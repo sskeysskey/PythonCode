@@ -37,7 +37,7 @@ CHANNEL_PRIORITY = ['chnland']
 # 当项目(仅限下列分类)的 playlist 中,同时出现 GROUP 里的渠道 >= MIN_HIT 个时,
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
-EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime'}
+EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime', 'Show'}
 EPISODE_COUNT_PRIORITY_GROUP = ('gdefud', 'huxitech', 'xb6v')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 

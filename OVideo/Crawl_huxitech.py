@@ -52,7 +52,7 @@ SITE_KEY      = "huxitech"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
-                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱"]
+                   "机甲少女破时空战记", "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊"]
 # 支持填写完整的 URL 或 URL 包含的关键词/路径片段（例如 "/voddetail/1234.html" 或特定 ID片段）
 BLACKLIST_URLS = [
     "https://www.cifppc.com/voddetail/99927.html",
