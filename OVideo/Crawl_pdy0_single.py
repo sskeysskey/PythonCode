@@ -204,22 +204,32 @@ def download_cover(img_url: str, video_id: str) -> str:
 
 # ===================== 播放列表解析 =====================
 def parse_playlist(soup):
-    online = soup.select_one("#url-content1")
-    if not online:
-        return []
+    # 兼容多种页面结构：
+    #   旧结构：使用 #url-content1（"在线观看"区块）作为容器
+    #   新结构：无"在线观看"字段，直接使用 .playlist-box（"播放列表"）
+    online = (soup.select_one("#url-content1")
+              or soup.select_one(".playlist-box")
+              or soup)
+
     tabs = online.select(".playlist-tab li.swiper-slide")
+    if not tabs:
+        return []
+
     allowed = []
     excluded = []
     for tab in tabs:
         target = tab.get("data-target", "")
+        if not target:                 # 跳过没有 data-target 的占位 slide
+            continue
         name = ""
-        for c in tab.contents:
+        for c in tab.contents:         # 取直接文本节点，避免混入 badge 角标数字
             if isinstance(c, str) and c.strip():
                 name = c.strip()
                 break
         if not name:
             name = tab.get_text(strip=True)
         name = name.replace('"', "").replace("“", "").replace("”", "").strip()
+
         ul = online.find("ul", id=target.lstrip("#"))
         eps = {}
         if ul:

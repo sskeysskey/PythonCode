@@ -956,25 +956,28 @@ def parse_detail_page(html: str, name: str, url: str,
 
 def parse_playlist(soup, base_url: str = DETAIL_BASE_URL) -> list[dict]:
     """
-    只解析『在线观看』tab（#url-content1）下的播放列表。
+    # 兼容多种页面结构：
+    #   旧结构：使用 #url-content1（"在线观看"区块）作为容器
+    #   新结构：无"在线观看"字段，直接使用 .playlist-box（"播放列表"）
     episodes 结构为 dict {"集数名": "播放链接"}
     href 使用 base_url 拼接，兼容不同域名。
     """
     playlist = []
 
-
-    online_section = soup.select_one("#url-content1")
-    if not online_section:
-        return []
-
+    online_section = (soup.select_one("#url-content1")
+              or soup.select_one(".playlist-box")
+              or soup)
 
     allowed_playlist = []
     excluded_playlist = []
 
-
     tabs = online_section.select(".playlist-tab ul.swiper-wrapper > li.swiper-slide")
+    if not tabs:
+        return []
     for tab in tabs:
         target = tab.get("data-target", "")
+        if not target:                 # 跳过没有 data-target 的占位 slide
+            continue
         channel_name = ""
         for content in tab.contents:
             if isinstance(content, str) and content.strip():
@@ -1288,7 +1291,29 @@ def process_item(item: dict, cat_name: str,
             # ==========================================
             # 【新增】：寻找拥有最大集数的渠道并置顶
             # ==========================================
-            if final_playlist:
+            # if final_playlist:
+            #     max_ep_count = -1
+            #     max_ep_idx = -1
+            #     # 遍历寻找集数最大的渠道
+            #     for i, p in enumerate(final_playlist):
+            #         ep_count = len(p.get("episodes", {}))
+            #         if ep_count > max_ep_count:
+            #             max_ep_count = ep_count
+            #             max_ep_idx = i
+                
+            #     # 如果找到了最大集数的渠道，将其移出并插入到第0位
+            #     if max_ep_idx > 0:  # >0 说明它不在第一位才需要移动
+            #         top_channel = final_playlist.pop(max_ep_idx)
+            #         final_playlist.insert(0, top_channel)
+            #         print(f"     [渠道置顶] 将拥有最大集数({max_ep_count}集)的渠道 '{top_channel['name']}' 置于首位")
+
+            # ==========================================
+            # 【修改】：仅当 playlist 内容发生变化时才做“最大集数渠道置顶”
+            #   若本次抓取内容与旧 playlist 完全一致（渠道、集数都没变），
+            #   则保持用户手动调整过的原有顺序，绝不重排。
+            # ==========================================
+            content_changed = (final_playlist != old_playlist)
+            if content_changed and final_playlist:
                 max_ep_count = -1
                 max_ep_idx = -1
                 # 遍历寻找集数最大的渠道
@@ -1297,12 +1322,16 @@ def process_item(item: dict, cat_name: str,
                     if ep_count > max_ep_count:
                         max_ep_count = ep_count
                         max_ep_idx = i
-                
+
                 # 如果找到了最大集数的渠道，将其移出并插入到第0位
                 if max_ep_idx > 0:  # >0 说明它不在第一位才需要移动
                     top_channel = final_playlist.pop(max_ep_idx)
                     final_playlist.insert(0, top_channel)
                     print(f"     [渠道置顶] 将拥有最大集数({max_ep_count}集)的渠道 '{top_channel['name']}' 置于首位")
+            elif not content_changed:
+                print(f"     [顺序保持] 本次抓取内容与已有 playlist 完全一致，保留原有顺序不做置顶")
+
+            detail["playlist"] = final_playlist
 
             detail["playlist"] = final_playlist
 

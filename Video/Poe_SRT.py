@@ -53,13 +53,44 @@ def fix_timestamp(line):
     
     return re.sub(pattern, replace_negative, line)
 
+def normalize_srt_blocks(content):
+    """
+    将紧凑型 SRT（块之间无空行）规范化为标准 SRT（块之间用一个空行分隔）。
+    识别规则：某行是纯数字序号，且紧接的下一行包含 '-->'，则视为一个新块的开始。
+    """
+    # 先去掉所有空行，统一处理
+    lines = [line.rstrip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return content
+
+    blocks = []
+    current_block = []
+    n = len(lines)
+
+    for i, line in enumerate(lines):
+        is_index = re.match(r'^\d+$', line.strip())
+        next_is_timestamp = (i + 1 < n) and ('-->' in lines[i + 1])
+
+        # 遇到新块起点：把上一个块存起来
+        if is_index and next_is_timestamp and current_block:
+            blocks.append('\n'.join(current_block))
+            current_block = []
+
+        current_block.append(line)
+
+    if current_block:
+        blocks.append('\n'.join(current_block))
+
+    # 块之间用一个空行分隔
+    return '\n\n'.join(blocks)
+
 
 def SRT_File(clipboard_content):
     print("执行 SRT_File()")
-    
-    # 【新增】先进行内容过滤
+
+    # 先进行内容过滤
     clipboard_content = filter_last_sentence(clipboard_content)
-    
+
     # 使用正则表达式找到第一个以数字开头并且紧跟一个换行符的行
     match = re.search(r'^(\d+).*\n', clipboard_content, re.MULTILINE)
     if not match:
@@ -78,7 +109,10 @@ def SRT_File(clipboard_content):
         fixed_lines.append(line)
     fixed_content = '\n'.join(fixed_lines)
 
-    # 确定写入模式：不存在就写新文件，存在就追加
+    # 【新增】规范化字幕块，块之间插入空行
+    fixed_content = normalize_srt_blocks(fixed_content)
+
+    # 确定写入模式
     mode = 'a' if os.path.exists(output_path) else 'w'
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 

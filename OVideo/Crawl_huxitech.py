@@ -1006,7 +1006,7 @@ def process_list_page(data, list_url, group, page_name):
             print(f"  ({idx}/{len(items)}) {name} [在名称黑名单中，跳过]")
             continue
 
-        # ===== 2. 新增：检查 URL 黑名单 =====
+        # 2. 检查 URL 黑名单
         if any(black_url in url for black_url in BLACKLIST_URLS if black_url):
             print(f"  ({idx}/{len(items)}) {name} [URL 在黑名单中，跳过: {url}]")
             continue
@@ -1159,10 +1159,19 @@ def process_list_page(data, list_url, group, page_name):
 
                     eps_changed = (new_eps != old_hux_eps)
 
-                    # ---- 执行插入/移动（内部保证不会丢渠道）----
-                    url_key, action = promote_huxitech_to_front(
-                        existing, new_eps, url, insert_pos=insert_at
-                    )
+                    # ★ 统一规则：只有选集内容发生变化时才调整顺序；
+                    #   内容完全一致（哪怕位置和目标不同）也保持原有顺序不动。
+                    if eps_changed:
+                        url_key, action = promote_huxitech_to_front(
+                            existing, new_eps, url, insert_pos=insert_at
+                        )
+                    else:
+                        # 内容一致：确保本站 url 存在，但绝不移动 playlist 位置
+                        if hux_index is not None:
+                            url_key = _ensure_site_url(existing, url)
+                        else:
+                            url_key = _ensure_site_url(existing, url, force_new=True)
+                        action = "in_place"
 
                     # ---- info：只增不减 ----
                     candidate_info = f"更新至第{new_max}集"
@@ -1195,7 +1204,8 @@ def process_list_page(data, list_url, group, page_name):
                     flush()
 
                     if not actual_changed:
-                        print(f"    - 无变更({matched_group})：集数、顺序、info、字段均无变化")
+                        print(f"    - 无变更({matched_group})：集数、info、字段均无变化，"
+                              f"保持原有顺序")
                         ok += 1
                     elif action == "inserted":
                         print(f"    ✅ 更新({matched_group})：huxitech 作为新渠道写入 {url_key}，"
@@ -1210,7 +1220,7 @@ def process_list_page(data, list_url, group, page_name):
                               f"({len(old_hux_eps)} -> {len(new_eps)})，位置保持不变")
                         ok += 1
                     else:
-                        print(f"    ✅ 更新({matched_group})：仅 info/字段发生更新")
+                        print(f"    ✅ 更新({matched_group})：仅 info/字段更新，保持原有顺序")
                         ok += 1
 
                 elif has_huxitech_channel:

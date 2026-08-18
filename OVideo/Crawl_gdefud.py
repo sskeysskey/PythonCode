@@ -121,7 +121,7 @@ SITE_MARKERS = ("stui-", "vodshow", "vodplay", "stui-vodlist")
 
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
                    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
-                   "阿松与阿暖", "红色珍珠", "飞越疯人院"]
+                   "阿松与阿暖", "红色珍珠", "飞越疯人院", "魔法光源股份有限公司第二季"]
 
 # URL 黑名单（在这里添加你要屏蔽的 URL 关键字，包含这些字串的 URL 将被跳过）
 BLACKLIST_URLS = [
@@ -1477,7 +1477,7 @@ def process_list_page(data, list_url, group, page_name):
             skipped += 1
             continue
 
-        # 2. URL 黑名单判断（新增）
+        # 2. URL 黑名单判断
         if any(bad_url in url for bad_url in BLACKLIST_URLS):
             print(f"  ({idx}/{len(items)}) {name} [URL在黑名单中，跳过] -> {url}")
             skipped += 1
@@ -1592,28 +1592,33 @@ def process_list_page(data, list_url, group, page_name):
 
                 old_info = existing.get("info", "")
 
+                # ★ 统一规则：是否有“新内容”（选集变化）。只有内容变化时才允许调整 playlist 顺序。
+                #   注意：不再把“位置不对(pos_changed)”当作变更 —— 手动调整过的顺序会被保留。
+                eps_changed = (gd_index is None) or (old_eps != new_eps)
+
                 if matched_group in ("Drama", "Anime", "Show"):
                     if new_max >= existing_max:
-                        # 先判定集数是否变化，如果集数没变，就不去覆盖原有 info
-                        eps_changed  = (gd_index is None) or (old_eps != new_eps)
-                        
                         if eps_changed:
                             new_info_text = build_progress_info(new_eps, old_info) or old_info
                         else:
                             new_info_text = old_info
-                            
-                        pos_changed  = (gd_index is not None and gd_index != 0)
+
                         info_changed = not same_progress_info(new_info_text, old_info)
 
-                        if not (eps_changed or pos_changed or info_changed
-                                or fields_changed or url_missing):
+                        if not (eps_changed or info_changed or fields_changed or url_missing):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
                             skipped += 1
                             time.sleep(SLEEP_BETWEEN)
                             continue
 
-                        url_key, action = promote_gdefud_to_front(existing, new_eps, url)
+                        if eps_changed:
+                            url_key, action = promote_gdefud_to_front(existing, new_eps, url)
+                        else:
+                            # 内容一致：保持原有顺序，只补 URL
+                            url_key = _attach_url(existing, url)
+                            action = "kept_order"
+
                         if info_changed:
                             existing["info"] = new_info_text
                             buf.append(f"    [info更新] 「{old_info}」 -> 「{new_info_text}」")
@@ -1623,19 +1628,26 @@ def process_list_page(data, list_url, group, page_name):
                         else:
                             existing["update"] = now_str
 
-                        buf.append(f"    [{matched_group}] 新抓取集数 {new_max} >= 其它渠道最大 "
-                                   f"{existing_max}，插入并置顶")
+                        if eps_changed:
+                            buf.append(f"    [{matched_group}] 新抓取集数 {new_max} >= 其它渠道最大 "
+                                       f"{existing_max}，插入并置顶")
+                        else:
+                            buf.append(f"    [{matched_group}] 内容一致，保持原有 playlist 顺序"
+                                       f"（仅补全字段/URL/info）")
+
                         mark_dirty(data)
                         flush()
                         if action == "moved":
                             print(f"    ✅ 更新({matched_group})：gdefud 已更新并置顶到 playlist 首位"
                                   f"{f'（补写 {url_key}）' if url_key else ''}")
-                        else:
+                        elif action == "inserted":
                             print(f"    ✅ 更新({matched_group})：gdefud 作为新渠道写入 "
                                   f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
+                        else:
+                            print(f"    ✅ 更新({matched_group})：内容未变，保持 playlist 原有顺序"
+                                  f"{f'（补写 {url_key}）' if url_key else ''}")
                         ok += 1
                     else:
-                        eps_changed = (gd_index is None) or (old_eps != new_eps)
                         if not (eps_changed or fields_changed or url_missing):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
@@ -1643,23 +1655,34 @@ def process_list_page(data, list_url, group, page_name):
                             time.sleep(SLEEP_BETWEEN)
                             continue
 
-                        url_key, action = upsert_gdefud_channel(existing, new_eps, url)
+                        if eps_changed:
+                            url_key, action = upsert_gdefud_channel(existing, new_eps, url)
+                        else:
+                            url_key = _attach_url(existing, url)
+                            action = "kept_order"
 
                         if matched_group not in ("Drama", "Anime"):
                             existing["update"] = now_str
 
-                        buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
-                                   f"{existing_max}，插入到最大集数渠道下方")
+                        if eps_changed:
+                            buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
+                                       f"{existing_max}，插入到最大集数渠道下方")
+                        else:
+                            buf.append(f"    [{matched_group}] 内容一致，保持原有 playlist 顺序"
+                                       f"（仅补全字段/URL）")
+
                         mark_dirty(data)
                         flush()
-                        print(f"    ✅ 更新({matched_group})：gdefud 已插入/更新到最大集数渠道下方"
-                              f"{f'（补写 {url_key}）' if url_key else ''}")
+                        if action == "kept_order":
+                            print(f"    ✅ 更新({matched_group})：内容未变，保持 playlist 原有顺序"
+                                  f"{f'（补写 {url_key}）' if url_key else ''}")
+                        else:
+                            print(f"    ✅ 更新({matched_group})：gdefud 已插入/更新到最大集数渠道下方"
+                                  f"{f'（补写 {url_key}）' if url_key else ''}")
                         ok += 1
 
                 else:
                     scraped_info = rec.get("info", "")
-                    # 先判断集数是否变化
-                    eps_changed  = (gd_index is None) or (old_eps != new_eps)
 
                     if eps_changed:
                         new_info_text = build_progress_info(new_eps, old_info)
@@ -1670,21 +1693,24 @@ def process_list_page(data, list_url, group, page_name):
                         else:
                             final_info = old_info
                     else:
-                        # 集数没变时，优先保留原有的 info（比如"已完结"）
                         final_info = old_info if old_info else scraped_info
 
-                    pos_changed  = (gd_index is not None and gd_index != 0)
                     info_changed = not same_progress_info(final_info, old_info)
 
-                    if not (eps_changed or pos_changed or info_changed
-                            or fields_changed or url_missing):
+                    if not (eps_changed or info_changed or fields_changed or url_missing):
                         flush()
                         print(f"    - 无字段变更，跳过：{real_name}")
                         skipped += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
 
-                    url_key, action = promote_gdefud_to_front(existing, new_eps, url)
+                    if eps_changed:
+                        url_key, action = promote_gdefud_to_front(existing, new_eps, url)
+                    else:
+                        # 内容一致：保持原有顺序，只补 URL
+                        url_key = _attach_url(existing, url)
+                        action = "kept_order"
+
                     if info_changed:
                         existing["info"] = final_info
                         buf.append(f"    [info更新] 「{old_info}」 -> 「{final_info}」")
@@ -1694,9 +1720,12 @@ def process_list_page(data, list_url, group, page_name):
                     if action == "moved":
                         print(f"    ✅ 更新(Movie)：gdefud 已更新并置顶到 playlist 首位"
                               f"{f'（补写 {url_key}）' if url_key else ''}")
-                    else:
+                    elif action == "inserted":
                         print(f"    ✅ 更新(Movie)：gdefud 作为新渠道写入 "
                               f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
+                    else:
+                        print(f"    ✅ 更新(Movie)：内容未变，保持 playlist 原有顺序"
+                              f"{f'（补写 {url_key}）' if url_key else ''}")
                     ok += 1
 
             else:
