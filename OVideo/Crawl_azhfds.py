@@ -1,33 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-azhfds.com 分类页（电影/电视剧/综艺/动漫）爬取脚本  —— 双引擎版 + 反封锁强化版
+azhfds.com 分类页（电影/电视剧/综艺/动漫）爬取脚本  —— 双引擎版
 
 【引擎开关】
-    ENGINE = "simple"   纯 HTTP（curl_cffi 真实 TLS 指纹），速度最快
-    ENGINE = "browser"  真实 Chrome / CDP 附着 / Turnstile 人工过验证
-    AUTO_FALLBACK_TO_BROWSER = True  轻量模式被挑战页拦住时自动热切换到浏览器引擎
+    ENGINE = "simple"   纯 HTTP（curl_cffi 真实 TLS 指纹），速度最快，适合无反爬站点（azhfds 当前情况）
+    ENGINE = "browser"  真实 Chrome / CDP 附着 / Turnstile 人工过验证（等同 Crawl_gdefud.py）
+    AUTO_FALLBACK_TO_BROWSER = True  轻量模式被 403/挑战页拦住时，自动热切换到浏览器引擎
 
 【常用用法】
     python Crawl_azhfds.py                 # 默认轻量引擎抓取
     python Crawl_azhfds.py pages=3         # 每个分类抓 3 页
-    python Crawl_azhfds.py backfill        # 补全模式
-    python Crawl_azhfds.py browser         # 强制浏览器引擎
-    python Crawl_azhfds.py simple nofallback   # 强制轻量且禁止降级
-    python Crawl_azhfds.py cdp slow        # ★推荐：附着手动 Chrome + 慢速拟人节奏
-    python Crawl_azhfds.py cdp fast slow   # 附着 + 快速通道（会自动体检，没 cookie 不启用）
-    python Crawl_azhfds.py cdp proxy=http://127.0.0.1:7890   # 走代理换出口 IP
+    python Crawl_azhfds.py backfill        # 补全模式（只补已有 azhfds 记录的缺失字段）
+    python Crawl_azhfds.py browser         # 强制浏览器引擎（Playwright 启真实 Chrome）
+    python Crawl_azhfds.py simple nofallback   # 强制轻量，且禁止自动降级
 
 【站点上了 Cloudflare 时的最佳路径】
     1) osascript -e 'quit app "Google Chrome"'
     2) python Crawl_azhfds.py open         # 用脚本 profile 启动带调试端口(9223)的 Chrome
-    3) 在窗口里手动打开站点，若有验证就过一次
-    4) python Crawl_azhfds.py cdp slow
-
-【关于 Cloudflare Error 1020（Sorry, you have been blocked）】
-    这不是人机验证，页面上没有任何可点的复选框，等待也不会自动解除。
-    它是站点 WAF 自定义规则按「IP 信誉 + 请求指纹 + 请求节奏 + 缺失 cookie」直接拒绝。
-    解决办法只有三条：换出口 IP、降速拟人化、带上真实浏览器 cookie。
-    本脚本检测到该页面会立刻停止等待、进入冷却退避，并给出处置建议。
+    3) 在窗口里手动过一次人机验证
+    4) python Crawl_azhfds.py cdp fast     # 附着该 Chrome + curl_cffi 高速通道
 """
 
 import os
@@ -96,8 +87,8 @@ PLAYLIST_NAME = "azhfds"
 SITE_KEY      = "azhfds"
 
 REQUEST_TIMEOUT = 20
-SLEEP_BETWEEN   = 2.0          # 每条详情之间的基准间隔（会被 slow / 封锁退避动态调大）
-SIMPLE_JITTER   = (0.4, 1.2)   # 轻量模式的随机抖动，降低被风控概率
+SLEEP_BETWEEN   = 1.0          # 每条详情之间的间隔
+SIMPLE_JITTER   = (0.15, 0.55) # 轻量模式的随机抖动，降低被风控概率
 
 # 网络重试
 MAX_RETRIES   = 3
@@ -106,16 +97,13 @@ RETRY_BACKOFF = 5.0
 # 落盘节流：每 N 条变更写一次磁盘（1 = 实时写盘）
 SAVE_EVERY    = 1
 
-# 列表页最多翻几页（1 = 只抓第一页；可用 CLI pages=N 覆盖）
+# 列表页最多翻几页（1 = 只抓第一页，和 gdefud 行为一致；可用 CLI pages=N 覆盖）
 LIST_MAX_PAGES = 1
-
-# 代理（也可用环境变量 AZHFDS_PROXY，或 CLI proxy=http://127.0.0.1:7890）
-PROXY = os.environ.get("AZHFDS_PROXY", "").strip()
 
 
 # ============== 引擎开关 ==============
 ENGINE = "simple"                  # "simple" | "browser"
-AUTO_FALLBACK_TO_BROWSER = True    # 轻量模式被挑战页拦时自动切浏览器
+AUTO_FALLBACK_TO_BROWSER = True    # 轻量模式被拦时自动切浏览器
 
 # —— 轻量引擎（simple）——
 SIMPLE_IMPERSONATE_CANDIDATES = ["chrome131", "chrome124", "chrome120", "chrome116", "chrome"]
@@ -140,7 +128,6 @@ CDP_PORT        = 9223            # 故意与 gdefud(9222) 区分，两站可同
 CDP_ENDPOINT    = f"http://127.0.0.1:{CDP_PORT}"
 USE_CDP         = False
 FAST_MODE       = False
-FAST_FORCE      = False           # fastforce：即使没 cookie 也强开 FAST（不推荐）
 NAV_TIMEOUT_MS  = 60000
 
 FAST_IMPERSONATE_CANDIDATES = SIMPLE_IMPERSONATE_CANDIDATES
@@ -173,40 +160,12 @@ CHALLENGE_MARKERS = (
 )
 SITE_MARKERS = ("stui-", "vodshow", "vodplay", "voddetail", "stui-vodlist")
 
-# ★ 硬封锁（Cloudflare WAF Block / Error 1020 等）标志：这类页面没有任何可点的验证控件
-BLOCK_MARKERS = (
-    "Sorry, you have been blocked",
-    "You are unable to access",
-    "You have been blocked",
-    "Why have I been blocked",
-    "Error 1020",
-    "error code: 1020",
-    "Error code 1020",
-    "Access denied",
-    "Attention Required! | Cloudflare",
-    "cf-error-details",
-    "抱歉，您已被阻止",
-    "您无法访问",
-)
-# 只有同时出现 Ray ID / cloudflare 字样才算，避免误判正文里出现的普通词
-BLOCK_CONFIRM_MARKERS = (
-    "Cloudflare Ray ID",
-    "Ray ID:",
-    "cloudflare.com/5xx-error-landing",
-    "cf-error-details",
-    "Performance & security by Cloudflare",
-)
-
-# 硬封锁冷却退避（秒）：第 1/2/3 次…被封分别等这么久
-BLOCK_COOLDOWN_STEPS = [120, 300, 600, 900]
-MAX_BLOCK_EVENTS     = 4        # 超过这个次数就优雅终止本轮（数据已保存）
-BLOCK_SLOWDOWN_FACTOR = 2.0     # 每次被封后把 SLEEP_BETWEEN 乘以这个系数
-BLOCK_SLEEP_CEILING   = 20.0    # SLEEP_BETWEEN 上限
-
 
 # ============== 业务过滤配置 ==============
 BLACKLIST_NAMES = [
-    "黄眼鬼",
+    "天堂之剑", "定海神针：九尾三世劫",
+    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
+    "阿松与阿暖", "红色珍珠", "飞越疯人院", "魔法光源股份有限公司第二季",
 ]
 
 # URL 黑名单（包含这些字串的 URL 将被跳过）
@@ -221,9 +180,9 @@ WHITELIST_NAMES = [
 
 LIST_PAGES = [
     ("https://azhfds.com/vodshow/dianying--time---------2026.html",  "Movie", "电影"),
-    # ("https://azhfds.com/vodshow/dianshiju--time---------2026.html", "Drama", "电视剧"),
-    # ("https://azhfds.com/vodshow/zongyi--time---------2026.html",    "Show",  "综艺"),
-    # ("https://azhfds.com/vodshow/dongman--time---------2026.html",   "Anime", "动漫"),
+    ("https://azhfds.com/vodshow/dianshiju--time---------2026.html", "Drama", "电视剧"),
+    ("https://azhfds.com/vodshow/zongyi--time---------2026.html",    "Show",  "综艺"),
+    ("https://azhfds.com/vodshow/dongman--time---------2026.html",   "Anime", "动漫"),
 ]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "日本"]
@@ -258,17 +217,7 @@ class NoRetryFetchError(FetchError):
 
 
 class ChallengeError(FetchError):
-    """疑似被人机验证拦截（可以过的那种：Turnstile / Just a moment）"""
-    pass
-
-
-class BlockedError(FetchError):
-    """★ 硬封锁：Cloudflare WAF Block / Error 1020，没有验证入口，等待无用"""
-    pass
-
-
-class HardBlockAbort(Exception):
-    """连续硬封锁，放弃本轮抓取（数据已保存）"""
+    """疑似被反爬拦截（挑战页 / 403 / 503）"""
     pass
 
 
@@ -279,31 +228,6 @@ def _re_class(base):
     """把 stui-xxx_yyy 这类类名变成对 - 和 _ 都宽容的正则"""
     parts = re.split(r"[-_]+", base)
     return re.compile(r"^" + r"[-_]+".join(re.escape(p) for p in parts) + r"$")
-
-
-def _host(url):
-    m = re.match(r"^https?://([^/:]+)", (url or "").strip(), re.I)
-    return m.group(1).lower() if m else ""
-
-
-_seen_hosts = set()
-
-
-def note_host(url):
-    """记录站点实际使用的域名（含随机镜像域名），供 cookie 同步使用"""
-    h = _host(url)
-    if not h or h in _seen_hosts:
-        return
-    _seen_hosts.add(h)
-    base = _host(DOMAIN)
-    if base and base not in h and h not in base:
-        print(f">>> [注意] 站点跳转到镜像域名：{h}")
-        print( "    （Cloudflare 防护实际挂在这个域名上，cookie 也存在这个域名下）")
-
-
-def cookie_hosts():
-    hosts = {_host(DOMAIN)} | set(_seen_hosts)
-    return {h for h in hosts if h}
 
 
 def _looks_like_challenge(html: str) -> bool:
@@ -317,22 +241,6 @@ def _looks_like_challenge(html: str) -> bool:
     return True
 
 
-def _looks_like_block(html: str) -> bool:
-    """★ 判定是否为 Cloudflare 硬封锁页（1020 / WAF Block / Access denied）"""
-    if not html:
-        return False
-    head = html[:20000]
-    if any(m in head for m in SITE_MARKERS):
-        return False          # 正常站点页面，不是封锁页
-    hit = any(m in head for m in BLOCK_MARKERS)
-    if not hit:
-        return False
-    # 强特征直接判定
-    if "Sorry, you have been blocked" in head or "1020" in head:
-        return True
-    return any(m in head for m in BLOCK_CONFIRM_MARKERS)
-
-
 def _decode_bytes(raw: bytes) -> str:
     for enc in ("utf-8", "gb18030", "big5", "latin-1"):
         try:
@@ -340,102 +248,6 @@ def _decode_bytes(raw: bytes) -> str:
         except Exception:
             continue
     return raw.decode("utf-8", "ignore")
-
-
-def _proxies():
-    if not PROXY:
-        return None
-    return {"http": PROXY, "https": PROXY}
-
-
-def polite_sleep(base=None):
-    """拟人化随机间隔（读取当前全局 SLEEP_BETWEEN，可被封锁退避动态调大）"""
-    b = SLEEP_BETWEEN if base is None else base
-    time.sleep(b + random.uniform(0, max(0.5, b * 0.6)))
-
-
-# ==========================================================
-#           ★ 硬封锁冷却退避（核心新增逻辑）
-# ==========================================================
-_block_events = 0
-
-
-def _print_block_banner(url, err):
-    print("\a", end="", flush=True)
-    print("\n" + "#" * 76)
-    print("  🚫 命中 Cloudflare 防火墙【硬封锁】（Error 1020 / WAF Block）")
-    print(f"     URL : {url}")
-    print(f"     信息: {err}")
-    print("-" * 76)
-    print("  这不是人机验证：页面写着 “Sorry, you have been blocked”，")
-    print("  上面没有任何可勾选的复选框，等待也【不会】自动解除。")
-    print("  它是站点自定义 WAF 规则按下列特征直接拒绝你的请求：")
-    print("     · 出口 IP 信誉分低（机房 IP / 常见 VPN 节点 / 近期请求过密）")
-    print("     · 请求指纹不像真人（无 cookie 的裸 HTTP 请求最容易命中）")
-    print("     · 请求节奏机械（固定间隔、连续高频）")
-    print("-" * 76)
-    print("  ✅ 处置建议（按有效性排序）：")
-    print("     ① 换出口 IP：手机热点 / 换 VPN 节点 / 重启光猫（家宽、蜂窝优于机房 IP）")
-    print("     ② 降速：python Crawl_azhfds.py cdp slow")
-    print("     ③ 关掉 FAST 通道，只用真实浏览器：去掉 fast 参数")
-    print("     ④ 先在 Chrome 里手动打开站点确认能访问，再跑脚本")
-    print("     ⑤ 走代理：python Crawl_azhfds.py cdp proxy=http://127.0.0.1:7890")
-    print("#" * 76 + "\n")
-
-
-def cooldown_for_block(url, err):
-    """
-    命中硬封锁后的处理：
-      1) 打印诊断  2) 关闭 FAST 通道  3) 全局降速  4) 冷却等待  5) 首页探活
-    超过 MAX_BLOCK_EVENTS 次则抛 HardBlockAbort 终止本轮。
-    """
-    global _block_events, FAST_MODE, SLEEP_BETWEEN
-
-    _block_events += 1
-    _print_block_banner(url, err)
-
-    if FAST_MODE:
-        FAST_MODE = False
-        try:
-            _fetcher.browser._fast_ok = False
-            _fetcher.browser._fast_disabled = True
-        except Exception:
-            pass
-        print(">>> [FAST] 已自动关闭快速通道（被封期间只走真实浏览器，降低指纹特征）")
-
-    old_sleep = SLEEP_BETWEEN
-    SLEEP_BETWEEN = min(SLEEP_BETWEEN * BLOCK_SLOWDOWN_FACTOR, BLOCK_SLEEP_CEILING)
-    if SLEEP_BETWEEN != old_sleep:
-        print(f">>> [降速] 请求间隔 {old_sleep:.1f}s -> {SLEEP_BETWEEN:.1f}s")
-
-    if _block_events > MAX_BLOCK_EVENTS:
-        raise HardBlockAbort(
-            f"已连续 {_block_events} 次命中 Cloudflare 硬封锁，继续请求只会加重封禁。"
-            "请更换出口 IP 后重跑（已抓取的数据均已保存）。"
-        )
-
-    idx = min(_block_events - 1, len(BLOCK_COOLDOWN_STEPS) - 1)
-    wait = BLOCK_COOLDOWN_STEPS[idx]
-    print(f">>> [冷却] 第 {_block_events} 次被封，静默等待 {wait}s（可 Ctrl-C 安全终止）")
-    slept = 0
-    while slept < wait:
-        time.sleep(5)
-        slept += 5
-        if slept % 60 == 0:
-            print(f"    ... 冷却中，剩余 {wait - slept}s")
-
-    # 冷却结束后用真实浏览器探活首页
-    try:
-        if ENGINE == "browser":
-            _fetcher.browser.get_html(DOMAIN + "/", warmup=True)
-            print(">>> [恢复] 首页可正常访问，继续抓取 ✅\n")
-        else:
-            _fetcher.simple.get_html(DOMAIN + "/")
-            print(">>> [恢复] 首页可正常访问，继续抓取 ✅\n")
-    except BlockedError:
-        print(">>> [恢复] 首页仍处于封锁状态 ❌（强烈建议先换 IP 再继续）\n")
-    except Exception as e:
-        print(f">>> [恢复] 首页探活异常（不致命）：{e}\n")
 
 
 # ==========================================================
@@ -473,12 +285,6 @@ class SimpleFetcher:
                 self._s.headers.update(DEFAULT_HEADERS)
             except Exception:
                 pass
-            if PROXY:
-                try:
-                    self._s.proxies = _proxies()
-                    print(f">>> [代理] 轻量引擎使用代理：{PROXY}")
-                except Exception:
-                    pass
             extra = f"（TLS 指纹 {self._impersonate}）" if self._impersonate else ""
             print(f">>> [引擎] 轻量 HTTP 模式：{self._kind}{extra}")
         else:
@@ -495,7 +301,7 @@ class SimpleFetcher:
 
     # ---------- 内部请求 ----------
     def _raw_get(self, url):
-        """返回 (status, content_bytes, text_or_None, final_url)"""
+        """返回 (status, content_bytes, text_or_None)"""
         if self._kind == "urllib":
             headers = {k: v for k, v in DEFAULT_HEADERS.items() if k != "Connection"}
             headers["Accept-Encoding"] = "gzip"
@@ -509,14 +315,14 @@ class SimpleFetcher:
                             raw = gzip.decompress(raw)
                         except Exception:
                             pass
-                    return status, raw, None, getattr(r, "url", url)
+                    return status, raw, None
             except HTTPError as e:
                 raw = b""
                 try:
                     raw = e.read() or b""
                 except Exception:
                     pass
-                return e.code, raw, None, url
+                return e.code, raw, None
             except URLError as e:
                 raise FetchError(f"网络错误: {e}")
 
@@ -532,32 +338,25 @@ class SimpleFetcher:
             text = r.text
         except Exception:
             text = None
-        final_url = getattr(r, "url", url) or url
-        return status, r.content, text, final_url
+        return status, r.content, text
 
-    def get_html(self, url):
-        self.start()
-        status, raw, text, final_url = self._raw_get(url)
-        note_host(final_url)
-        html = text if text is not None else _decode_bytes(raw)
-
+    def _handle_status(self, status, url, body_text=""):
         if status == 404:
             raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
-
-        # ★ 先判硬封锁（可能伴随 403，也可能是 200 的错误页）
-        if _looks_like_block(html):
-            raise BlockedError(f"Cloudflare 硬封锁页 (HTTP {status}): {final_url}")
-
         if status in (403, 429, 503):
             self.challenge_hits += 1
             raise ChallengeError(f"HTTP {status}（疑似反爬）: {url}")
         if status >= 400:
             raise FetchError(f"HTTP {status}: {url}")
 
+    def get_html(self, url):
+        self.start()
+        status, raw, text = self._raw_get(url)
+        self._handle_status(status, url)
+        html = text if text is not None else _decode_bytes(raw)
         if _looks_like_challenge(html):
             self.challenge_hits += 1
             raise ChallengeError(f"疑似人机验证 / 空白页: {url}")
-
         self.challenge_hits = 0
         lo, hi = SIMPLE_JITTER
         time.sleep(random.uniform(lo, hi))
@@ -565,21 +364,8 @@ class SimpleFetcher:
 
     def get_bytes(self, url):
         self.start()
-        status, raw, text, final_url = self._raw_get(url)
-        note_host(final_url)
-
-        if status == 404:
-            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
-
-        if status >= 400:
-            preview = text if text is not None else _decode_bytes(raw[:20000])
-            if _looks_like_block(preview):
-                raise BlockedError(f"Cloudflare 硬封锁页 (HTTP {status}): {final_url}")
-            if status in (403, 429, 503):
-                self.challenge_hits += 1
-                raise ChallengeError(f"HTTP {status}（疑似反爬）: {url}")
-            raise FetchError(f"HTTP {status}: {url}")
-
+        status, raw, _ = self._raw_get(url)
+        self._handle_status(status, url)
         if not raw:
             raise FetchError(f"空响应: {url}")
         self.challenge_hits = 0
@@ -617,7 +403,7 @@ def launch_chrome_for_cdp(open_url=True):
 
     if cdp_alive():
         print(f">>> [CDP] 端口 {CDP_PORT} 已在监听，无需重复启动。")
-        print(f">>> [CDP] 请在该 Chrome 窗口打开 {DOMAIN}/ 手动确认能访问（若有验证就过一次）。")
+        print(f">>> [CDP] 请在该 Chrome 窗口打开 {DOMAIN}/ 手动过一次验证（若有）。")
         return True
 
     print(">>> [CDP] 正在启动 Chrome（若已有 Chrome 在运行，请先 ⌘Q 完全退出！）")
@@ -627,8 +413,6 @@ def launch_chrome_for_cdp(open_url=True):
         "--no-first-run",
         "--no-default-browser-check",
     ]
-    if PROXY:
-        args.append(f"--proxy-server={PROXY}")
     if open_url:
         args.append(DOMAIN + "/")
 
@@ -645,8 +429,8 @@ def launch_chrome_for_cdp(open_url=True):
         time.sleep(1)
         if cdp_alive():
             print(f">>> [CDP] Chrome 已就绪（端口 {CDP_PORT}）")
-            print(">>> 请在窗口里确认站点能正常打开（有验证就过一次），然后另开终端执行：")
-            print("        python Crawl_azhfds.py cdp slow")
+            print(">>> 请在窗口里手动过验证（若有），然后另开终端执行：")
+            print("        python Crawl_azhfds.py cdp fast")
             return True
 
     print("!!! 等待调试端口超时。可能是已有 Chrome 实例占用了 profile。")
@@ -655,7 +439,6 @@ def launch_chrome_for_cdp(open_url=True):
     return False
 
 
-# ★ JS 侧状态判定：新增 blocked（硬封锁）识别
 _STATE_JS = """
 () => {
   const q = s => !!document.querySelector(s);
@@ -670,22 +453,15 @@ _STATE_JS = """
                   q('#cf-challenge-running') || q('.cf-turnstile') ||
                   q('#turnstile-wrapper') || q('#challenge-stage');
   const title   = document.title || '';
-  const titleChl = /just a moment|checking your browser|请稍候|稍等|安全检查/i.test(title);
-  const bodyTxt = (document.body && document.body.innerText)
-                    ? document.body.innerText.slice(0, 6000) : '';
-  const blockedDom = q('#cf-error-details') || q('.cf-error-details') ||
-                     q('#cf-wrapper .cf-error-overview') || q('.cf-error-overview');
-  const blockedTxt = /sorry,?\\s*you have been blocked|you are unable to access|why have i been blocked|error\\s*(code:?)?\\s*1020|access denied/i.test(bodyTxt);
-  const rayId      = /cloudflare ray id|ray id:/i.test(bodyTxt);
-  const blocked    = (!hasSite) && (blockedDom || blockedTxt || rayId) && !hasChl;
-  const len = bodyTxt.length;
-  return { hasSite, hasChl, titleChl, blocked, len, title };
+  const titleChl = /just a moment|attention required|checking your browser|verify|请稍候|稍等|安全检查/i.test(title);
+  const len = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+  return { hasSite, hasChl, titleChl, len, title };
 }
 """
 
 
 class BrowserFetcher:
-    """用真实 Chrome 抓取；人机验证时等待人工处理；硬封锁时立刻抛错不死等"""
+    """用真实 Chrome 抓取；遇到人机验证时暂停等待人工处理"""
 
     def __init__(self):
         self._pw = None
@@ -723,9 +499,6 @@ class BrowserFetcher:
                 raise FetchError("CDP 端口不可用")
 
             print(f">>> [浏览器] 正在附着到已运行的 Chrome：{CDP_ENDPOINT}")
-            if PROXY:
-                print(">>> [代理] 注意：CDP 模式下代理由那个 Chrome 自己的启动参数决定，"
-                      "proxy= 只作用于 FAST 通道")
             self._browser = self._pw.chromium.connect_over_cdp(CDP_ENDPOINT)
             self._ctx = (self._browser.contexts[0]
                          if self._browser.contexts else self._browser.new_context())
@@ -746,9 +519,6 @@ class BrowserFetcher:
                 ],
                 ignore_default_args=["--enable-automation"],
             )
-            if PROXY:
-                launch_kwargs["proxy"] = {"server": PROXY}
-                print(f">>> [代理] 浏览器使用代理：{PROXY}")
             if BROWSER_CHANNEL:
                 launch_kwargs["channel"] = BROWSER_CHANNEL
             try:
@@ -776,23 +546,12 @@ class BrowserFetcher:
         except Exception:
             self.ua = ""
 
-        try:
-            note_host(self._page.url or "")
-        except Exception:
-            pass
-
         self._report_clearance()
 
         print(">>> [浏览器] 预热首页 ...")
         try:
             self.get_html(DOMAIN + "/", warmup=True)
             print(">>> [浏览器] 已可正常访问站点 ✅")
-        except BlockedError as e:
-            _print_block_banner(DOMAIN + "/", e)
-            raise HardBlockAbort(
-                "站点当前对你的出口 IP 处于 Cloudflare 硬封锁状态，脚本不再继续请求。"
-                "请先换 IP / 稍后再试，并先在 Chrome 里手动确认站点能打开。"
-            )
         except Exception as e:
             print(f">>> [浏览器] 预热异常（不致命，继续）：{e}")
 
@@ -803,8 +562,7 @@ class BrowserFetcher:
         pages = [p for p in self._ctx.pages if not p.is_closed()]
         for p in pages:
             try:
-                u = p.url or ""
-                if SITE_KEY in u or any(h and h in u for h in _seen_hosts):
+                if SITE_KEY in (p.url or ""):
                     return p
             except Exception:
                 continue
@@ -812,36 +570,15 @@ class BrowserFetcher:
             return pages[0]
         return self._ctx.new_page()
 
-    def _all_site_cookies(self):
-        """★ 收集站点主域 + 镜像域名下的全部 cookie（原来只取主域，跳转后会拿到 0 个）"""
-        jar = {}
-        try:
-            raw = self._ctx.cookies()
-        except Exception:
-            raw = []
-        hosts = cookie_hosts()
-        for c in raw or []:
-            dom = (c.get("domain") or "").lstrip(".").lower()
-            if not dom:
-                continue
-            if any(dom.endswith(h) or h.endswith(dom) for h in hosts):
-                jar[c.get("name")] = c.get("value")
-        if not jar:
-            # 兜底：直接按当前页面 URL 取
-            try:
-                for c in self._ctx.cookies([DOMAIN, self._page.url or DOMAIN]):
-                    jar[c.get("name")] = c.get("value")
-            except Exception:
-                pass
-        return {k: v for k, v in jar.items() if k}
-
     def _report_clearance(self):
-        cookies = self._all_site_cookies()
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
         if "cf_clearance" in cookies:
-            print(f">>> [Cloudflare] 已检测到 cf_clearance cookie ✅（共 {len(cookies)} 个 cookie）")
+            print(">>> [Cloudflare] 已检测到 cf_clearance cookie ✅")
         else:
-            print(f">>> [Cloudflare] 未检测到 cf_clearance cookie"
-                  f"（当前站点 cookie 共 {len(cookies)} 个；若站点无 CF 挑战属正常）")
+            print(">>> [Cloudflare] 未检测到 cf_clearance cookie（若站点无 CF 属正常）")
 
     def close(self):
         try:
@@ -867,10 +604,6 @@ class BrowserFetcher:
         except Exception:
             html = ""
         try:
-            note_host(self._page.url or "")
-        except Exception:
-            pass
-        try:
             cf_frame = any("challenges.cloudflare.com" in (f.url or "")
                            for f in self._page.frames)
         except Exception:
@@ -878,9 +611,6 @@ class BrowserFetcher:
 
         if info.get("hasSite"):
             return "site", html
-        # ★ 硬封锁优先判定（DOM 判定 + HTML 兜底判定）
-        if info.get("blocked") or (html and _looks_like_block(html)):
-            return "blocked", html
         if info.get("hasChl") or info.get("titleChl") or cf_frame:
             return "challenge", html
         if info.get("len", 0) < 50:
@@ -891,7 +621,7 @@ class BrowserFetcher:
     def _notify_challenge(self, url):
         print("\a", end="", flush=True)
         print("\n" + "=" * 72)
-        print("  ⚠️  检测到【可通过的人机验证】页面，脚本已暂停")
+        print("  ⚠️  检测到人机验证页面，脚本已暂停")
         print("  👉  请切到 Chrome 窗口，勾选 “确认您是真人 / Verify you are human”")
         print(f"  ⏳  脚本至少会等你 {CHALLENGE_GRACE} 秒，最长等待 {CHALLENGE_WAIT} 秒。")
         print(f"      URL: {url}")
@@ -901,7 +631,7 @@ class BrowserFetcher:
             print("       1) osascript -e 'quit app \"Google Chrome\"'")
             print("       2) python Crawl_azhfds.py open")
             print("       3) 手动过验证")
-            print("       4) python Crawl_azhfds.py cdp slow")
+            print("       4) python Crawl_azhfds.py cdp fast")
         print("=" * 72 + "\n")
         try:
             self._page.bring_to_front()
@@ -947,15 +677,6 @@ class BrowserFetcher:
 
         while True:
             state, html = self._page_state()
-
-            # ★ 硬封锁：立刻返回，绝不死等
-            if state == "blocked":
-                cur = ""
-                try:
-                    cur = self._page.url or url
-                except Exception:
-                    cur = url
-                raise BlockedError(f"Cloudflare 硬封锁页（无验证入口）: {cur}")
 
             if state == "site" and not (challenge_seen and time.time() < grace_until):
                 stable += 1
@@ -1020,19 +741,10 @@ class BrowserFetcher:
             raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
 
         time.sleep(PAGE_SETTLE)
-
-        # ★ 403 且页面是封锁页 -> 直接 BlockedError
-        if status == 403:
-            state, html = self._page_state()
-            if state == "blocked":
-                raise BlockedError(f"Cloudflare 硬封锁页 (HTTP 403): {self._page.url or url}")
-
         html = self._wait_until_ready(url)
 
         if status >= 500 or status == 429:
             state, _ = self._page_state()
-            if state == "blocked":
-                raise BlockedError(f"Cloudflare 硬封锁页 (HTTP {status}): {self._page.url or url}")
             if state != "site":
                 raise FetchError(f"HTTP {status}: {url}")
 
@@ -1051,11 +763,6 @@ class BrowserFetcher:
                 continue
             try:
                 s = cffi.Session(impersonate=imp)
-                if PROXY:
-                    try:
-                        s.proxies = _proxies()
-                    except Exception:
-                        pass
                 if self._impersonate != imp:
                     print(f">>> [FAST] 使用 TLS 指纹: {imp}")
                 self._impersonate = imp
@@ -1067,20 +774,12 @@ class BrowserFetcher:
         return None
 
     def _sync_fast_session(self, verbose=True):
-        """★ 关键改动：没有 cookie 就不启用 FAST（裸请求最容易触发 WAF 1020）"""
         if self._fast_disabled or not FAST_MODE:
             return
-
-        cookies = self._all_site_cookies()
-
-        if not cookies and not FAST_FORCE:
-            print(">>> [FAST] 浏览器里没拿到任何站点 cookie —— 这种“裸 HTTP 请求”极易触发")
-            print("           Cloudflare WAF 封锁(Error 1020)，因此本轮【不启用】FAST 通道。")
-            print("           想强开请加参数 fastforce（不推荐）；正常做法是先在 Chrome 里")
-            print("           手动打开一次站点，让 cookie 落到 profile 里再跑。")
-            self._fast_ok = False
-            self._fast_disabled = True
-            return
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
 
         s = self._make_fast_session()
         if s is None:
@@ -1088,22 +787,12 @@ class BrowserFetcher:
             self._fast_disabled = True
             return
 
-        try:
-            cur = self._page.url or (DOMAIN + "/")
-        except Exception:
-            cur = DOMAIN + "/"
-        ref_host = _host(cur) or _host(DOMAIN)
-
         s.headers.update({
             "User-Agent": self.ua or DEFAULT_UA,
             "Accept": DEFAULT_HEADERS["Accept"],
             "Accept-Language": DEFAULT_HEADERS["Accept-Language"],
-            "Referer": f"https://{ref_host}/",
+            "Referer": DOMAIN + "/",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-User": "?1",
         })
         self._fast = (s, cookies)
         self._fast_ok = True
@@ -1126,23 +815,6 @@ class BrowserFetcher:
         s, cookies = self._fast
         try:
             r = s.get(url, cookies=cookies, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-            note_host(getattr(r, "url", url) or url)
-
-            body_preview = ""
-            try:
-                body_preview = r.text[:20000]
-            except Exception:
-                try:
-                    body_preview = _decode_bytes(r.content[:20000])
-                except Exception:
-                    body_preview = ""
-
-            # ★ 命中硬封锁：立即关闭 FAST 并向上抛（触发冷却退避）
-            if _looks_like_block(body_preview):
-                self._fast_ok = False
-                self._fast_disabled = True
-                raise BlockedError(f"FAST 通道命中 Cloudflare 硬封锁 (HTTP {r.status_code}): {url}")
-
             if r.status_code in (403, 503):
                 print(f"    [FAST] HTTP {r.status_code}，重新同步 cookie 后本次降级浏览器通道")
                 self._fast_ok = False
@@ -1176,7 +848,7 @@ class BrowserFetcher:
 
             self._fast_resync_fail = 0
             return r.text
-        except (NoRetryFetchError, BlockedError):
+        except NoRetryFetchError:
             raise
         except Exception as e:
             print(f"    [FAST] 请求异常({e})，本次降级浏览器通道")
@@ -1193,13 +865,6 @@ class BrowserFetcher:
         if r.status == 404:
             raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
         if r.status >= 400:
-            body = ""
-            try:
-                body = r.text()[:20000]
-            except Exception:
-                pass
-            if _looks_like_block(body):
-                raise BlockedError(f"Cloudflare 硬封锁页 (HTTP {r.status}): {url}")
             raise FetchError(f"HTTP {r.status}: {url}")
         return r.body()
 
@@ -1234,7 +899,7 @@ class HybridFetcher:
             return False
         print("\n" + "!" * 68)
         print(f">>> [引擎切换] 轻量模式被拦：{reason}")
-        print(">>> 自动切换到【浏览器引擎】继续抓取（如需彻底解决，请用 open + cdp slow）")
+        print(">>> 自动切换到【浏览器引擎】继续抓取（如需彻底解决，请用 open + cdp fast）")
         print("!" * 68 + "\n")
         ENGINE = "browser"
         try:
@@ -1250,9 +915,6 @@ class HybridFetcher:
             return self.browser.get_html(url)
         try:
             return self.simple.get_html(url)
-        except BlockedError:
-            # 硬封锁换引擎也没用（同一出口 IP），直接上抛让冷却逻辑处理
-            raise
         except ChallengeError as e:
             if (self.simple.challenge_hits >= SIMPLE_MAX_CHALLENGE_HITS
                     and self._switch_to_browser(str(e))):
@@ -1265,8 +927,6 @@ class HybridFetcher:
             return self.browser.get_bytes(url)
         try:
             return self.simple.get_bytes(url)
-        except BlockedError:
-            raise
         except ChallengeError as e:
             if (self.simple.challenge_hits >= SIMPLE_MAX_CHALLENGE_HITS
                     and self._switch_to_browser(str(e))):
@@ -1289,7 +949,6 @@ atexit.register(_fetcher.close)
 
 
 def fetch(url, is_binary=False):
-    """带重试 + 硬封锁冷却退避的统一抓取入口"""
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -1298,13 +957,6 @@ def fetch(url, is_binary=False):
             return _fetcher.get_html(url)
         except NoRetryFetchError:
             raise
-        except HardBlockAbort:
-            raise
-        except BlockedError as e:
-            last_err = e
-            # ★ 不做普通重试，进入冷却退避；超限会抛 HardBlockAbort 终止本轮
-            cooldown_for_block(url, e)
-            continue
         except Exception as e:
             last_err = e
             if attempt < MAX_RETRIES:
@@ -1316,7 +968,7 @@ def fetch(url, is_binary=False):
     raise last_err if last_err else FetchError(f"请求失败: {url}")
 
 
-# ============== 工具函数 ==============
+# ============== 工具函数（沿用 gdefud 规则） ==============
 def has_existing_site_url(item, target_url):
     if not target_url:
         return False
@@ -1468,8 +1120,6 @@ def download_and_localize_image(img_url):
             with open(local_path, "wb") as f:
                 f.write(content)
             print(f"  [图片] 已下载 -> {fn}")
-        except HardBlockAbort:
-            raise
         except Exception as e:
             print(f"  [图片下载失败] {img_url}: {e}")
             return ""
@@ -1730,7 +1380,7 @@ def get_list(list_url, max_pages=None):
         if not nxt or nxt == url:
             break
         url = nxt
-        polite_sleep()
+        time.sleep(SLEEP_BETWEEN)
     return all_items
 
 
@@ -2150,8 +1800,6 @@ def process_list_page(data, list_url, group, page_name):
     filter_regions = FILTER_REGIONS_OVERRIDE.get(list_url, FILTER_REGIONS)
     try:
         items = get_list(list_url)
-    except HardBlockAbort:
-        raise
     except Exception as e:
         print(f"  ✗ 列表抓取失败: {e}")
         return 0, 0, 0
@@ -2191,7 +1839,7 @@ def process_list_page(data, list_url, group, page_name):
                 flush()
                 print("    ! 无播放源，跳过")
                 skipped += 1
-                polite_sleep()
+                time.sleep(SLEEP_BETWEEN)
                 continue
 
             current_group = group
@@ -2204,7 +1852,7 @@ def process_list_page(data, list_url, group, page_name):
                 print(f"    - 跳过：「{real_name}」属于「{current_group}」，"
                       f"集数 {len(new_eps)} 超过 {MAX_EPISODES} 集(期) 上限 ")
                 skipped += 1
-                polite_sleep()
+                time.sleep(SLEEP_BETWEEN)
                 continue
 
             matched_group, existing = find_existing_global(
@@ -2227,7 +1875,7 @@ def process_list_page(data, list_url, group, page_name):
                     flush()
                     print(f"    - 跳过：地区为「{region}」，在过滤列表中")
                     skipped += 1
-                    polite_sleep()
+                    time.sleep(SLEEP_BETWEEN)
                     continue
 
                 if region_clean in ("", "未知"):
@@ -2239,7 +1887,7 @@ def process_list_page(data, list_url, group, page_name):
                         print(f"    - 跳过：地区未知，但类型「{type_text}」含"
                               f"「{matched_kw}」，判定为国产内容")
                         skipped += 1
-                        polite_sleep()
+                        time.sleep(SLEEP_BETWEEN)
                         continue
 
             if existing:
@@ -2288,7 +1936,7 @@ def process_list_page(data, list_url, group, page_name):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
                             skipped += 1
-                            polite_sleep()
+                            time.sleep(SLEEP_BETWEEN)
                             continue
 
                         if eps_changed:
@@ -2330,7 +1978,7 @@ def process_list_page(data, list_url, group, page_name):
                             flush()
                             print(f"    - 无字段变更，跳过：{real_name}")
                             skipped += 1
-                            polite_sleep()
+                            time.sleep(SLEEP_BETWEEN)
                             continue
 
                         if eps_changed:
@@ -2379,7 +2027,7 @@ def process_list_page(data, list_url, group, page_name):
                         flush()
                         print(f"    - 无字段变更，跳过：{real_name}")
                         skipped += 1
-                        polite_sleep()
+                        time.sleep(SLEEP_BETWEEN)
                         continue
 
                     if eps_changed:
@@ -2414,18 +2062,11 @@ def process_list_page(data, list_url, group, page_name):
                 mark_dirty(data)
                 ok += 1
 
-        except HardBlockAbort:
-            mark_dirty(data, force=True)
-            raise
-        except BlockedError as e:
-            flush()
-            print(f"    ✗ 被 Cloudflare 拒绝，跳过本条: {e}")
-            fail += 1
         except Exception as e:
             flush()
             print(f"    ✗ 抓取失败: {e}")
             fail += 1
-        polite_sleep()
+        time.sleep(SLEEP_BETWEEN)
 
     mark_dirty(data, force=True)
     return ok, fail, skipped
@@ -2489,7 +2130,7 @@ def backfill_existing(data):
                 fields, img_url = fetch_detail_data(target_url)
                 if fields is None:
                     print("    ✗ 跳过：无详情内容")
-                    polite_sleep()
+                    time.sleep(SLEEP_BETWEEN)
                     continue
                 if fill_empty_fields(item, fields, img_url):
                     item["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2499,105 +2140,58 @@ def backfill_existing(data):
                           f"地区:「{item.get('地区')}」)")
                 else:
                     print("    - 未发现可补全内容")
-            except HardBlockAbort:
-                mark_dirty(data, force=True)
-                raise
             except Exception as e:
                 print(f"    ✗ 失败: {e}")
-            polite_sleep()
+            time.sleep(SLEEP_BETWEEN)
 
     mark_dirty(data, force=True)
     print(f"\n[补全模式] 完成：扫描 {total} 条候选，成功更新 {updated} 条。")
 
 
-# ============== 启动预检 ==============
-def preflight():
-    """开跑前先探一次首页：被硬封锁就立刻给结论，不浪费时间"""
-    print(">>> [预检] 探测站点可访问性 ...")
-    try:
-        fetch(DOMAIN + "/")
-        print(">>> [预检] 站点可访问 ✅\n")
-        return True
-    except HardBlockAbort:
-        raise
-    except BlockedError as e:
-        _print_block_banner(DOMAIN + "/", e)
-        raise HardBlockAbort("预检即被 Cloudflare 硬封锁，请先换出口 IP 再重跑。")
-    except Exception as e:
-        print(f">>> [预检] 异常（不致命，继续）：{e}\n")
-        return False
-
-
 # ============== 主流程 ==============
 def parse_cli():
-    global USE_CDP, HEADLESS, FAST_MODE, FAST_FORCE, AUTO_CLICK_TURNSTILE
+    global USE_CDP, HEADLESS, FAST_MODE, AUTO_CLICK_TURNSTILE
     global ENGINE, AUTO_FALLBACK_TO_BROWSER, LIST_MAX_PAGES
-    global SLEEP_BETWEEN, SIMPLE_JITTER, PROXY
 
-    raw_args = sys.argv[1:]
-    args = [a.lstrip("-") for a in raw_args]
-    low  = [a.lower() for a in args]
+    args = [a.lower().lstrip("-") for a in sys.argv[1:]]
 
-    # 代理参数需要保留大小写
-    for a in args:
-        m = re.match(r"^(?:proxy|代理)=(.+)$", a, re.I)
-        if m:
-            PROXY = m.group(1).strip()
-            print(f">>> [配置] 使用代理：{PROXY}")
-
-    if "open" in low or "launch" in low:
+    if "open" in args or "launch" in args:
         launch_chrome_for_cdp()
         sys.exit(0)
 
-    for a in low:
+    for a in args:
         m = re.match(r"^pages?=(\d+)$", a)
         if m:
             LIST_MAX_PAGES = max(1, int(m.group(1)))
             print(f">>> [配置] 每个分类最多抓 {LIST_MAX_PAGES} 页")
-        m = re.match(r"^(?:sleep|delay)=([\d.]+)$", a)
-        if m:
-            SLEEP_BETWEEN = max(0.2, float(m.group(1)))
-            print(f">>> [配置] 请求间隔基准 {SLEEP_BETWEEN:.1f}s")
 
-    if "slow" in low:
-        SLEEP_BETWEEN = max(SLEEP_BETWEEN, 5.0)
-        SIMPLE_JITTER = (1.0, 2.5)
-        print(f">>> [模式] SLOW：请求间隔基准 {SLEEP_BETWEEN:.1f}s + 随机抖动（抗 WAF 推荐）")
-
-    if "simple" in low or "light" in low or "http" in low:
+    if "simple" in args or "light" in args or "http" in args:
         ENGINE = "simple"
-    if "browser" in low or "chrome" in low:
+    if "browser" in args or "chrome" in args:
         ENGINE = "browser"
-    if "cdp" in low:
+    if "cdp" in args:
         ENGINE = "browser"
         USE_CDP = True
         AUTO_CLICK_TURNSTILE = False   # 手动点更稳，脚本不干扰
         print(">>> [模式] CDP：将附着到你手动启动的 Chrome（不会关闭它）")
-    if "headless" in low:
+    if "headless" in args:
         ENGINE = "browser"
         HEADLESS = True
         print(">>> [模式] 无头（注意：可能无法通过人机验证）")
-    if "fast" in low or "fastforce" in low:
+    if "fast" in args:
         ENGINE = "browser"
         FAST_MODE = True
-        print(">>> [模式] FAST：启用 curl_cffi 加速通道（无 cookie 时会自动禁用以防被封）")
-    if "fastforce" in low:
-        FAST_FORCE = True
-        print(">>> [模式] FASTFORCE：即使没有 cookie 也强开 FAST（⚠️ 极易触发 1020 封锁）")
-    if "nofast" in low:
-        FAST_MODE = False
-        FAST_FORCE = False
-        print(">>> [配置] 已禁用 FAST 通道")
-    if "click" in low:
+        print(">>> [模式] FAST：启用 curl_cffi 加速通道")
+    if "click" in args:
         AUTO_CLICK_TURNSTILE = True
         print(">>> [模式] 允许脚本自动点击 Turnstile")
-    if "nofallback" in low:
+    if "nofallback" in args:
         AUTO_FALLBACK_TO_BROWSER = False
         print(">>> [配置] 已禁用「轻量 -> 浏览器」自动降级")
 
     print(f">>> [引擎] 当前使用：{ENGINE}"
           f"{'（自动降级已开启）' if ENGINE == 'simple' and AUTO_FALLBACK_TO_BROWSER else ''}")
-    return "backfill" in low
+    return "backfill" in args
 
 
 def main():
@@ -2608,7 +2202,6 @@ def main():
 
     try:
         _fetcher.start()
-        preflight()
 
         if is_backfill:
             backfill_existing(data)
@@ -2627,17 +2220,6 @@ def main():
         print("\n====================================")
         print(f"所有抓取任务完成! 成功 {total_ok} 条，跳过 {total_skip} 条，失败 {total_fail} 条。"
               f"数据已保存在 {JSON_PATH}")
-
-    except HardBlockAbort as e:
-        flush_pending()
-        print("\n" + "=" * 76)
-        print(f"⛔ 本轮抓取已终止：{e}")
-        print("   已抓取的数据都已安全写入 JSON，稍后换 IP 再跑即可接着补。")
-        print("   建议命令：python Crawl_azhfds.py cdp slow")
-        print("=" * 76)
-    except KeyboardInterrupt:
-        flush_pending()
-        print("\n>>> 已手动中断，数据已保存。")
     finally:
         flush_pending()
         _fetcher.close()

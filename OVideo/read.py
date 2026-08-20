@@ -24,7 +24,7 @@ RATING_FIELDS = ('豆瓣', 'IMDB')
 #   - 比 gdefud 更高的渠道 → 加在 gdefud 前面
 #   - 介于 gdefud 与云播线路之间的渠道 → 加在 gdefud 后面
 # 整个这一档都排在「云播线路」系列之上。
-TOP_PRIORITY_CHANNELS = ['gdefud', 'huxitech', 'meiju8', 'cifppc', 'xb6v']
+TOP_PRIORITY_CHANNELS = ['shangxidq', 'gdefud', 'huxitech', 'meiju8', 'cifppc', 'xb6v']
 
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。
@@ -38,7 +38,7 @@ CHANNEL_PRIORITY = ['chnland']
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime', 'Show'}
-EPISODE_COUNT_PRIORITY_GROUP = ('gdefud', 'huxitech', 'xb6v')
+EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', 'gdefud', 'huxitech', 'xb6v')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
@@ -154,7 +154,7 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
                                episode_priority_names=None):
     """
     按优先级排序渠道:
-    - 第 0 档: 触发"按集数排序"规则的渠道(huxitech/chnland/gdefud 中命中的那些),
+    - 第 0 档: 触发"按集数排序"规则的渠道(shangxidq/huxitech/chnland/gdefud 中命中的那些),
                集数多的在前;集数相同则按 top_priority 顺序
     - 第 1 档: TOP_PRIORITY_CHANNELS,组内按列表顺序
     - 第 2 档: 「云播线路」系列,组内按原始 JSON 顺序
