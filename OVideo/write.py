@@ -78,7 +78,8 @@ def add_to_blacklist(mapping_url, name, real_url):
         except json.JSONDecodeError:
             pass
 
-    blacklist_data[mapping_url] = [name, real_url]
+    # 修复：url 放前面，name 放后面，与 url_mapping.json 的写入顺序保持一致
+    blacklist_data[mapping_url] = [real_url, name]
 
     with open(BLACKLIST_FILE, 'w', encoding='utf-8') as f:
         json.dump(blacklist_data, f, ensure_ascii=False, indent=4)
