@@ -33,10 +33,10 @@ _IMPERSONATE_POOL = ["chrome", "chrome120", "chrome110", "safari17_0", "edge101"
 # 当条目重新抓取时，这些源会从旧数据中保留下来，
 # 只更新这个集合之外的源。后续要新增其它外部源，直接加进来即可。
 # 【修改】：将 "6vdy" 也加入受保护源，防止在更新时被覆盖或删除
-PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland", "gdefud", "huxitech"}
+PROTECTED_SOURCES = {"gdefud", "huxitech", "xb6v"}
 
 # 受保护域名（用于"同名且 URL 仅来自这些域名"的特殊合并规则）
-PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org", "xb6v.com", "gdefud.com", "cifppc.com")
+PROTECTED_URL_DOMAINS = ("gdefud.com", "cifppc.com", "6vdy.org")
 
 
 def get_all_url_keys(item: dict) -> list[str]:
@@ -48,6 +48,34 @@ def get_all_url_keys(item: dict) -> list[str]:
         return -1 if k == "url" else int(k[3:])
 
     return sorted(keys, key=_sort_key)
+
+def append_new_url_fields(old_entry: dict, ordered_detail: dict, new_url: str) -> str:
+    """
+    将 new_url 按 url1/url2/url3... 规则追加到 ordered_detail。
+    返回：
+      - 新增的 key，例如 "url2"
+      - 如果 URL 已存在或无效，返回空字符串
+    """
+    old_url_keys = get_all_url_keys(old_entry)
+    existing_url_vals = []
+    max_idx = 0
+
+    for k in old_url_keys:
+        v = old_entry.get(k, "")
+        existing_url_vals.append(v)
+
+        if k != "url":
+            ordered_detail[k] = v
+            m = re.match(r"^url(\d+)$", k)
+            if m:
+                max_idx = max(max_idx, int(m.group(1)))
+
+    if not new_url or new_url in existing_url_vals:
+        return ""
+
+    next_key = f"url{max_idx + 1}"
+    ordered_detail[next_key] = new_url
+    return next_key
 
 
 def is_all_urls_protected(item: dict) -> bool:
@@ -1117,9 +1145,52 @@ def process_item(item: dict, cat_name: str,
                 matched_by_path_only = True
                 break
 
-    # 2. 【改动】跨分类全局同名"URL 仅含受保护域名"规则判定
-    #    原逻辑：仅当只有一个 url 且为 6vdy.org 时触发。
-    #    新逻辑：同名，且全部 url 仅来自 chnland.com / 6vdy.org（其一或两者）时触发。
+    # 2. 跨分类全局按名称查找
+    #    移植 chnland 的规则：
+    #    - 如果 URL/path 没命中，但名称已经存在，则不新增项目
+    #    - 后续在旧项目中追加 url1/url2/url3...
+    matched_by_name_only = False
+    if old_data is None:
+        for cat, existing_list in all_data.items():
+            if not isinstance(existing_list, list):
+                continue
+
+            for list_idx, existing_item in enumerate(existing_list):
+                if existing_item.get("name") == item["name"]:
+                    old_url_keys = get_all_url_keys(existing_item)
+                    first_url_val = ""
+                    if old_url_keys:
+                        first_url_val = existing_item.get(old_url_keys[0], "")
+
+                    old_data = {
+                        "info": existing_item.get("info", ""),
+                        "update": existing_item.get("update", ""),
+                        "image": existing_item.get("image", ""),
+                        "real_name": existing_item.get("name", ""),
+                        "real_path": get_url_path(first_url_val) if first_url_val else "",
+                        "category": cat,
+                        "list_idx": list_idx
+                    }
+
+                    key = (
+                        existing_item.get("name", item["name"]),
+                        get_url_path(first_url_val) if first_url_val else item_path
+                    )
+                    matched_by_name_only = True
+
+                    log(
+                        f"  ({idx_i}/{total}) [同名合并] 发现已有同名记录："
+                        f"{item['name']}，本次不新增，将追加 URL/播放源",
+                        force=True
+                    )
+                    break
+
+            if matched_by_name_only:
+                break
+
+    # 3. 保留原来的“受保护源特殊同名合并”逻辑作为兜底
+    #    注意：由于上面已经做了普通同名合并，所以这里通常不会再触发。
+    #    但为了兼容你原来代码里的特殊日志和逻辑，保留不删。
     if old_data is None:
         for cat, existing_list in all_data.items():
             if not isinstance(existing_list, list):
@@ -1145,30 +1216,32 @@ def process_item(item: dict, cat_name: str,
                 break
 
     # 3. 拦截未更新、抢先版、集数未增加
-    if old_data is not None and not is_special_6vdy_update:
+    if old_data is not None and not is_special_6vdy_update and not matched_by_name_only:
         old_info   = old_data.get("info", "")
         old_update = old_data.get("update", "")
         old_image  = old_data.get("image", "")
 
         if old_image and old_update and (old_info == item["info"]):
-            log(f"  ({idx_i}/{total}) [跳过-未更新] {item['name']} (info一致)")
+            log(f"  ({idx_i}/{total}) [跳过-未更新] {item['name']} (info一致)", force=True)
             return "skipped"
 
         if old_image and old_update and (old_info != item["info"]):
             block_keywords = ['TC', 'TS', '抢先', 'HC']
             new_info_upper = item["info"].upper()
             if any(kw.upper() in new_info_upper for kw in block_keywords):
-                log(f"  ({idx_i}/{total}) [跳过-抢先版拦截] {item['name']} (新info '{item['info']}' 包含抢先关键字)")
+                log(f"  ({idx_i}/{total}) [跳过-抢先版拦截] {item['name']} (新info '{item['info']}' 包含抢先关键字)", force=True)
                 return "skipped"
             if should_skip_info_update(old_info, item["info"]):
-                log(f"  ({idx_i}/{total}) [跳过-集数未增加] {item['name']} (旧info '{old_info}' -> 新info '{item['info']}'，集数未增加)")
+                log(f"  ({idx_i}/{total}) [跳过-集数未增加] {item['name']} (旧info '{old_info}' -> 新info '{item['info']}'，集数未增加)", force=True)
                 return "skipped"
 
-    # 判定本次是新增 / 补图 / 补update / 普通更新 / 受保护源特殊更新
+    # 判定本次是新增 / 补图 / 补update / 普通更新 / 同名合并 / 受保护源特殊更新
     is_update = (old_data is not None) or is_special_6vdy_update
     if is_update:
         if is_special_6vdy_update:
             tag = "[受保护源特殊更新]"
+        elif matched_by_name_only:
+            tag = "[同名合并更新]"
         elif matched_by_path_only:
             tag = "[更名更新]"
         elif old_data.get("info") != item["info"]:
@@ -1459,24 +1532,21 @@ def process_item(item: dict, cat_name: str,
         else:
             ordered_detail["url"] = detail["url"]
 
-        # 【改动】受保护源特殊更新：保留旧条目所有 urlX，新 url 自动顺延追加
-        if is_special_6vdy_update and old_entry:
-            old_url_keys = get_all_url_keys(old_entry)
-            existing_url_vals = []
-            max_idx = 0
-            for k in old_url_keys:
-                v = old_entry.get(k, "")
-                existing_url_vals.append(v)
-                if k != "url":  # "url" 已在上面写入
-                    ordered_detail[k] = v
-                    max_idx = max(max_idx, int(k[3:]))
-            new_url = detail["url"]
-            if new_url and new_url not in existing_url_vals:
-                next_key = f"url{max_idx + 1}"
-                ordered_detail[next_key] = new_url
-                print(f"     [受保护源特殊合并] 已将新抓取的 URL 写入为 {next_key}: {new_url}")
+        if (is_special_6vdy_update or matched_by_name_only) and old_entry:
+            new_url = detail.get("url", "")
+            added_key = append_new_url_fields(old_entry, ordered_detail, new_url)
+
+            if added_key:
+                if matched_by_name_only:
+                    print(f"     [同名合并] 已将新抓取的 URL 写入为 {added_key}: {new_url}")
+                else:
+                    print(f"     [受保护源特殊合并] 已将新抓取的 URL 写入为 {added_key}: {new_url}")
             else:
-                print(f"     [受保护源特殊合并] 新 URL 已存在于旧条目，跳过追加")
+                if matched_by_name_only:
+                    print(f"     [同名合并] 新 URL 已存在于旧条目，跳过追加")
+                else:
+                    print(f"     [受保护源特殊合并] 新 URL 已存在于旧条目，跳过追加")
+
         elif old_entry:
             for k, v in old_entry.items():
                 if k.startswith("url") and k != "url":
@@ -1499,30 +1569,37 @@ def process_item(item: dict, cat_name: str,
         # =============================================================
         result = "skipped"
         if is_update:
-            if old_category != cat_name:
-                print(f"     [跨分类移动] 检测到分类漂移: {old_category} ➔ {cat_name}")
-                if old_category in all_data and target_list_idx is not None:
-                    if target_list_idx < len(all_data[old_category]):
-                        all_data[old_category].pop(target_list_idx)
-                if cat_name not in all_data:
-                    all_data[cat_name] = []
-                all_data[cat_name].append(detail)
+            # chnland 风格：
+            # 只要命中已有记录，就优先写回旧记录所在分类。
+            # 不因为本次抓取分类不同而移动条目。
+            write_category = old_category if old_category else cat_name
 
-                global_index.clear()
-                global_index.update(build_index(all_data))
+            if write_category not in all_data:
+                all_data[write_category] = []
+
+            if old_category != cat_name:
+                print(
+                    f"     [分类保持] 已有记录位于 {old_category}，"
+                    f"本次抓取分类为 {cat_name}，按已有分类 {write_category} 写回，不移动"
+                )
+
+            if target_list_idx is not None and target_list_idx < len(all_data[write_category]):
+                all_data[write_category][target_list_idx] = detail
             else:
-                if target_list_idx is not None and target_list_idx < len(all_data[cat_name]):
-                    all_data[cat_name][target_list_idx] = detail
-                else:
-                    replaced = False
-                    for i, old in enumerate(all_data[cat_name]):
-                        old_path = get_url_path(old.get("url", ""))
-                        if (old.get("name") == key[0] and old_path == item_path) or (old_path == item_path):
-                            all_data[cat_name][i] = detail
-                            replaced = True
-                            break
-                    if not replaced:
-                        all_data[cat_name].append(detail)
+                replaced = False
+                for i, old in enumerate(all_data[write_category]):
+                    old_path = get_url_path(old.get("url", ""))
+                    if (
+                        old.get("name") == key[0]
+                        or old_path == item_path
+                    ):
+                        all_data[write_category][i] = detail
+                        replaced = True
+                        break
+
+                if not replaced:
+                    all_data[write_category].append(detail)
+
             result = "updated"
         else:
             if cat_name not in all_data:
