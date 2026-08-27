@@ -13,6 +13,8 @@ import re
 import sys
 import json
 import time
+import glob
+import shutil
 from curl_cffi import requests as cffi
 import browser_cookie3
 import platform
@@ -57,21 +59,26 @@ SITE_KEY      = "shangxidq"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
 
+# ============ 数据安全相关配置 ============
+BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
+BAK_FILE = JSON_PATH + ".bak"
+REJECTED_FILE = JSON_PATH + ".rejected.json"
+MAX_BACKUPS = 20                 # backup/ 目录里最多保留多少份启动快照
+ALLOW_SHRINK_RATIO = 0.90        # 新数据条目数不得低于基线的 90%，否则拒绝写盘
+SHRINK_GUARD_MIN_ITEMS = 20      # 基线条目少于这个数时不启用缩水保护
+ALLOW_FRESH_START = False        # 只有确实想从零开始建库时才改 True
+
+_BASELINE_TOTAL = 0              # 启动时加载到的条目总数（缩水保护基线）
+_LOAD_OK = False                 # 是否成功加载了初始数据（未成功则禁止任何写盘）
+
 BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记",
     "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊",
 ]
-# 支持填写完整 URL 或 URL 片段（例如 "/voddetail/110145.html"）
-BLACKLIST_URLS = [
-]
+BLACKLIST_URLS = []
 
-# 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
-WHITELIST_NAMES = [
-    # "镖人 第二季"
-]
+WHITELIST_NAMES = []
 
-# 渠道优先级：数字越小优先级越高，playlist 排序时靠前
-# shangxidq 为新站，默认排最后（新增渠道时追加到 playlist 末尾）
 SITE_PRIORITY = {
     "huxitech":  0,
     "chnland":   1,
@@ -79,7 +86,6 @@ SITE_PRIORITY = {
     "shangxidq": 3,
 }
 
-# 分类页 -> 分组；group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
 LIST_PAGES = [
     ("https://shangxidq.com/vodshow/4--time---------2026.html", "Anime", "动漫(4)"),
     ("https://shangxidq.com/vodshow/3--time---------2026.html", "Show",  "综艺(3)"),
@@ -89,30 +95,19 @@ LIST_PAGES = [
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "国产剧", "国产", "泰国", "日本"]
 
-# 针对特定列表页的地区过滤覆盖（key = 列表页 URL，value = 该页要屏蔽的地区名单）
 FILTER_REGIONS_OVERRIDE = {
-    # 电影(1)：只屏蔽中国 / 泰国，其余地区放开
     "https://shangxidq.com/vodshow/1--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
-
-    # 电视剧(2)
     "https://shangxidq.com/vodshow/2--time---------2026.html":
         ["中国", "大陆", "内地", "中国大陆", "中国内地", "国产剧", "国产",
          "泰国", "台湾", "中国台湾", "日本"],
-
-    # 动漫(4)
     "https://shangxidq.com/vodshow/4--time---------2026.html":
         ["中国", "大陆", "内地", "国产", "中国大陆", "中国内地", "国产剧",
          "泰国", "台湾", "中国台湾", "日本"],
 }
 
-# 视为“空值”的占位文案
 EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
-
-# 无效的集名（需要从 playlist 中过滤掉）
 INVALID_EPISODE_NAMES = {"立即播放", "收藏"}
-
-# Drama / Anime 集数上限
 MAX_EPISODES = 30
 
 HEADERS = {
@@ -125,6 +120,51 @@ HEADERS = {
 }
 
 # ============== 工具函数 ==============
+def count_items(data: dict) -> int:
+    if not isinstance(data, dict):
+        return 0
+    return sum(len(v) for v in data.values() if isinstance(v, list))
+
+def _read_json_strict(path: str) -> dict:
+    """严格读取：空文件 / 非 dict / 解析失败 都抛异常"""
+    with open(path, "r", encoding="utf-8") as f:
+        txt = f.read()
+    if not txt.strip():
+        raise ValueError("文件内容为空（0 字节或全空白）")
+    data = json.loads(txt)
+    if not isinstance(data, dict):
+        raise ValueError(f"顶层结构不是 dict，而是 {type(data).__name__}")
+    return data
+
+def _backup_candidates() -> list[str]:
+    cands = [BAK_FILE]
+    try:
+        snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")), reverse=True)
+        cands.extend(snaps)
+    except Exception:
+        pass
+    return cands
+
+def snapshot_backup(path: str):
+    """每次启动把当前有效文件另存一份时间戳快照，并做轮转清理"""
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        dst = os.path.join(BACKUP_DIR, f"OVideos_{ts}.json")
+        shutil.copy2(path, dst)
+        print(f">>> [备份] 启动快照已保存: {dst}")
+        snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")))
+        if len(snaps) > MAX_BACKUPS:
+            for old in snaps[:len(snaps) - MAX_BACKUPS]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f">>> [备份] 创建启动快照失败: {e}")
+
 def extract_episode_number(info_text):
     """从 info 中提取纯数字集数"""
     if not info_text:
@@ -137,26 +177,20 @@ _session = cffi.Session(impersonate="chrome124")
 _chrome_cookies = None
 
 def _load_chrome_cookies():
-    """从本机 Chrome 读取 shangxidq 的 Cookie（含 cf_clearance）"""
+    """从本机 Chrome 读取 shangxidq 的 Cookie"""
     try:
         cj = browser_cookie3.chrome(domain_name=COOKIE_DOMAIN)
         cookies = {c.name: c.value for c in cj}
         if cookies:
-            print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: "
-                  f"{list(cookies.keys())}")
+            print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: {list(cookies.keys())}")
         else:
-            print(f">>> [Cookie] 未读到 {COOKIE_DOMAIN} 的 cookie，"
-                  f"请先在 Chrome 里手动过一次验证并浏览一下该站")
+            print(f">>> [Cookie] 未读到 {COOKIE_DOMAIN} 的 cookie")
         return cookies
     except Exception as e:
         print(f">>> [Cookie] 读取 Chrome cookie 失败: {e}")
         return {}
 
 def fetch(url, is_binary=False, use_cookies=True):
-    """
-    通用抓取。
-    use_cookies=False 用于跨域静态资源（图片 CDN），避免把站点 Cookie 发到第三方域。
-    """
     global _chrome_cookies
     cookies = None
     if use_cookies:
@@ -179,17 +213,10 @@ def fetch(url, is_binary=False, use_cookies=True):
         resp.encoding = resp.apparent_encoding or "utf-8"
     return resp.text
 
-
 def _re_class(base):
-    """
-    把单下划线写法的类名转成兼容“单/双下划线”的正则。
-    例如 "ewave-content_detail" -> 同时匹配 ewave-content_detail 和 ewave-content__detail
-    """
     return re.compile(r"^" + base.replace("_", "_+") + r"$")
 
-
 def is_garbled(value):
-    """判断是否为乱码/无效值"""
     if not value:
         return False
     v = str(value)
@@ -202,9 +229,7 @@ def is_garbled(value):
         return True
     return False
 
-
 def normalize_info_text(info_str):
-    """把更新信息标准化，用于对比语义是否相同，忽略：04→4、多余的第字"""
     if not info_str:
         return ""
     num_match = re.search(r"(\d+)", info_str)
@@ -212,7 +237,6 @@ def normalize_info_text(info_str):
         return normalize_text(info_str)
     num = int(num_match.group(1))
     return f"更新至第{num}集"
-
 
 def normalize_text(s):
     if not s:
@@ -232,7 +256,6 @@ def normalize_text(s):
     s = s.strip(":：·•")
     return s
 
-
 def num_to_chinese(num_str):
     try:
         num = int(num_str)
@@ -251,7 +274,6 @@ def num_to_chinese(num_str):
         ones = num % 10
         return f"{chinese_digits[tens]}十" + (chinese_digits[ones] if ones != 0 else "")
     return num_str
-
 
 def split_name_info(raw_title):
     raw_title = raw_title.strip()
@@ -296,16 +318,10 @@ def split_name_info(raw_title):
 
     return base_name, base_info
 
-
 def safe_filename(url):
     return os.path.basename(url.split("?")[0])
 
-
 def download_and_localize_image(img_url):
-    """
-    下载封面图。shangxidq 的图片托管在 baofeng.51weizhang.cn（跨域 CDN），
-    先不带站点 Cookie 请求；若失败再带 Cookie 重试一次。
-    """
     if not img_url:
         return ""
     fn = safe_filename(img_url)
@@ -314,6 +330,7 @@ def download_and_localize_image(img_url):
     local_path = os.path.join(IMG_DIR, fn)
     if not os.path.exists(local_path):
         content = None
+        last_err = ""
         for use_cookies in (False, True):
             try:
                 content = fetch(img_url, is_binary=True, use_cookies=use_cookies)
@@ -333,50 +350,66 @@ def download_and_localize_image(img_url):
             return ""
     return fn
 
-
 def extract_info_date(info):
-    """从 info 文本中提取 8 位日期数字 (YYYYMMDD)，找不到返回 None"""
     if not info:
         return None
     m = re.search(r"(20\d{6})", info)
-    if m:
-        return m.group(1)
-    return None
-
+    return m.group(1) if m else None
 
 def get_max_episode_number(episodes):
-    """从选集字典的集名中提取最大集编号；集名里没有数字时退回到集数总量"""
+    """
+    从选集字典的集名中提取最大有效集编号：
+    1. 优先解析 SxxExx 格式（如 S05E08），自动提取最大季的对应最大集
+    2. 解析 第X季第Y集 格式
+    3. 解析常规单集数字
+    """
+    if not episodes:
+        return 0
+
+    # 1. 匹配 SxxExx 格式
+    se_pairs = []
+    for name in episodes.keys():
+        m = re.search(r'S(\d+)E(\d+)', str(name), re.IGNORECASE)
+        if m:
+            se_pairs.append((int(m.group(1)), int(m.group(2))))
+    if se_pairs:
+        max_season = max(s for s, e in se_pairs)
+        max_ep_in_latest_season = max(e for s, e in se_pairs if s == max_season)
+        return max_ep_in_latest_season
+
+    # 2. 匹配 第X季...第Y集 格式
+    season_ep_pairs = []
+    for name in episodes.keys():
+        m = re.search(r'第\s*(\d+)\s*季.*?第\s*(\d+)\s*[集期话話]', str(name))
+        if m:
+            season_ep_pairs.append((int(m.group(1)), int(m.group(2))))
+    if season_ep_pairs:
+        max_season = max(s for s, e in season_ep_pairs)
+        max_ep_in_latest_season = max(e for s, e in season_ep_pairs if s == max_season)
+        return max_ep_in_latest_season
+
+    # 3. 常规集数提取
     max_num = 0
     for name in episodes.keys():
-        m = re.search(r'(\d+)\s*[集期话話]', name)   # 优先 "第20集" / "20期"
+        m = re.search(r'(\d+)\s*[集期话話]', str(name))
         if not m:
-            m = re.search(r'第\s*(\d+)', name)         # 其次 "第20"
+            m = re.search(r'第\s*(\d+)', str(name))
         if not m:
-            m = re.search(r'(\d+)', name)              # 最后任意数字
+            m = re.search(r'(\d+)', str(name))
         if m:
             max_num = max(max_num, int(m.group(1)))
-    if max_num == 0:
-        max_num = len(episodes)
+            
+    # 【修改】：删除了 if max_num == 0: max_num = len(episodes)
     return max_num
 
-
 def _url_keys_sorted(existing):
-    """按 url, url1, url2 ... 的顺序返回所有 url 键"""
     return sorted(
         [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
     )
 
-
 def _ensure_site_url(existing, sub_url, force_new=False):
-    """
-    确保 existing 里存在指向本站(SITE_KEY)的 urlX。
-      - 已存在（含 SITE_KEY 或值等于 sub_url）-> 直接返回该键名
-      - 不存在 -> 分配新的 urlX，并插到最后一个 url 键之后（保持字段顺序）
-    返回使用/新建的键名
-    """
     url_keys = _url_keys_sorted(existing)
-
     if not force_new:
         for k in url_keys:
             v = existing.get(k, "") or ""
@@ -388,7 +421,7 @@ def _ensure_site_url(existing, sub_url, force_new=False):
         m = re.match(r"^url(\d+)$", k)
         if m:
             max_num = max(max_num, int(m.group(1)))
-    new_url_key = f"url{max_num + 1}"   # 只有 base "url" 时 -> url1
+    new_url_key = f"url{max_num + 1}"
 
     last_url_key = url_keys[-1] if url_keys else None
     new_ordered = {}
@@ -401,62 +434,40 @@ def _ensure_site_url(existing, sub_url, force_new=False):
     if not inserted:
         new_ordered[new_url_key] = sub_url
 
-    # 注意：clear + update 不会改变 playlist 列表对象的身份，外部持有的引用依然有效
     existing.clear()
     existing.update(new_ordered)
     return new_url_key
 
-
 def append_site_channel(existing, new_episodes, sub_url):
-    """
-    把本站作为【新渠道】追加：
-      - 分配新的 urlX，并插到最后一个 url 键之后
-      - playlist 直接追加到末尾（不按优先级插队）
-    返回新分配的 url 键名
-    """
     new_url_key = _ensure_site_url(existing, sub_url, force_new=True)
     existing.setdefault("playlist", []).append(
         {"name": PLAYLIST_NAME, "episodes": new_episodes}
     )
     return new_url_key
 
-
 def promote_site_to_pos(existing, new_episodes, sub_url, insert_pos=0):
-    """
-    把本站渠道放到指定位置 insert_pos（0 = 最前）
-      - 已存在本站渠道 -> 覆盖其 episodes，并移动到 insert_pos
-      - 不存在 -> 新建 urlX，playlist 插入 insert_pos
-    返回 (url_key, action)，action ∈ {"in_place", "moved", "inserted"}
-    """
     playlist = existing.setdefault("playlist", [])
     site_index = next(
         (i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME),
         None
     )
 
-    # ---- 情况 A：已存在本站渠道，覆盖 episodes 并移动到目标位置 ----
     if site_index is not None:
         pl = playlist.pop(site_index)
         pl["episodes"] = new_episodes
-
-        # pop 之后，若原下标在目标位置之前，目标下标要 -1
         target = insert_pos - 1 if site_index < insert_pos else insert_pos
         target = max(0, min(target, len(playlist)))
-        playlist.insert(target, pl)        # ★ 无论如何都插回来
-
+        playlist.insert(target, pl)
         _ensure_site_url(existing, sub_url)
         return None, ("in_place" if target == site_index else "moved")
 
-    # ---- 情况 B：不存在本站渠道，新建 urlX 并插入 playlist ----
     new_url_key = _ensure_site_url(existing, sub_url, force_new=True)
     playlist = existing.setdefault("playlist", [])
     pos = max(0, min(insert_pos, len(playlist)))
     playlist.insert(pos, {"name": PLAYLIST_NAME, "episodes": new_episodes})
     return new_url_key, "inserted"
 
-
 def extract_episode_count_from_info(info):
-    """从 info 文本中提取已更新的集数"""
     if not info:
         return None
     m = re.search(r"更新[至到]\D*?(\d+)", info)
@@ -467,9 +478,7 @@ def extract_episode_count_from_info(info):
         return int(m.group(1))
     return None
 
-
 def is_valid_episode_name(name):
-    """判断集名是否有效（过滤非正式集名）"""
     if not name:
         return False
     if name in INVALID_EPISODE_NAMES:
@@ -478,28 +487,18 @@ def is_valid_episode_name(name):
         return False
     return True
 
-
 def filter_episodes(eps):
-    """过滤无效集名，只保留正式播放条目"""
     return {k: v for k, v in eps.items() if is_valid_episode_name(k)}
 
-
 def detect_group_by_episodes(episodes):
-    """
-    根据选集列表判定分类（用于 AUTO 混合页）：
-      - 集名含“集”字，且数量 > 2  -> Drama（电视剧）
-      - 其余（HD / HD中字 / HD国语 等，1~2 项） -> Movie（电影）
-    """
     names = list(episodes.keys())
     count = len(names)
-    has_ji = any("集" in n for n in names)
+    has_ji = any("集" in n or re.search(r"S\d+E\d+", n, re.I) for n in names)
     if has_ji and count > 2:
         return "Drama"
     return "Movie"
 
-
 def insert_playlist_by_priority(playlist, new_pl):
-    """按 SITE_PRIORITY 把 new_pl 插入到 playlist 的正确位置，返回插入下标"""
     new_prio = SITE_PRIORITY.get(new_pl.get("name"), 99)
     pos = len(playlist)
     for i, pl in enumerate(playlist):
@@ -509,12 +508,7 @@ def insert_playlist_by_priority(playlist, new_pl):
     playlist.insert(pos, new_pl)
     return pos
 
-
 def merge_missing_fields(existing, rec, log=print):
-    """
-    只补全 existing 里为空的字段（不覆盖已有值）。返回是否发生修改。
-    注意：本站评分不可信，不参与合并。
-    """
     changed = False
     for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
         old_val = existing.get(field)
@@ -535,14 +529,11 @@ def merge_missing_fields(existing, rec, log=print):
         changed = True
         log(f"      [字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
 
-    # 保证评分字段结构存在（但本站不写入任何评分值）
     existing.setdefault("评分", {"豆瓣": "", "IMDB": ""})
     return changed
 
-
 # ============== 列表页解析 ==============
 def get_list(list_url):
-    """返回 [(name, info, detail_url, img_url), ...]"""
     html = fetch(list_url)
     soup = BeautifulSoup(html, "lxml")
     items = []
@@ -586,19 +577,14 @@ def get_list(list_url):
         items.append((name, info, urljoin(DOMAIN, href), img))
     return items
 
-
 # ============== 详情页解析 ==============
 def _clean_val(v):
     v = normalize_text(v)
-    if v in EMPTY_VALUES:
-        return ""
-    if is_garbled(v):
+    if v in EMPTY_VALUES or is_garbled(v):
         return ""
     return v
 
-
 def parse_detail_fields(detail_div):
-    """解析 p.data 区域：类型/地区/年份(date)/主演/导演"""
     result = {"类型": [], "地区": "", "date": "", "主演": [], "导演": []}
     if detail_div is None:
         return result
@@ -659,42 +645,9 @@ def parse_detail_fields(detail_div):
                     val = _clean_val(str(node))
                     if val:
                         assign(current, val)
-
-    if not any([result["类型"], result["地区"], result["date"], result["主演"], result["导演"]]):
-        for span in detail_div.find_all("span"):
-            classes = span.get("class", []) or []
-            if "split-line" in classes:
-                continue
-            text = span.get_text(strip=True)
-            field = detect_field(text)
-            if not field:
-                continue
-            parent = span.parent
-            if not parent:
-                continue
-            found_span = False
-            for sibling in parent.children:
-                if sibling is span:
-                    found_span = True
-                    continue
-                if not found_span:
-                    continue
-                if isinstance(sibling, Tag):
-                    if sibling.name == "span":
-                        sib_classes = sibling.get("class", []) or []
-                        if "split-line" in sib_classes:
-                            break
-                        sib_text = sibling.get_text(strip=True)
-                        if detect_field(sib_text):
-                            break
-                    elif sibling.name == "a":
-                        assign(field, sibling.get_text(strip=True))
-
     return result
 
-
 def parse_intro(soup):
-    """解析 #desc 区域的『剧情简介：』之后的内容"""
     desc = soup.find(id="desc")
     if not desc:
         return ""
@@ -713,12 +666,8 @@ def parse_intro(soup):
         return "" if is_garbled(result) else result
     return text
 
-
 def extract_episodes(soup):
-    """取剧集最多的那个云播列表，返回 {集名: 播放url}，已过滤无效集名"""
     best = {}
-
-    # 策略1：标准播放列表 ewave-content_playlist
     for ul in soup.find_all("ul", class_=_re_class("ewave-content_playlist")):
         eps = {}
         for a in ul.select("li a[href]"):
@@ -733,8 +682,6 @@ def extract_episodes(soup):
         return filter_episodes(best)
 
     exclude_pat = re.compile(r"ewave-content_+thumb|play-btn|ewave-vodlist_+thumb")
-
-    # 策略2：兜底——只从 .ewave-pannel_bd 内抓 /vodplay/ 链接
     pannel_bd = soup.find_all(class_=_re_class("ewave-pannel_bd"))
     eps = {}
     for bd in pannel_bd:
@@ -748,7 +695,6 @@ def extract_episodes(soup):
     if eps:
         return filter_episodes(eps)
 
-    # 策略3：全页面兜底
     eps = {}
     for a in soup.select('a[href*="/vodplay/"]'):
         if a.find_parent(class_=exclude_pat):
@@ -759,13 +705,7 @@ def extract_episodes(soup):
             eps[name] = urljoin(DOMAIN, href)
     return filter_episodes(eps)
 
-
 def parse_real_name(soup, default_name):
-    """
-    详情页标题结构：
-      <h1 class="title"><span>她的涅槃日</span><span class="score ... raty-score-num">7.0</span></h1>
-    先剔除评分 span，再取文本。
-    """
     detail = soup.find(class_=_re_class("ewave-content_detail"))
     if not detail:
         return default_name
@@ -777,16 +717,13 @@ def parse_real_name(soup, default_name):
         if any(("score" in c) or ("raty" in c) for c in classes):
             sp.extract()
     t = normalize_text(h1.get_text(strip=True))
-    # 兜底：若仍夹带评分数字（如 "她的涅槃日7.0"），去掉尾部评分
     t = re.sub(r"\s*\d+(\.\d+)?\s*$", "", t).strip() or t
     if not t:
         return default_name
     name, _ = split_name_info(t)
     return name or t
 
-
 def extract_image_from_detail(soup):
-    """从详情页提取封面图 URL"""
     thumb = soup.find(class_=_re_class("ewave-vodlist_thumb"))
     if not thumb:
         return ""
@@ -798,16 +735,13 @@ def extract_image_from_detail(soup):
         return img_tag.get("data-original", "") or img_tag.get("src", "") or ""
     return thumb.get("data-original", "") or ""
 
-
 def extract_info_from_detail(soup):
-    """从详情页提取 info（pic-text 内容）"""
     thumb = soup.find(class_=_re_class("ewave-vodlist_thumb"))
     if thumb:
         pic = thumb.select_one("span.pic-text")
         if pic:
             return normalize_text(pic.get_text(strip=True))
     return ""
-
 
 def parse_subpage(sub_url, default_name, default_info, list_img=""):
     html = fetch(sub_url)
@@ -849,62 +783,173 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
         "date":   fields["date"],
         "alias":  "",
         "intro":  intro or "",
-        # 本站评分不可信 -> 恒留空
         "评分":   {"豆瓣": "", "IMDB": ""},
         "playlist": playlist,
     }
 
-
 # ============== JSON 读写与核心逻辑 ==============
-def load_json():
-    if not os.path.exists(JSON_PATH):
+def load_existing(path: str) -> dict:
+    global _BASELINE_TOTAL, _LOAD_OK
+    main_exists = os.path.exists(path)
+    main_size = os.path.getsize(path) if main_exists else -1
+
+    if main_exists and main_size > 0:
+        try:
+            data = _read_json_strict(path)
+            _BASELINE_TOTAL = count_items(data)
+            _LOAD_OK = True
+            print(f">>> [读取] 主文件正常: {path} ({main_size/1024:.1f} KB, {_BASELINE_TOTAL} 条)")
+            return data
+        except Exception as e:
+            print(f"\n❌ [严重] 主数据文件损坏，无法解析: {e}")
+    elif main_exists:
+        print(f"\n❌ [严重] 主数据文件为 0 字节: {path}")
+
+    # 尝试从备份恢复
+    if main_exists:
+        for cand in _backup_candidates():
+            if not os.path.exists(cand) or os.path.getsize(cand) == 0:
+                continue
+            try:
+                data = _read_json_strict(cand)
+            except Exception as e:
+                continue
+            n = count_items(data)
+            _BASELINE_TOTAL = n
+            _LOAD_OK = True
+            print(f"✅ [恢复] 已从备份恢复数据: {cand} ({n} 条)")
+            save_json(data, force=True, quiet=False)
+            return data
+
+        if not ALLOW_FRESH_START:
+            print("\n" + "!" * 70)
+            print("脚本已终止：为防止用空数据覆盖你的历史库，本次不会写入任何内容。")
+            print("请从备份恢复可用的 JSON 后再重试。")
+            print("!" * 70 + "\n")
+            sys.exit(1)
+        _BASELINE_TOTAL = 0
+        _LOAD_OK = True
         return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
-    with open(JSON_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
 
+    _BASELINE_TOTAL = 0
+    _LOAD_OK = True
+    return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
 
-def save_json(data):
-    os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
-    with open(JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+def save_json(data: dict, force: bool = False, quiet: bool = True) -> bool:
+    global _BASELINE_TOTAL
+    if not _LOAD_OK:
+        print("  [拒绝保存] 初始数据未成功加载，禁止写盘")
+        return False
+    if not isinstance(data, dict):
+        return False
 
+    total = count_items(data)
+    if (not force) and _BASELINE_TOTAL >= SHRINK_GUARD_MIN_ITEMS and total < _BASELINE_TOTAL * ALLOW_SHRINK_RATIO:
+        print(f"\n  ⛔ [拒绝保存] 条目数异常缩水：{_BASELINE_TOTAL} -> {total} (低于 {ALLOW_SHRINK_RATIO:.0%} 阈值)")
+        try:
+            with open(REJECTED_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            print(f"  [提示] 可疑数据已另存到 {REJECTED_FILE}，主文件未被修改\n")
+        except Exception:
+            pass
+        return False
+
+    try:
+        payload = json.dumps(data, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"  [错误] JSON 序列化失败: {e}")
+        return False
+
+    if len(payload.strip()) < 10:
+        return False
+
+    tmp_file = JSON_PATH + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
+        if os.path.exists(JSON_PATH) and os.path.getsize(JSON_PATH) > 0:
+            try:
+                shutil.copy2(JSON_PATH, BAK_FILE)
+            except Exception:
+                pass
+
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+
+        _read_json_strict(tmp_file)
+        os.replace(tmp_file, JSON_PATH)
+        _BASELINE_TOTAL = max(_BASELINE_TOTAL, total)
+        if not quiet:
+            print(f"  [已保存] 共 {total} 条")
+        return True
+    except Exception as e:
+        print(f"  [错误] 实时保存失败: {e}")
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+        return False
+
+def normalize_url(u):
+    """去除协议头、www、尾部斜杠，确保 URL 格式统一"""
+    if not u:
+        return ""
+    u = str(u).strip()
+    u = re.sub(r"^https?://", "", u, flags=re.IGNORECASE)
+    u = re.sub(r"^www\.", "", u, flags=re.IGNORECASE)
+    return u.rstrip("/")
+
+def clean_season_one(s):
+    """将'第一季'、'第1季'后缀剥离，用于基础名称比对"""
+    if not s:
+        return ""
+    return re.sub(r"(?:第[一1]季)$", "", s).strip()
 
 def find_existing_global(data, name, sub_url, log=print):
     def normalize_name(s):
         return s.replace(" ", "").strip() if s else ""
 
     norm_name = normalize_name(name)
+    base_name = clean_season_one(norm_name)
+    norm_sub_url = normalize_url(sub_url)
 
-    # 1. 优先跨分类按 URL 全局检索
-    if sub_url:
+    # 1. 优先通过 URL 匹配（规范化后比对）
+    if norm_sub_url:
         for group in ["Movie", "Drama", "Show", "Anime"]:
             for item in data.get(group, []):
-                existing_urls = {item.get(k) for k in item.keys()
-                                 if k == "url" or re.match(r"^url\d+$", k)}
-                if sub_url in existing_urls:
-                    existing_name = item.get("name", "")
-                    if existing_name != name:
-                        log(f"      [URL匹配去重] 发现 URL 一致但名称不同的记录 "
-                            f"(URL: {sub_url}, 已有:「{existing_name}」, "
-                            f"抓取:「{name}」, 所在分类:{group})")
-                    return group, item
+                for k in item.keys():
+                    if k == "url" or re.match(r"^url\d+$", k):
+                        val = item.get(k, "")
+                        if val and normalize_url(val) == norm_sub_url:
+                            existing_name = item.get("name", "")
+                            if existing_name != name:
+                                log(f"      [URL匹配去重] 发现 URL 一致 (URL: {sub_url}, 已有:「{existing_name}」, 抓取:「{name}」)")
+                            return group, item
 
-    # 2. 按【去空格名称】全局检索
+    # 2. 其次通过名称匹配（忽略空格）
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             existing_raw_name = item.get("name", "")
             existing_norm_name = normalize_name(existing_raw_name)
+            
+            # 2.1 完全相等
             if existing_norm_name == norm_name:
                 log(f"      [名称去重（忽略空格）] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
+                return group, item
+            
+            # 2.2 兼容“柯蒂斯总统”与“柯蒂斯总统 第一季 / 柯蒂斯总统第1季”
+            existing_base_name = clean_season_one(existing_norm_name)
+            if base_name and existing_base_name and base_name == existing_base_name:
+                log(f"      [季数兼容去重] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
                 return group, item
 
     return None, None
 
-
 def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
                            old_max_episodes, log=print):
     """处理已存在的记录：合并字段、更新播放源和 info"""
-    # ==================== 1. 字段合并与更新逻辑 ====================
     fields_updated = merge_missing_fields(existing, rec, log)
 
     def update_time_if_needed():
@@ -927,7 +972,24 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
             break
 
     playlist = existing.setdefault("playlist", [])
-    new_scraped_info = rec.get("info", "")
+    site_max = get_max_episode_number(new_episodes)
+    
+    # 统计其他渠道最大集数
+    other_max = 0
+    for pl in playlist:
+        if pl.get("name") == PLAYLIST_NAME:
+            continue
+        other_max = max(other_max, get_max_episode_number(pl.get("episodes", {})))
+
+    info_updated = False
+    # 【修改】：增加 matched_group 判断，排除 Movie
+    if matched_group in ("Drama", "Anime", "Show") and site_max > other_max and site_max > 0:
+        candidate_info = f"更新至第{site_max}集"
+        if existing.get("info") != candidate_info:
+            old_info = existing.get("info", "")
+            existing["info"] = candidate_info
+            info_updated = True
+            log(f"      ✅[info更新] 抓取最大集数 {site_max} > 其他渠道最大集数 {other_max}，info: 「{old_info}」 -> 「{candidate_info}」")
 
     if has_site_url:
         old_eps = {}
@@ -939,104 +1001,37 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
                 break
 
         if new_episodes == old_eps:
-            if new_scraped_info and new_scraped_info != existing.get("info", ""):
-                old_info = existing.get("info", "")
-                old_ep = extract_episode_number(old_info)
-                new_ep = extract_episode_number(new_scraped_info)
-                if not old_info:
-                    existing["info"] = new_scraped_info
-                    update_time_if_needed()
-                    log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-                    return "updated"
-                elif old_ep is not None and new_ep is not None:
-                    if new_ep > old_ep:
-                        existing["info"] = new_scraped_info
-                        update_time_if_needed()
-                        log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-                        return "updated"
-                    else:
-                        log(f"      [info跳过] 新集数 {new_ep} 未超过现有 {old_ep}，"
-                            f"保留原有info：「{old_info}」")
-                        return "updated" if fields_updated else "no_change"
-                else:
-                    log(f"      [info跳过] 无法比较集数，保留原有info：「{old_info}」")
-                    return "updated" if fields_updated else "no_change"
+            if info_updated:
+                update_time_if_needed()
+                return "updated"
             return "updated" if fields_updated else "no_change"
 
         if len(new_episodes) < len(old_eps):
-            return "updated" if fields_updated else "decreased"
+            return "updated" if (fields_updated or info_updated) else "decreased"
 
-        # 播放源有变更，更新 playlist
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
         if old_idx != -1:
             playlist[old_idx] = new_pl
-
-            # 若本站集数大于其他所有渠道，移到第一位
-            site_max = get_max_episode_number(new_episodes)
-            other_max = 0
-            for i, pl in enumerate(playlist):
-                if i != old_idx:
-                    other_max = max(other_max, get_max_episode_number(pl.get("episodes", {})))
             if site_max > other_max and old_idx != 0:
                 playlist.insert(0, playlist.pop(old_idx))
-                log(f"      [排序调整] {SITE_KEY} 最大集数({site_max}) > "
-                    f"其他渠道最大集数({other_max})，已移动至第一位")
+                log(f"      [排序调整] {SITE_KEY} 最大集数({site_max}) > 其他渠道最大集数({other_max})，已移动至第一位")
         else:
-            site_max = get_max_episode_number(new_episodes)
-            other_max = max([0] + [get_max_episode_number(pl.get("episodes", {}))
-                                   for pl in playlist])
             if site_max > other_max:
                 playlist.insert(0, new_pl)
-                log(f"      [排序调整] {SITE_KEY} 最大集数({site_max}) > "
-                    f"其他渠道最大集数({other_max})，已直接插入至第一位")
+                log(f"      [排序调整] {SITE_KEY} 最大集数({site_max}) > 其他渠道最大集数({other_max})，已直接插入至第一位")
             else:
                 insert_playlist_by_priority(playlist, new_pl)
-
-        if new_scraped_info and new_scraped_info != existing.get("info", ""):
-            old_info = existing.get("info", "")
-            old_ep = extract_episode_number(old_info)
-            new_ep = extract_episode_number(new_scraped_info)
-            if not old_info:
-                existing["info"] = new_scraped_info
-                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-            elif old_ep is not None and new_ep is not None:
-                if new_ep > old_ep:
-                    existing["info"] = new_scraped_info
-                    log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-                else:
-                    log(f"      [info跳过] 集数相同，保留优质原有info：「{old_info}」")
 
         update_time_if_needed()
         return "updated"
 
     else:
-        # 新增渠道（按优先级插入）
         new_url_key = _ensure_site_url(existing, sub_url, force_new=True)
-        playlist = existing.setdefault("playlist", [])
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
         pos = insert_playlist_by_priority(playlist, new_pl)
-        log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，"
-            f"并按优先级把播放源插入至第 {pos + 1} 位")
-
-        if new_scraped_info:
-            old_info = existing.get("info", "")
-            old_date = extract_info_date(old_info)
-            new_date = extract_info_date(new_scraped_info)
-            old_ep_count = extract_episode_count_from_info(old_info)
-            should_update = False
-            if not old_info:
-                should_update = True
-            elif new_date and (not old_date or new_date > old_date):
-                should_update = True
-            elif old_ep_count is not None and len(new_episodes) > old_ep_count:
-                should_update = True
-            if should_update and new_scraped_info != old_info:
-                existing["info"] = new_scraped_info
-                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-
+        log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并按优先级把播放源插入至第 {pos + 1} 位")
         update_time_if_needed()
         return "channel_added"
-
 
 # ============== 处理单个分类页 ==============
 def process_list_page(data, list_url, group, page_name):
@@ -1051,12 +1046,10 @@ def process_list_page(data, list_url, group, page_name):
     ok, fail = 0, 0
 
     for idx, (name, info, url, img) in enumerate(items, 1):
-        # 1. 检查名称黑名单
         if name in BLACKLIST_NAMES:
             print(f"  ({idx}/{len(items)}) {name} [在名称黑名单中，跳过]")
             continue
 
-        # 2. 检查 URL 黑名单
         if any(black_url in url for black_url in BLACKLIST_URLS if black_url):
             print(f"  ({idx}/{len(items)}) {name} [URL 在黑名单中，跳过: {url}]")
             continue
@@ -1086,56 +1079,42 @@ def process_list_page(data, list_url, group, page_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # ===== AUTO 混合页：根据选集列表判定 电影/电视剧 =====
             current_group = group
             if group == "AUTO":
                 current_group = detect_group_by_episodes(new_eps)
                 buf.append(f"    [自动分类] 选集共 {len(new_eps)} 项，判定为「{current_group}」")
 
-            # ===== 集数上限过滤 =====
             if current_group in ("Drama", "Anime") and len(new_eps) > MAX_EPISODES:
                 flush()
-                print(f"    - 跳过：「{real_name}」属于「{current_group}」，"
-                      f"集数 {len(new_eps)} 超过 {MAX_EPISODES} 集(期) 上限 ")
+                print(f"    - 跳过：「{real_name}」属于「{current_group}」，集数 {len(new_eps)} 超过 {MAX_EPISODES} 集(期) 上限 ")
                 ok += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            # ===== 先跨分类按 URL 全局检索（再按名称）=====
             matched_group, existing = find_existing_global(data, real_name, url, buf.append)
-
-            effective_group = matched_group if existing else current_group
             if existing and matched_group != current_group:
-                buf.append(f"    * 该资源已存在于「{matched_group}」分类，"
-                           f"将按「{matched_group}」规则处理（当前抓取分类为「{current_group}」）")
+                buf.append(f"    * 该资源已存在于「{matched_group}」分类，将按「{matched_group}」规则处理")
 
-            # 白名单直接放行，不检查地区
             if real_name in WHITELIST_NAMES:
                 buf.append(f"    白名单放行：{real_name}，跳过地区屏蔽")
             elif current_group in ("Anime", "Drama", "Movie") and existing:
                 buf.append(f"    已存在记录，跳过地区屏蔽，继续更新：{real_name}")
             else:
-                region = rec.get("地区", "")
-                region_clean = region.strip()
-
-                if any(keyword == region_clean for keyword in filter_regions):
+                region = rec.get("地区", "").strip()
+                if any(keyword == region for keyword in filter_regions):
                     flush()
                     print(f"    - 跳过：地区为「{region}」，在过滤列表中")
                     ok += 1
                     time.sleep(SLEEP_BETWEEN)
                     continue
 
-                if region_clean in ("", "未知"):
+                if region in ("", "未知"):
                     cn_type_keywords = ["国产", "中国", "大陆", "内地"]
                     type_text = " ".join(rec.get("类型", []) or [])
-                    matched_kw = next(
-                        (kw for kw in cn_type_keywords if kw in type_text),
-                        None
-                    )
+                    matched_kw = next((kw for kw in cn_type_keywords if kw in type_text), None)
                     if matched_kw:
                         flush()
-                        print(f"    - 跳过：地区未知，但类型「{type_text}」含"
-                              f"「{matched_kw}」，判定为国产内容")
+                        print(f"    - 跳过：地区未知，但类型「{type_text}」含「{matched_kw}」，判定为国产内容")
                         ok += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
@@ -1143,22 +1122,15 @@ def process_list_page(data, list_url, group, page_name):
             if existing:
                 old_max_episodes = 0
                 for pl in existing.get("playlist", []):
-                    old_max_episodes = max(old_max_episodes,
-                                           get_max_episode_number(pl.get("episodes", {})))
+                    old_max_episodes = max(old_max_episodes, get_max_episode_number(pl.get("episodes", {})))
 
-                has_site_channel = any(
-                    pl.get("name") == PLAYLIST_NAME
-                    for pl in existing.get("playlist", [])
-                )
+                has_site_channel = any(pl.get("name") == PLAYLIST_NAME for pl in existing.get("playlist", []))
                 new_max = get_max_episode_number(new_eps)
 
-                # ===== Drama/Anime 排序规则 =====
                 promote = False
                 insert_at = None
                 if matched_group in ("Drama", "Anime"):
                     playlist_all = existing.get("playlist", [])
-
-                    # 统计“除本站之外”的其他渠道最大集数
                     global_max = 0
                     idx_global_max = -1
                     for i, pl in enumerate(playlist_all):
@@ -1168,84 +1140,56 @@ def process_list_page(data, list_url, group, page_name):
                         if pl_max > global_max:
                             global_max = pl_max
                             idx_global_max = i
-                    buf.append(f"    [{matched_group}] 其他渠道最大集数={global_max}, "
-                               f"{SITE_KEY}新抓取max={new_max}")
+                    buf.append(f"    [{matched_group}] 其他渠道最大集数={global_max}, {SITE_KEY}新抓取max={new_max}")
                     if new_max > global_max:
                         promote = True
                         insert_at = 0
-                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) > 其他最大"
-                                   f"({global_max})，目标位置 playlist[0]")
+                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) > 其他最大({global_max})，目标位置 playlist[0]")
                     elif new_max == global_max and global_max > 0:
                         promote = True
                         insert_at = idx_global_max + 1 if idx_global_max >= 0 else 0
-                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) == 其他最大"
-                                   f"({global_max})，目标下标 {insert_at}")
+                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) == 其他最大({global_max})，目标下标 {insert_at}")
                     elif new_max > 0:
                         promote = True
                         insert_at = idx_global_max + 1 if idx_global_max >= 0 else 0
-                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) < 其他最大"
-                                   f"({global_max})，目标下标 {insert_at}")
-                    else:
-                        buf.append(f"    [{matched_group}] {SITE_KEY}无有效集数，不调整顺序")
+                        buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) < 其他最大({global_max})，目标下标 {insert_at}")
 
                 if promote:
                     playlist = existing.setdefault("playlist", [])
-                    site_index = next(
-                        (i for i, pl in enumerate(playlist)
-                         if pl.get("name") == PLAYLIST_NAME),
-                        None
-                    )
-                    old_site_eps = (playlist[site_index].get("episodes", {})
-                                    if site_index is not None else {})
+                    site_index = next((i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME), None)
+                    old_site_eps = (playlist[site_index].get("episodes", {}) if site_index is not None else {})
 
-                    # ---- 安全阀：新抓取比已有本站渠道少 -> 不覆盖，防止数据丢失 ----
                     if site_index is not None and len(new_eps) < len(old_site_eps):
                         flush()
-                        print(f"    - 忽略({matched_group})：本次抓取 {len(new_eps)} 集 少于已有 "
-                              f"{len(old_site_eps)} 集，保留原有 playlist")
+                        print(f"    - 忽略({matched_group})：本次抓取 {len(new_eps)} 集 少于已有 {len(old_site_eps)} 集，保留原有 playlist")
                         ok += 1
                         time.sleep(SLEEP_BETWEEN)
                         continue
 
                     eps_changed = (new_eps != old_site_eps)
 
-                    # ★ 统一规则：只有选集内容发生变化时才调整顺序；
-                    #   内容完全一致（哪怕位置和目标不同）也保持原有顺序不动。
                     if eps_changed:
-                        url_key, action = promote_site_to_pos(
-                            existing, new_eps, url, insert_pos=insert_at
-                        )
+                        url_key, action = promote_site_to_pos(existing, new_eps, url, insert_pos=insert_at)
                     else:
-                        if site_index is not None:
-                            url_key = _ensure_site_url(existing, url)
-                        else:
-                            url_key = _ensure_site_url(existing, url, force_new=True)
+                        url_key = _ensure_site_url(existing, url, force_new=(site_index is None))
                         action = "in_place"
 
-                    # ---- info：只增不减 ----
-                    candidate_info = f"更新至第{new_max}集"
-                    old_info = existing.get("info", "")
-                    old_num = extract_episode_number(old_info)
+                    # 核心判断：新抓取集数严格大于其他所有渠道集数时，刷新 info
                     info_changed = False
-                    if normalize_info_text(old_info) != normalize_info_text(candidate_info):
-                        if (not old_info) or (old_num is None) or (new_max > old_num):
+                    if new_max > global_max and new_max > 0:
+                        candidate_info = f"更新至第{new_max}集"
+                        if existing.get("info") != candidate_info:
+                            old_info = existing.get("info", "")
                             existing["info"] = candidate_info
                             info_changed = True
-                            buf.append(f"    [info更新] 「{old_info}」 -> 「{candidate_info}」")
-                        else:
-                            buf.append(f"    [info跳过] 新集数 {new_max} 未超过现有 {old_num}，"
-                                       f"保留「{old_info}」")
-                    else:
-                        buf.append("    [info跳过] info 文本无变化，不覆盖")
+                            buf.append(f"    [info更新] {SITE_KEY}集数({new_max}) > 其他最大({global_max})，「{old_info}」 -> 「{candidate_info}」")
 
-                    # ---- 顺手补全空字段 ----
                     fields_changed = merge_missing_fields(existing, rec, buf.append)
-                    actual_changed = (eps_changed or info_changed or fields_changed
-                                      or action in ("moved", "inserted"))
+                    actual_changed = (eps_changed or info_changed or fields_changed or action in ("moved", "inserted"))
 
                     if actual_changed:
                         if matched_group in ("Drama", "Anime"):
-                            if new_max > old_max_episodes:
+                            if new_max > old_max_episodes or info_changed:
                                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         else:
                             existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1253,20 +1197,16 @@ def process_list_page(data, list_url, group, page_name):
                     flush()
 
                     if not actual_changed:
-                        print(f"    - 无变更({matched_group})：集数、info、字段均无变化，"
-                              f"保持原有顺序")
+                        print(f"    - 无变更({matched_group})：集数、info、字段均无变化，保持原有顺序")
                         ok += 1
                     elif action == "inserted":
-                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 作为新渠道写入 {url_key}，"
-                              f"已插入 playlist 下标 {insert_at}")
+                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 作为新渠道写入 {url_key}，已插入 playlist 下标 {insert_at}")
                         ok += 1
                     elif action == "moved":
-                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 已更新集数"
-                              f"({len(old_site_eps)} -> {len(new_eps)})，并移动到目标位置")
+                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 已更新集数({len(old_site_eps)} -> {len(new_eps)})，并移动到目标位置")
                         ok += 1
                     elif eps_changed:
-                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 已更新集数"
-                              f"({len(old_site_eps)} -> {len(new_eps)})，位置保持不变")
+                        print(f"    ✅ 更新({matched_group})：{SITE_KEY} 已更新集数({len(old_site_eps)} -> {len(new_eps)})，位置保持不变")
                         ok += 1
                     else:
                         print(f"    ✅ 更新({matched_group})：仅 info/字段更新，保持原有顺序")
@@ -1298,25 +1238,14 @@ def process_list_page(data, list_url, group, page_name):
                         fail += 1
 
                 else:
-                    # ===== 无本站渠道，且未触发排序调整（Movie / Show）=====
                     can_add = False
                     playlist_len = len(existing.get("playlist", []))
                     episode_total = len(new_eps)
 
                     if matched_group == "Movie":
-                        # 修改：电影不再限制渠道数量，无论多少渠道都允许插入
                         can_add = True
                         buf.append(f"    [Movie] 允许把 {SITE_KEY} 作为新渠道插入，现有渠道数 {playlist_len}")
                     elif matched_group == "Drama":
-                        # if playlist_len == 1 and episode_total < 20:
-                        #     can_add = True
-                        #     buf.append(f"    [Drama] 现有单一渠道，总集数{episode_total}<20，"
-                        #                f"允许追加{SITE_KEY}渠道至末尾")
-                        # elif playlist_len != 1:
-                        #     buf.append(f"    [Drama] 现有渠道数 {playlist_len} != 1，不插入")
-                        # else:
-                        #     buf.append(f"    [Drama] 总集数{episode_total}≥20，不自动追加渠道")
-                        # 计算除本站以外所有渠道的最大集数
                         other_channels_max_eps = 0
                         for pl in existing.get("playlist", []):
                             if pl.get("name") == PLAYLIST_NAME:
@@ -1335,14 +1264,15 @@ def process_list_page(data, list_url, group, page_name):
                         elif cond_b:
                             can_add = True
                             buf.append(f"    [Drama] 本次抓取集数{episode_total} > 其它渠道最大集数{other_channels_max_eps}，允许追加{SITE_KEY}新渠道")
-                        elif playlist_len != 1:
-                            buf.append(f"    [Drama] 现有渠道数 {playlist_len} != 1，且本次集数{episode_total}未超过其它渠道最大{other_channels_max_eps}，不插入")
-                        else:
-                            buf.append(f"    [Drama] 总集数{episode_total}≥20，不自动追加渠道")
 
                     if can_add:
                         new_url_key = append_site_channel(existing, new_eps, url)
                         merge_missing_fields(existing, rec, buf.append)
+                        
+                        # 【修改】：仅限 Drama / Anime / Show 剧集类更新 info
+                        if matched_group in ("Drama", "Anime", "Show") and new_max > other_channels_max_eps and new_max > 0:
+                            existing["info"] = f"更新至第{new_max}集"
+
                         if matched_group in ("Drama", "Anime"):
                             if new_max > old_max_episodes:
                                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1350,21 +1280,23 @@ def process_list_page(data, list_url, group, page_name):
                             existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         save_json(data)
                         flush()
-                        print(f"    ✅ 更新({matched_group})：已把 {SITE_KEY} 作为新渠道写入 "
-                              f"{new_url_key}，并追加到 playlist 末尾")
+                        print(f"    ✅ 更新({matched_group})：已把 {SITE_KEY} 作为新渠道写入 {new_url_key}，并追加到 playlist 末尾")
                         ok += 1
                     else:
                         flush()
-                        print(f"    - 跳过({matched_group})：项目已存在但无 {SITE_KEY} 渠道，"
-                              f"且不满足补充渠道条件，保持原样")
+                        print(f"    - 跳过({matched_group})：项目已存在但无 {SITE_KEY} 渠道，且不满足补充渠道条件，保持原样")
                         ok += 1
             else:
-                # 新增记录（用生效分类）
                 flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
+                
+                # 新增时若是剧集且有集数，格式化 info
+                ep_cnt = get_max_episode_number(new_eps)
+                if current_group in ("Drama", "Anime") and ep_cnt > 0:
+                    rec["info"] = f"更新至第{ep_cnt}集"
+
                 data.setdefault(current_group, []).append(rec)
-                print(f"    ✅ 新增 -> {current_group} (共 {len(new_eps)} 集) "
-                      f"[真实名称: {real_name}] [URL: {rec['url']}]")
+                print(f"    ✅ 新增 -> {current_group} (共 {len(new_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
 
@@ -1376,10 +1308,8 @@ def process_list_page(data, list_url, group, page_name):
 
     return ok, fail
 
-
 # ============== 补全模式 ==============
 def fetch_detail_data(url):
-    """请求一个详情页，返回 (字段字典, 远程图片URL)"""
     html = fetch(url)
     soup = BeautifulSoup(html, "lxml")
     detail = soup.find(class_=_re_class("ewave-content_detail"))
@@ -1392,17 +1322,12 @@ def fetch_detail_data(url):
         img_url = urljoin(DOMAIN, img_url)
     return fields, img_url
 
-
 def fill_empty_fields(item, fields, img_url=""):
-    """只补全空字段，已有的不动。返回是否发生过修改"""
     changed = False
     if not item.get("导演") and fields.get("导演"):
         item["导演"] = " / ".join(fields["导演"]) if isinstance(fields["导演"], list) else fields["导演"]
         changed = True
-    for f in ["主演", "类型"]:
-        if not item.get(f) and fields.get(f):
-            item[f] = fields[f]; changed = True
-    for f in ["地区", "date", "intro"]:
+    for f in ["主演", "类型", "地区", "date", "intro"]:
         if not item.get(f) and fields.get(f):
             item[f] = fields[f]; changed = True
     if img_url and not item.get("image"):
@@ -1411,19 +1336,13 @@ def fill_empty_fields(item, fields, img_url=""):
             item["image"] = local; changed = True
     return changed
 
-
 def backfill_existing(data):
     print(f"\n[补全模式] 扫描已有 {SITE_KEY} 记录中字段缺失的资源 ...")
     total, updated = 0, 0
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             url_keys = [k for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)]
-            target_url = None
-            for k in url_keys:
-                u = item.get(k, "")
-                if u and SITE_KEY in u:
-                    target_url = u
-                    break
+            target_url = next((item.get(k, "") for k in url_keys if item.get(k, "") and SITE_KEY in item.get(k, "")), None)
             if not target_url:
                 continue
             need = (not item.get("导演") and not item.get("主演")
@@ -1443,8 +1362,7 @@ def backfill_existing(data):
                     item["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     updated += 1
                     save_json(data)
-                    print(f"    ✅ 已补全 (导演:{item.get('导演')} 类型:{item.get('类型')} "
-                          f"地区:「{item.get('地区')}」)")
+                    print(f"    ✅ 已补全 (导演:{item.get('导演')} 类型:{item.get('类型')} 地区:「{item.get('地区')}」)")
                 else:
                     print("    - 未发现可补全内容")
             except Exception as e:
@@ -1452,12 +1370,18 @@ def backfill_existing(data):
             time.sleep(SLEEP_BETWEEN)
     print(f"\n[补全模式] 完成：扫描 {total} 条候选，成功更新 {updated} 条。")
 
-
 # ============== 主流程 ==============
 def main():
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
-    data = load_json()
+    print("=" * 60)
+    print("📦 数据安全检查")
+    print("=" * 60)
+    data = load_existing(JSON_PATH)
+    snapshot_backup(JSON_PATH)
+    before_total = count_items(data)
+    if os.path.exists(JSON_PATH + ".tmp"):
+        print(f">>> [提示] 发现残留临时文件 {JSON_PATH}.tmp，可自行检查后删除")
 
     if len(sys.argv) > 1 and sys.argv[1] in ("backfill", "--backfill"):
         backfill_existing(data)
@@ -1472,9 +1396,7 @@ def main():
         total_fail += fail
 
     print("\n====================================")
-    print(f"所有抓取任务完成! 成功 {total_ok} 条，失败 {total_fail} 条。"
-          f"数据已实时保存在 {JSON_PATH}")
-
+    print(f"所有抓取任务完成! 成功 {total_ok} 条，失败 {total_fail} 条。数据已实时保存在 {JSON_PATH}")
 
 if __name__ == "__main__":
     main()

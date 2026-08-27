@@ -23,6 +23,8 @@ import re
 import sys
 import json
 import time
+import glob
+import shutil
 import socket
 import platform
 import subprocess
@@ -67,6 +69,17 @@ PLAYLIST_NAME = "gdefud"
 SITE_KEY      = "gdefud"
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN  = 1.0
+# ============ 数据安全相关配置 ============
+BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
+BAK_FILE = JSON_PATH + ".bak"
+REJECTED_FILE = JSON_PATH + ".rejected.json"
+MAX_BACKUPS = 20                 # backup/ 目录里最多保留多少份启动快照
+ALLOW_SHRINK_RATIO = 0.90        # 新数据条目数不得低于基线的 90%，否则拒绝写盘
+SHRINK_GUARD_MIN_ITEMS = 20      # 基线条目少于这个数时不启用缩水保护
+ALLOW_FRESH_START = False        # 只有确实想从零开始建库时才改 True
+
+_BASELINE_TOTAL = 0              # 启动时加载到的条目总数（缩水保护基线）
+_LOAD_OK = False                 # 是否成功加载了初始数据（未成功则禁止任何写盘）
 
 # 网络重试
 MAX_RETRIES   = 3
@@ -171,6 +184,51 @@ class NoRetryFetchError(FetchError):
 # ==========================================================
 #              CDP：启动 / 探测你手动开的 Chrome
 # ==========================================================
+def count_items(data: dict) -> int:
+    if not isinstance(data, dict):
+        return 0
+    return sum(len(v) for v in data.values() if isinstance(v, list))
+
+def _read_json_strict(path: str) -> dict:
+    """严格读取：空文件 / 非 dict / 解析失败 都抛异常"""
+    with open(path, "r", encoding="utf-8") as f:
+        txt = f.read()
+    if not txt.strip():
+        raise ValueError("文件内容为空（0 字节或全空白）")
+    data = json.loads(txt)
+    if not isinstance(data, dict):
+        raise ValueError(f"顶层结构不是 dict，而是 {type(data).__name__}")
+    return data
+
+def _backup_candidates() -> list[str]:
+    cands = [BAK_FILE]
+    try:
+        snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")), reverse=True)
+        cands.extend(snaps)
+    except Exception:
+        pass
+    return cands
+
+def snapshot_backup(path: str):
+    """每次启动把当前有效文件另存一份时间戳快照，并做轮转清理"""
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        dst = os.path.join(BACKUP_DIR, f"OVideos_{ts}.json")
+        shutil.copy2(path, dst)
+        print(f">>> [备份] 启动快照已保存: {dst}")
+        snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")))
+        if len(snaps) > MAX_BACKUPS:
+            for old in snaps[:len(snaps) - MAX_BACKUPS]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f">>> [备份] 创建启动快照失败: {e}")
+
 def cdp_alive(port=CDP_PORT, timeout=1.0):
     """探测调试端口是否可用"""
     try:
@@ -1369,21 +1427,110 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
 
 
 # ============== JSON 读写（原子写 + 节流） ==============
-def load_json():
-    if not os.path.exists(JSON_PATH):
+def load_existing(path: str) -> dict:
+    global _BASELINE_TOTAL, _LOAD_OK
+    main_exists = os.path.exists(path)
+    main_size = os.path.getsize(path) if main_exists else -1
+
+    if main_exists and main_size > 0:
+        try:
+            data = _read_json_strict(path)
+            _BASELINE_TOTAL = count_items(data)
+            _LOAD_OK = True
+            print(f">>> [读取] 主文件正常: {path} ({main_size/1024:.1f} KB, {_BASELINE_TOTAL} 条)")
+            return data
+        except Exception as e:
+            print(f"\n❌ [严重] 主数据文件损坏，无法解析: {e}")
+    elif main_exists:
+        print(f"\n❌ [严重] 主数据文件为 0 字节: {path}")
+
+    # 尝试从备份恢复
+    if main_exists:
+        for cand in _backup_candidates():
+            if not os.path.exists(cand) or os.path.getsize(cand) == 0:
+                continue
+            try:
+                data = _read_json_strict(cand)
+            except Exception as e:
+                continue
+            n = count_items(data)
+            _BASELINE_TOTAL = n
+            _LOAD_OK = True
+            print(f"✅ [恢复] 已从备份恢复数据: {cand} ({n} 条)")
+            save_json(data, force=True, quiet=False)
+            return data
+
+        if not ALLOW_FRESH_START:
+            print("\n" + "!" * 70)
+            print("脚本已终止：为防止用空数据覆盖你的历史库，本次不会写入任何内容。")
+            print("请从备份恢复可用的 JSON 后再重试。")
+            print("!" * 70 + "\n")
+            sys.exit(1)
+        _BASELINE_TOTAL = 0
+        _LOAD_OK = True
         return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
-    with open(JSON_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+    _BASELINE_TOTAL = 0
+    _LOAD_OK = True
+    return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
 
 
-def save_json(data):
-    os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
-    tmp = JSON_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, JSON_PATH)
+def save_json(data: dict, force: bool = False, quiet: bool = True) -> bool:
+    global _BASELINE_TOTAL
+    if not _LOAD_OK:
+        print("  [拒绝保存] 初始数据未成功加载，禁止写盘")
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    total = count_items(data)
+    if (not force) and _BASELINE_TOTAL >= SHRINK_GUARD_MIN_ITEMS and total < _BASELINE_TOTAL * ALLOW_SHRINK_RATIO:
+        print(f"\n  ⛔ [拒绝保存] 条目数异常缩水：{_BASELINE_TOTAL} -> {total} (低于 {ALLOW_SHRINK_RATIO:.0%} 阈值)")
+        try:
+            with open(REJECTED_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            print(f"  [提示] 可疑数据已另存到 {REJECTED_FILE}，主文件未被修改\n")
+        except Exception:
+            pass
+        return False
+
+    try:
+        payload = json.dumps(data, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"  [错误] JSON 序列化失败: {e}")
+        return False
+
+    if len(payload.strip()) < 10:
+        return False
+
+    tmp_file = JSON_PATH + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
+        if os.path.exists(JSON_PATH) and os.path.getsize(JSON_PATH) > 0:
+            try:
+                shutil.copy2(JSON_PATH, BAK_FILE)
+            except Exception:
+                pass
+
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+
+        _read_json_strict(tmp_file)
+        os.replace(tmp_file, JSON_PATH)
+        _BASELINE_TOTAL = max(_BASELINE_TOTAL, total)
+        if not quiet:
+            print(f"  [已保存] 共 {total} 条")
+        return True
+    except Exception as e:
+        print(f"  [错误] 实时保存失败: {e}")
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+        return False
 
 
 _pending_changes = 0
@@ -1852,7 +1999,16 @@ def main():
     is_backfill = parse_cli()
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
-    data = load_json()
+
+    # ─── 数据安全检查与快照 ───
+    print("=" * 60)
+    print("📦 数据安全检查")
+    print("=" * 60)
+    data = load_existing(JSON_PATH)
+    snapshot_backup(JSON_PATH)
+    before_total = count_items(data)
+    if os.path.exists(JSON_PATH + ".tmp"):
+        print(f">>> [提示] 发现残留临时文件 {JSON_PATH}.tmp，可自行检查后删除")
 
     try:
         _fetcher.start()   # 提前把浏览器和 Cloudflare 状态搞定

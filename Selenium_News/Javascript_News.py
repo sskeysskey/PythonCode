@@ -346,7 +346,7 @@ def open_webpage_and_monitor_reuters():
         time.sleep(0.5)
 
     # ★ 用稳定检测替代原来的 "count >= 1 立刻继续"
-    wait_for_stable_download("reuters", min_count=1, stable_seconds=8, max_wait=180)
+    wait_for_stable_download("reuters", min_count=1, stable_seconds=4, max_wait=180)
     print("\nreuters file detected and stable!")
     close_browser_tabs(1)
 

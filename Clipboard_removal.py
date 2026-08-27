@@ -85,43 +85,53 @@ def remove_rfi_youtube_content(content, url):
             return cleaned_content
     return content
 
+def remove_original_english_note(content):
+    """
+    如果文本最后一段以「本文原以英文撰寫」开头，则移除该最后一段
+    """
+    paragraphs = re.split(r'\n\s*\n', content)
+    if not paragraphs:
+        return content
+    last_idx = len(paragraphs) - 1
+    last_para = paragraphs[last_idx].strip()
+    if last_para.startswith("本文原以英文撰寫"):
+        paragraphs = paragraphs[:last_idx]
+        print("[Clean] 移除末尾「本文原以英文撰寫」段落")
+    return "\n\n".join(paragraphs).rstrip() + "\n"
+
 
 def clean_clipboard():
     # 获取剪贴板内容
     clipboard_content = pyperclip.paste()
-
     # 获取当前页面 URL
     current_url = get_current_url()
-
     # 1. 移除"更多阅读 / 延伸阅读 / 相关阅读 / 拓展阅读"等开头行
     pattern = r'^(?:更多阅读|延伸阅读|相关阅读|拓展阅读).*(?:\r?\n|$)'
     cleaned_content = re.sub(pattern, '', clipboard_content, flags=re.MULTILINE)
-
     # 2. 按行过滤："以下是..."且中文字符少于 10 个的行
     lines = cleaned_content.splitlines()
     final_lines = [line for line in lines if not is_short_line_to_remove(line)]
     final_content = "\n".join(final_lines)
-
     # 3. 【新增】如果当前页面是 Bloomberg，进一步剔除末尾的 newsletter / podcast 推广段
     if "bloomberg.com" in current_url.lower():
         before_len = len(final_content)
         final_content = remove_bloomberg_tail(final_content)
         if len(final_content) != before_len:
             print("[Bloomberg] 已剔除末尾的 newsletter/podcast 推广段落。")
-
     # 4. 【新增】如果当前页面是 RFI.fr，检查并移除 YouTube Cookie 提示内容
     final_content = remove_rfi_youtube_content(final_content, current_url)
+    # ===== 新增规则：移除末尾「本文原以英文撰寫」开头的段落 =====
+    final_content = remove_original_english_note(final_content)
 
     # 写回剪贴板
     pyperclip.copy(final_content)
     return final_content
-
 
 if __name__ == "__main__":
     try:
         clean_clipboard()
         print("剪贴板内容已清理完成！")
         print("已移除\"更多阅读\"等相关行，以及\"以下是...\"且中文少于10字的行。")
-        print("如适用，还移除了 Bloomberg 推广段落和 RFI YouTube Cookie 提示内容。")
+        print("如适用，还移除了 Bloomberg 推广段落、RFI YouTube Cookie 提示、末尾「本文原以英文撰寫」段落。")
     except Exception as e:
         print(f"发生错误: {str(e)}")
