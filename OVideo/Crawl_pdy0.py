@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 
 from curl_cffi import requests as c_requests
 
-AFTER_FETCH_SLEEP = 5
+AFTER_FETCH_SLEEP = 0.1
 
 # 标准 requests 的 Session（图片代理兜底用）
 _std_session = requests.Session()
@@ -631,6 +631,9 @@ def ensure_dir(path: str):
 def clean_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
+def has_chinese(text: str) -> bool:
+    """判断字符串中是否包含中文字符"""
+    return bool(re.search(r"[\u4e00-\u9fa5]", text or ""))
 
 def extract_episode_num(ep_name: str) -> int:
     m = re.search(r"(\d+)", ep_name)
@@ -1278,7 +1281,9 @@ def parse_detail_page(html: str, name: str, url: str,
             a.decompose()
         intro_text = intro_box.get_text(" ", strip=True)
         intro_text = re.sub(r"^剧情介绍[:：]", "", intro_text)
-        data["intro"] = re.sub(r"\s+", "", intro_text)
+        # 修改前: data["intro"] = re.sub(r"\s+", "", intro_text)
+        # 修改后: 保留单词间的正常空格
+        data["intro"] = clean_ws(intro_text)
 
     return data
 
@@ -1598,7 +1603,8 @@ def process_item(item: dict, cat_name: str,
                 else:
                     detail[field] = old_val
 
-            for field in ["date", "alias", "intro"]:
+            # 1. 基础字段处理 (date, alias)
+            for field in ["date", "alias"]:
                 old_val = str(old_entry.get(field, "") or "")
                 new_val = str(detail.get(field, "") or "")
                 if not old_val and new_val:
@@ -1609,6 +1615,40 @@ def process_item(item: dict, cat_name: str,
                     change_reasons.append(f" [{field}] (长度: {len(old_val)} -> {len(new_val)})")
                 else:
                     detail[field] = old_val
+
+            # 2. 简介 (intro) 智能更新策略
+            old_intro = str(old_entry.get("intro", "") or "").strip()
+            new_intro = str(detail.get("intro", "") or "").strip()
+
+            if not old_intro and new_intro:
+                detail["intro"] = new_intro
+                change_reasons.append(f"补全字段 [intro]: (长度: {len(new_intro)})")
+            elif old_intro and new_intro and old_intro != new_intro:
+                old_has_zh = has_chinese(old_intro)
+                new_has_zh = has_chinese(new_intro)
+
+                # 情况 A: 旧的是纯英文，新抓到了中文 -> 坚决用中文替换
+                if not old_has_zh and new_has_zh:
+                    detail["intro"] = new_intro
+                    change_reasons.append(f" [intro] (以中文简介替换原英文简介)")
+
+                # 情况 B: 旧的是中文，新的是纯英文 -> 策略可选：
+                elif old_has_zh and not new_has_zh:
+                    # 【选项 1】直接忽略英文，保留中文（最纯粹）：
+                    detail["intro"] = old_intro
+                    
+                    # 【选项 2】如果你想“中英文共存/双语”，取消下面两行注释：
+                    # detail["intro"] = f"{old_intro}\n\n[EN]\n{new_intro}"
+                    # change_reasons.append(f" [intro] (追加英文简介)")
+
+                # 情况 C: 两者都有中文，或两者都是英文 -> 按内容长度决定
+                elif len(new_intro) > len(old_intro):
+                    detail["intro"] = new_intro
+                    change_reasons.append(f" [intro] (长度: {len(old_intro)} -> {len(new_intro)})")
+                else:
+                    detail["intro"] = old_intro
+            else:
+                detail["intro"] = old_intro
 
             old_rating = old_entry.get("评分", {})
             if not isinstance(old_rating, dict):

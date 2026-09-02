@@ -208,7 +208,6 @@ def snapshot_backup(path: str):
                         print(f">>> [备份清理] 删除过期备份: {fname}")
                     except Exception as e:
                         print(f">>> [备份清理] 删除失败 {fname}: {e}")
-        # -------------------------------------------------------
 
         shutil.copy2(path, dst)
         print(f">>> [备份] 启动快照已保存: {dst}")
@@ -492,6 +491,38 @@ def split_name_info(raw_title):
 
 def safe_filename(url):
     return os.path.basename(url.split("?")[0])
+
+def should_update_date(old_date, new_date):
+    """
+    判断是否应该用 new_date 替换 old_date：
+    1. 原 date 为空，直接更新。
+    2. 新年份 < 旧年份（抓到了旧季年份），拒绝替换。
+    3. 新年份 > 旧年份（资源年份升级），允许替换。
+    4. 年份相同时，如果新日期更详细（长度更长），允许替换。
+    """
+    if not new_date:
+        return False
+    if not old_date:
+        return True
+
+    old_str = str(old_date).strip()
+    new_str = str(new_date).strip()
+
+    # 正则提取 4 位年份 (19xx / 20xx)
+    old_m = re.search(r'(19\d{2}|20\d{2})', old_str)
+    new_m = re.search(r'(19\d{2}|20\d{2})', new_str)
+
+    if old_m and new_m:
+        old_year = int(old_m.group(1))
+        new_year = int(new_m.group(1))
+        if new_year < old_year:
+            return False
+        if new_year > old_year:
+            return True
+        return len(new_str) > len(old_str)
+
+    # 无法提取年份时的兜底逻辑
+    return len(new_str) > len(old_str)
 
 # ============== 播放列表提取 ==============
 def extract_episodes(soup, base_url=BASE_URL, host_normalize_to=None):
@@ -1197,7 +1228,7 @@ def insert_6vdy_playlist(playlist, new_pl, existing):
         print(f"      [排序规则] 6vdy 集数 {vdy_cnt} > 其他渠道最大集数 {max_other}，置顶第一位")
         return
 
-    target_names = {"huxitech", "gdefud"}
+    target_names = {"shangxidq", "gdefud", "huxitech"}
     target_indexes = [idx for idx, item in enumerate(playlist) if item.get("name", "") in target_names]
 
     if target_indexes:
@@ -1263,7 +1294,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
 
     old_date = existing.get("date", "")
     new_date = rec.get("date", "")
-    if new_date and (not old_date or len(str(new_date)) > len(str(old_date))):
+    if should_update_date(old_date, new_date):
         existing["date"] = new_date
         fields_updated = True
         print(f"      ✅[字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")

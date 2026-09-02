@@ -36,6 +36,39 @@ from datetime import datetime
 
 from curl_cffi import requests as cffi   # 仅在 FAST 模式下使用
 
+# ================= 日志双写控制器 =================
+class DualLogger:
+    """同时将输出写入终端和磁盘日志文件"""
+    def __init__(self, log_filepath):
+        self.terminal = sys.stdout
+        self.log_file = open(log_filepath, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return getattr(self.terminal, "isatty", lambda: False)()
+
+
+def setup_logging():
+    """初始化日志文件"""
+    log_dir = os.path.join(os.path.dirname(JSON_PATH), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"crawl_{SITE_KEY}_{ts}.log")
+    
+    logger = DualLogger(log_file)
+    sys.stdout = logger
+    sys.stderr = logger
+    print(f">>> [日志] 本次抓取日志将同步记录至: {log_file}")
+
 # ================= 防止系统休眠控制 =================
 _caffeinate_proc = None
 
@@ -1996,6 +2029,7 @@ def parse_cli():
 
 
 def main():
+    setup_logging()
     is_backfill = parse_cli()
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)

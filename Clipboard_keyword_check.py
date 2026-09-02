@@ -27,7 +27,7 @@ BLOCKED_KEYWORDS = [
     "沐美",
     "长光卫星",
     "香港国家安全法",
-    "报复社会"
+    "报复社会",         # 修复：补充了之前遗漏的逗号
     "赖清德总统",
     "中华民国总统",
     "流亡藏人",
@@ -53,10 +53,27 @@ BLOCKED_KEYWORDS = [
     "中国间谍"
 ]
 
+# ============ 过滤前缀列表 ============
+IGNORE_PREFIXES = (
+    "此文包含Instagram提供的内容",
+    "結尾 Instagram 帖子"
+)
+
 # ============ 路径配置 ============
 USER_HOME = os.path.expanduser("~")
 # 修改为 .html 后缀
 FAILURE_FILE = os.path.join(USER_HOME, "Coding", "News", "copy_failure.html")
+
+def filter_paragraphs(text):
+    """
+    过滤掉以指定前缀开头的段落/行
+    """
+    lines = text.splitlines()
+    filtered_lines = [
+        line for line in lines 
+        if not line.strip().startswith(IGNORE_PREFIXES)
+    ]
+    return "\n".join(filtered_lines)
 
 def ensure_html_file():
     """确保 HTML 文件存在且包含基础结构"""
@@ -87,6 +104,13 @@ def main():
     if not content:
         sys.exit(0)
 
+    # 1. 过滤指定开头的段落
+    content = filter_paragraphs(content)
+
+    # 可选：如果希望剪贴板里的实际内容也同步删掉这些段落，取消下面这行的注释即可：
+    # pyperclip.copy(content)
+
+    # 2. 对过滤后的内容进行敏感词检测
     for keyword in BLOCKED_KEYWORDS:
         if keyword in content:
             ensure_html_file()
@@ -98,8 +122,6 @@ def main():
         <a href='{url}' target='_blank'>{url}</a>
     </div>\n"""
             
-            # 将新条目插入到 </body> 标签之前（或者简单地追加，只要浏览器能解析即可）
-            # 这里采用简单追加方式，浏览器通常能容错处理
             with open(FAILURE_FILE, 'a', encoding='utf-8') as f:
                 f.write(html_entry)
             

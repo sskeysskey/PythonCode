@@ -290,6 +290,12 @@ def main() -> None:
                     changed = True
                     continue
 
+        # ==========新增：第一段字符数<=22则移除第一段==========
+        if lines:
+            first_line_stripped = lines[0].strip()
+            if len(first_line_stripped) <= 22:
+                lines.pop(0)
+        
         # =========================================================
         #   逻辑块 B：处理尾部 (Footer Processing) - 顺序清理
         # =========================================================
@@ -297,6 +303,14 @@ def main() -> None:
         while changed and lines:
             changed = False
             last_line = lines[-1]
+
+            # 0. 新增：AI 免责声明过滤（包含指定字样则删除整段）
+            # 建议将常见变体如 "本内容由AI生成"、"由AI生成" 统一纳入或精准匹配
+            ai_disclaimer_keywords = ["本回答由AI生成", "内容由AI生成", "由AI生成"]
+            if any(kw in last_line for kw in ai_disclaimer_keywords):
+                lines.pop(-1)
+                changed = True
+                continue
 
             # 1. 文本特征判断 (增强版：处理段内包含提问的情况)
             ai_ask_keywords = ["需要我", "是否需要", "你是否", "我可以", "要不要我", "如果你需要", "你觉得", "或者需要", "希望我"]

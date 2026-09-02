@@ -75,13 +75,13 @@ BLACKLIST_URLS = [
 
 # 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
 WHITELIST_NAMES = [
-    "Re：从零开始的异世界生活第四季"
+    "Re：从零开始的异世界生活第四季", "后西游记 第一季", "一念永恒 完结季"
 ]
 
 # 渠道优先级：数字越小优先级越高，playlist 排序时靠前
 SITE_PRIORITY = {
-    "huxitech": 0,
-    "chnland":  1,
+    "shangxidq": 0,
+    "huxitech": 1,
     "6vdy":     2,
 }
 
@@ -89,11 +89,11 @@ SITE_PRIORITY = {
 #   group 为 "AUTO" 时，抓完详情后根据选集列表自动判定 电影/电视剧
 LIST_PAGES = [
     ("https://www.cifppc.com/vodshow/4--time---------2026.html",  "Anime", "动漫"),
-    # ("https://www.cifppc.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
-    # ("https://www.cifppc.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
-    # ("https://www.cifppc.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
-    # ("https://www.cifppc.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
-    # ("https://www.cifppc.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
+    ("https://www.cifppc.com/vodshow/3--time---------2026.html",  "Show",  "综艺"),
+    ("https://www.cifppc.com/vodshow/35--time---------.html",     "Movie", "电影(35)"),
+    ("https://www.cifppc.com/vodshow/2--time---------2026.html",  "Drama", "电视剧"),
+    ("https://www.cifppc.com/vodshow/1--time---------2026.html",  "Movie", "电影(1)"),
+    ("https://www.cifppc.com/vodshow/37--time---------2026.html", "AUTO",  "混合(37)"),
 ]
 
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "国产剧", "国产", "泰国", "日本"]
@@ -1095,15 +1095,44 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
             else:
                 insert_playlist_by_priority(playlist, new_pl)
 
-        if new_scraped_info and new_scraped_info != existing.get("info", ""):
-            old_info = existing.get("info", "")
-            old_ep = extract_episode_number(old_info)
-            new_ep = extract_episode_number(new_scraped_info)
-            if not old_info:
+        old_info = existing.get("info", "")
+        
+        # ===== 1. 电影分类(Movie)的 info 处理逻辑 =====
+        if matched_group == "Movie":
+            if not old_info and new_scraped_info:
                 existing["info"] = new_scraped_info
-                log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
-            elif old_ep is not None and new_ep is not None:
-                if new_ep > old_ep:
+                log(f"      [info更新] 补充电影info: 「{new_scraped_info}」")
+            elif new_scraped_info and new_scraped_info != old_info:
+                # 若已有info是低清/抢先版(如 TC/TS/枪版)，新info是高清(HD/BD/4K/蓝光)，允许更新
+                low_quality = ["TC", "TS", "枪版", "抢先"]
+                old_is_low = any(q in old_info.upper() for q in low_quality)
+                new_is_hd = any(q in new_scraped_info.upper() for q in ["HD", "BD", "4K", "1080P", "蓝光"])
+                if old_is_low and new_is_hd:
+                    existing["info"] = new_scraped_info
+                    log(f"      [info更新] 清晰度升级，「{old_info}」 -> 「{new_scraped_info}」")
+                else:
+                    log(f"      [info跳过] 电影分类已有优质info，保留原有：「{old_info}」(抓取:「{new_scraped_info}」)")
+        
+        # ===== 2. 电视剧/动漫/综艺的 info 处理逻辑 =====
+        else:
+            actual_max_ep = get_max_episode_number(new_episodes)
+            old_ep = extract_episode_number(old_info)
+
+            # 优先判断实际解析到的选集是否超过了已有 info
+            if actual_max_ep > (old_ep or 0):
+                new_ep = extract_episode_number(new_scraped_info)
+                if new_ep == actual_max_ep and new_scraped_info:
+                    existing["info"] = new_scraped_info
+                else:
+                    unit = "期" if "期" in old_info else "集"
+                    existing["info"] = f"更新至{actual_max_ep:02d}{unit}"
+                log(f"      [info更新] 选集增至 {actual_max_ep}，「{old_info}」 -> 「{existing['info']}」")
+            elif new_scraped_info and new_scraped_info != old_info:
+                new_ep = extract_episode_number(new_scraped_info)
+                if not old_info:
+                    existing["info"] = new_scraped_info
+                    log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
+                elif old_ep is not None and new_ep is not None and new_ep > old_ep:
                     existing["info"] = new_scraped_info
                     log(f"      [info更新] 「{old_info}」 -> 「{new_scraped_info}」")
                 else:

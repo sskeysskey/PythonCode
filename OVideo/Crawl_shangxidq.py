@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 shangxidq.com 分类页（电影/电视剧/综艺/动漫）爬取脚本
-基于 Crawl_huxitech.py 改写（两站同为 ewave 模板，DOM 结构一致）
+支持通过 CDP (Chrome DevTools Protocol) 绕过 Cloudflare 验证
 
 用法：
-    python Crawl_shangxidq.py              # 正常抓取
+    python Crawl_shangxidq.py open         # 1. 启动独立 Chrome 调试窗口，手动通过 Cloudflare 验证（不要关闭窗口）
+    python Crawl_shangxidq.py              # 2. 正常快速抓取（自动连接 Chrome 调试端口）
+    python Crawl_shangxidq.py cdp          # 2. (同上) 指定 CDP 模式抓取
     python Crawl_shangxidq.py backfill     # 只补全已有 shangxidq 记录的空字段
 """
 
@@ -15,6 +17,8 @@ import json
 import time
 import glob
 import shutil
+import urllib.request
+import urllib.error
 from curl_cffi import requests as cffi
 import browser_cookie3
 import platform
@@ -58,6 +62,8 @@ PLAYLIST_NAME = "shangxidq"
 SITE_KEY      = "shangxidq"
 REQUEST_TIMEOUT = 15
 SLEEP_BETWEEN  = 1.0
+CDP_PORT       = 9222
+CHROME_USER_DATA = os.path.expanduser("~/Library/Application Support/Google/Chrome_Dev_shangxidq")
 
 # ============ 数据安全相关配置 ============
 BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
@@ -114,7 +120,7 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/150.0.0.0 Safari/537.36"
+        "Chrome/133.0.0.0 Safari/537.36"
     ),
     "Referer": DOMAIN,
 }
@@ -172,23 +178,82 @@ def extract_episode_number(info_text):
     match = re.search(r'(\d+)', info_text)
     return int(match.group(1)) if match else None
 
-# ============== 基于 curl_cffi 的会话（伪装 Chrome 指纹）==============
+# ============== CDP 与 网络会话管理 ==============
 _session = cffi.Session(impersonate="chrome124")
 _chrome_cookies = None
+_cdp_connected = False
+_cdp_ws_url = None
+
+def open_chrome_for_auth():
+    """打开独立调试 Chrome 窗口供用户进行人机验证"""
+    chrome_paths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium"
+    ]
+    exec_path = next((p for p in chrome_paths if os.path.exists(p)), None)
+    if not exec_path:
+        print("❌ 未找到 Google Chrome 应用程序！")
+        return
+
+    os.makedirs(CHROME_USER_DATA, exist_ok=True)
+    cmd = [
+        exec_path,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={CHROME_USER_DATA}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        DOMAIN
+    ]
+    print(f">>> [Chrome] 正在打开独立窗口 (端口: {CDP_PORT})...")
+    print(f">>> [提示] 请在打开的浏览器中通过 Cloudflare 人机验证，验证后【请勿关闭该窗口】！")
+    subprocess.Popen(cmd)
+
+def check_and_init_cdp():
+    """检测 CDP 端口并同步真实 UA 及最新 Cookie"""
+    global _cdp_connected, _cdp_ws_url, HEADERS, _chrome_cookies
+    try:
+        req = urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=2)
+        v_data = json.loads(req.read().decode())
+        real_ua = v_data.get("User-Agent", "")
+        if real_ua:
+            HEADERS["User-Agent"] = real_ua
+            print(f">>> [CDP] 成功连接调试端口 9222，已同步真实 User-Agent: {real_ua[:60]}...")
+            _cdp_connected = True
+
+        req_list = urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/list", timeout=2)
+        tabs = json.loads(req_list.read().decode())
+        for tab in tabs:
+            if tab.get("type") == "page":
+                _cdp_ws_url = tab.get("webSocketDebuggerUrl")
+                break
+        return True
+    except Exception:
+        _cdp_connected = False
+        return False
 
 def _load_chrome_cookies():
-    """从本机 Chrome 读取 shangxidq 的 Cookie"""
+    """读取 shangxidq 的 Cookie"""
+    # 1. 尝试从独立 profile 目录或 Chrome 读取
     try:
         cj = browser_cookie3.chrome(domain_name=COOKIE_DOMAIN)
         cookies = {c.name: c.value for c in cj}
         if cookies:
             print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: {list(cookies.keys())}")
-        else:
-            print(f">>> [Cookie] 未读到 {COOKIE_DOMAIN} 的 cookie")
-        return cookies
+            return cookies
     except Exception as e:
-        print(f">>> [Cookie] 读取 Chrome cookie 失败: {e}")
-        return {}
+        pass
+
+    try:
+        cj = browser_cookie3.chrome(cookie_file=os.path.join(CHROME_USER_DATA, "Default/Cookies"), domain_name=COOKIE_DOMAIN)
+        cookies = {c.name: c.value for c in cj}
+        if cookies:
+            print(f">>> [Cookie] 已从独立调试 Profile 读取 {len(cookies)} 个 cookie: {list(cookies.keys())}")
+            return cookies
+    except Exception:
+        pass
+
+    return {}
 
 def fetch(url, is_binary=False, use_cookies=True):
     global _chrome_cookies
@@ -198,20 +263,32 @@ def fetch(url, is_binary=False, use_cookies=True):
             _chrome_cookies = _load_chrome_cookies()
         cookies = _chrome_cookies
 
-    resp = _session.get(
-        url,
-        headers=HEADERS,
-        cookies=cookies,
-        timeout=REQUEST_TIMEOUT,
-    )
-    if resp.status_code == 403:
-        print(f"    [403调试] {resp.text[:500]}")
-    resp.raise_for_status()
-    if is_binary:
-        return resp.content
-    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
-        resp.encoding = resp.apparent_encoding or "utf-8"
-    return resp.text
+    try:
+        resp = _session.get(
+            url,
+            headers=HEADERS,
+            cookies=cookies,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code == 403:
+            print(f"    [403调试] 遇到拦截，尝试更新 Cookie 并重试...")
+            _chrome_cookies = _load_chrome_cookies()
+            resp = _session.get(
+                url,
+                headers=HEADERS,
+                cookies=_chrome_cookies,
+                timeout=REQUEST_TIMEOUT,
+            )
+        resp.raise_for_status()
+        if is_binary:
+            return resp.content
+        if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
+            resp.encoding = resp.apparent_encoding or "utf-8"
+        return resp.text
+    except Exception as e:
+        if "403" in str(e) and not is_binary:
+            print(f"    [提示] 仍被 Cloudflare 拦截，请确认独立 Chrome 窗口已通过验证并未关闭。")
+        raise e
 
 def _re_class(base):
     return re.compile(r"^" + base.replace("_", "_+") + r"$")
@@ -532,7 +609,7 @@ def merge_missing_fields(existing, rec, log=print):
     existing.setdefault("评分", {"豆瓣": "", "IMDB": ""})
     return changed
 
-# ============== 列表页解析 ==============
+# ============== 列表页与详情页解析 ==============
 def get_list(list_url):
     html = fetch(list_url)
     soup = BeautifulSoup(html, "lxml")
@@ -812,7 +889,7 @@ def load_existing(path: str) -> dict:
                 continue
             try:
                 data = _read_json_strict(cand)
-            except Exception as e:
+            except Exception:
                 continue
             n = count_items(data)
             _BASELINE_TOTAL = n
@@ -1372,14 +1449,21 @@ def backfill_existing(data):
 
 # ============== 主流程 ==============
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("open", "--open"):
+        open_chrome_for_auth()
+        return
+
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
+    
+    # 尝试连接 Chrome 调试端口
+    check_and_init_cdp()
+
     print("=" * 60)
     print("📦 数据安全检查")
     print("=" * 60)
     data = load_existing(JSON_PATH)
     snapshot_backup(JSON_PATH)
-    before_total = count_items(data)
     if os.path.exists(JSON_PATH + ".tmp"):
         print(f">>> [提示] 发现残留临时文件 {JSON_PATH}.tmp，可自行检查后删除")
 
