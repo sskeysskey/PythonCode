@@ -18,7 +18,6 @@ import time
 import glob
 import shutil
 import urllib.request
-import urllib.error
 from curl_cffi import requests as cffi
 import browser_cookie3
 import platform
