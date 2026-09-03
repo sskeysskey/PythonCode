@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
 """
 shangxidq.com 分类页（电影/电视剧/综艺/动漫）爬取脚本
-支持通过 CDP (Chrome DevTools Protocol) 绕过 Cloudflare 验证
+—— Cloudflare Turnstile 版：推荐「手动过一次验证 + CDP 附着 + curl_cffi 高速通道」
 
-用法：
-    python Crawl_shangxidq.py open         # 1. 启动独立 Chrome 调试窗口，手动通过 Cloudflare 验证（不要关闭窗口）
-    python Crawl_shangxidq.py              # 2. 正常快速抓取（自动连接 Chrome 调试端口）
-    python Crawl_shangxidq.py cdp          # 2. (同上) 指定 CDP 模式抓取
-    python Crawl_shangxidq.py backfill     # 只补全已有 shangxidq 记录的空字段
+【推荐用法（方案 2）】
+    1) 彻底退出 Chrome：osascript -e 'quit app "Google Chrome"'
+    2) python Crawl_shangxidq.py open        # 用脚本 profile 启动带调试端口的 Chrome
+    3) 在弹出的窗口里手动勾选过 Cloudflare 验证（一次就过）
+    4) 窗口别关，另开终端： python Crawl_shangxidq.py cdp fast
+
+其它用法：
+    python Crawl_shangxidq.py                 # 正常抓取（自动弹出真实 Chrome 窗口）
+    python Crawl_shangxidq.py backfill        # 补全模式
+    python Crawl_shangxidq.py cdp             # 附着到你手动启动的 Chrome
+    python Crawl_shangxidq.py headless        # 无头模式（不推荐，容易被 CF 拦）
+    python Crawl_shangxidq.py fast            # 开启 curl_cffi 加速通道（失败会自动降级）
+参数可组合，例如：python Crawl_shangxidq.py cdp fast backfill
 """
 
 import os
@@ -17,15 +25,49 @@ import json
 import time
 import glob
 import shutil
-import urllib.request
-from curl_cffi import requests as cffi
-import browser_cookie3
+import socket
 import platform
 import subprocess
 import atexit
 from urllib.parse import urljoin
+from urllib.request import urlopen
 from bs4 import BeautifulSoup, NavigableString, Tag
 from datetime import datetime
+
+from curl_cffi import requests as cffi   # 仅在 FAST 模式下使用
+
+# ================= 日志双写控制器 =================
+class DualLogger:
+    """同时将输出写入终端和磁盘日志文件"""
+    def __init__(self, log_filepath):
+        self.terminal = sys.stdout
+        self.log_file = open(log_filepath, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def isatty(self):
+        return getattr(self.terminal, "isatty", lambda: False)()
+
+
+def setup_logging():
+    """初始化日志文件"""
+    log_dir = os.path.join(os.path.dirname(JSON_PATH), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"crawl_{SITE_KEY}_{ts}.log")
+    
+    logger = DualLogger(log_file)
+    sys.stdout = logger
+    sys.stderr = logger
+    print(f">>> [日志] 本次抓取日志将同步记录至: {log_file}")
 
 # ================= 防止系统休眠控制 =================
 _caffeinate_proc = None
@@ -52,17 +94,14 @@ def stop_caffeinate():
 
 atexit.register(stop_caffeinate)
 
-# ============== 配置 ==============
+# ============== 站点及业务配置 ==============
 DOMAIN        = "https://shangxidq.com"
-COOKIE_DOMAIN = "shangxidq.com"
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "shangxidq"
 SITE_KEY      = "shangxidq"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN  = 1.0
-CDP_PORT       = 9222
-CHROME_USER_DATA = os.path.expanduser("~/Library/Application Support/Google/Chrome_Dev_shangxidq")
 
 # ============ 数据安全相关配置 ============
 BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
@@ -76,12 +115,59 @@ ALLOW_FRESH_START = False        # 只有确实想从零开始建库时才改 Tr
 _BASELINE_TOTAL = 0              # 启动时加载到的条目总数（缩水保护基线）
 _LOAD_OK = False                 # 是否成功加载了初始数据（未成功则禁止任何写盘）
 
+# 网络重试
+MAX_RETRIES   = 3
+RETRY_BACKOFF = 5.0
+
+# ============== 浏览器 / Cloudflare 相关配置 ==============
+USER_DATA_DIR   = os.path.expanduser("~/.shangxidq_chrome_profile")
+BROWSER_CHANNEL = "chrome"
+HEADLESS        = False
+CDP_PORT        = 9222
+CDP_ENDPOINT    = f"http://127.0.0.1:{CDP_PORT}"
+USE_CDP         = False
+FAST_MODE       = False
+NAV_TIMEOUT_MS  = 60000
+
+# —— curl_cffi 指纹自动降级 ——
+FAST_IMPERSONATE_CANDIDATES = ["chrome131", "chrome124", "chrome120", "chrome116", "chrome"]
+FAST_RESYNC_INTERVAL = 300      # 每 300 秒从浏览器重新同步一次 cookie
+FAST_MAX_RESYNC_FAIL = 3        # 连续 N 次同步后仍 403，则本次运行不再用 FAST
+
+# —— 人机验证等待策略 ——
+CHALLENGE_WAIT        = 600    # 整体最长等待（秒）
+CHALLENGE_GRACE       = 10     # 一旦检测到验证页，至少保留 10 秒给你点击
+PASS_STABLE_HITS      = 3      # 连续 N 次都判定为"站点正常页"才算真的过了
+POLL_INTERVAL         = 1.5    # 轮询间隔（秒）
+SITE_READY_TIMEOUT    = 8      # 非挑战页时，最多等 8 秒等站点结构渲染出来
+PAGE_SETTLE           = 1.0    # goto 之后静置秒数
+
+AUTO_CLICK_TURNSTILE   = True
+AUTO_CLICK_FIRST_DELAY = 8
+AUTO_CLICK_EVERY       = 15
+
+# 判定「这是 Cloudflare 挑战页」的特征串
+CHALLENGE_MARKERS = (
+    "Just a moment",
+    "challenges.cloudflare.com/turnstile",
+    "__cf_chl",
+    "cf_chl_opt",
+    "cf-challenge",
+    "challenge-platform",
+    "Checking your browser",
+    "Verifying you are human",
+    "Enable JavaScript and cookies to continue",
+    "需要先验证您是真人",
+    "正在验证您是否是真人",
+)
+# 针对 shangxidq 的 ewave 模板特征
+SITE_MARKERS = ("ewave-", "stui-", "vodshow", "vodplay", "ewave-vodlist")
+
 BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记",
-    "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊",
+    "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1"
 ]
 BLACKLIST_URLS = []
-
 WHITELIST_NAMES = []
 
 SITE_PRIORITY = {
@@ -115,16 +201,19 @@ EMPTY_VALUES = {"未知", "内详", "暂无", "/"}
 INVALID_EPISODE_NAMES = {"立即播放", "收藏"}
 MAX_EPISODES = 30
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/133.0.0.0 Safari/537.36"
-    ),
-    "Referer": DOMAIN,
-}
 
-# ============== 工具函数 ==============
+# ============== 网络异常类型 ==============
+class FetchError(Exception):
+    pass
+
+class NoRetryFetchError(FetchError):
+    """客户端错误（404 等），重试无意义"""
+    pass
+
+
+# ==========================================================
+#              CDP：启动 / 探测 Chrome
+# ==========================================================
 def count_items(data: dict) -> int:
     if not isinstance(data, dict):
         return 0
@@ -170,124 +259,544 @@ def snapshot_backup(path: str):
     except Exception as e:
         print(f">>> [备份] 创建启动快照失败: {e}")
 
+def cdp_alive(port=CDP_PORT, timeout=1.0):
+    """探测调试端口是否可用"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            pass
+    except Exception:
+        return False
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+            json.loads(r.read().decode("utf-8", "ignore"))
+        return True
+    except Exception:
+        return False
+
+def cdp_launch_command():
+    return (
+        'open -na "Google Chrome" --args \\\n'
+        f'  --user-data-dir="{USER_DATA_DIR}" \\\n'
+        f'  --remote-debugging-port={CDP_PORT} \\\n'
+        f'  {DOMAIN}/'
+    )
+
+def launch_chrome_for_cdp(open_url=True):
+    """用脚本 profile 启动带调试端口的独立 Chrome 实例"""
+    os.makedirs(USER_DATA_DIR, exist_ok=True)
+
+    if cdp_alive():
+        print(f">>> [CDP] 端口 {CDP_PORT} 已在监听，无需重复启动。")
+        print(f">>> [CDP] 请在该 Chrome 窗口打开 {DOMAIN}/ 手动过一次验证。")
+        return True
+
+    print(">>> [CDP] 正在启动 Chrome（若已有 Chrome 在运行，请先 ⌘Q 完全退出！）")
+    args = [
+        f"--user-data-dir={USER_DATA_DIR}",
+        f"--remote-debugging-port={CDP_PORT}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if open_url:
+        args.append(DOMAIN + "/")
+
+    try:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", "-na", "Google Chrome", "--args"] + args)
+        else:
+            subprocess.Popen(["google-chrome"] + args)
+    except Exception as e:
+        print(f"!!! 启动失败：{e}\n请手动执行：\n{cdp_launch_command()}")
+        return False
+
+    for _ in range(30):
+        time.sleep(1)
+        if cdp_alive():
+            print(f">>> [CDP] Chrome 已就绪（端口 {CDP_PORT}）")
+            print(">>> 请在窗口里手动勾选过 Cloudflare 验证，然后另开终端执行：")
+            print("        python Crawl_shangxidq.py cdp fast")
+            return True
+
+    print("!!! 等待调试端口超时。可能是已有 Chrome 实例占用了 profile。")
+    print("    请先执行：osascript -e 'quit app \"Google Chrome\"'  再重试。")
+    print("    或手动执行：\n" + cdp_launch_command())
+    return False
+
+
+# ==========================================================
+#                     真实浏览器抓取层
+# ==========================================================
+_STATE_JS = """
+() => {
+  const q = s => !!document.querySelector(s);
+  const hasSite = q('ul.ewave-vodlist') || q('[class*="ewave-content_detail"]') ||
+                  q('[class*="ewave-content__detail"]') || q('[class*="ewave-pannel_bd"]') ||
+                  q('[class*="ewave-pannel__bd"]') || q('[class*="ewave-header"]') ||
+                  q('ul.stui-vodlist') || q('[class*="stui-"]') ||
+                  q('a[href*="/vodplay/"]') || q('a[href*="/voddetail/"]') ||
+                  q('a[href*="/vodshow/"]');
+  const cfFrame = Array.from(document.querySelectorAll('iframe'))
+                       .some(f => (f.src || '').includes('challenges.cloudflare.com'));
+  const hasChl  = cfFrame || q('#challenge-form') || q('#challenge-running') ||
+                  q('#cf-challenge-running') || q('.cf-turnstile') ||
+                  q('#turnstile-wrapper') || q('#challenge-stage');
+  const title   = document.title || '';
+  const titleChl = /just a moment|attention required|checking your browser|verify|请稍候|稍等|安全检查/i.test(title);
+  const len = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+  return { hasSite, hasChl, titleChl, len, title };
+}
+"""
+
+def _looks_like_challenge(html: str) -> bool:
+    if not html or len(html) < 200:
+        return True
+    head = html[:8000]
+    hit_challenge = any(m in head for m in CHALLENGE_MARKERS)
+    if not hit_challenge:
+        return False
+    if any(m in html for m in SITE_MARKERS):
+        return False
+    return True
+
+
+class BrowserFetcher:
+    """用真实 Chrome 抓取；遇到 Cloudflare 挑战时暂停等待人工处理"""
+
+    def __init__(self):
+        self._pw = None
+        self._ctx = None
+        self._page = None
+        self._browser = None
+        self.ua = ""
+        self._fast = None
+        self._fast_ok = False
+        self._fast_disabled = False
+        self._fast_sync_at = 0.0
+        self._fast_resync_fail = 0
+        self._impersonate = None
+
+    def start(self):
+        if self._ctx is not None:
+            return
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("!!! 未安装 playwright，请先执行：pip install playwright")
+            raise
+
+        self._pw = sync_playwright().start()
+
+        if USE_CDP:
+            if not cdp_alive():
+                print(f"\n!!! 没有检测到可用的 Chrome 调试端口 {CDP_ENDPOINT}\n")
+                print("请先执行：")
+                print("    osascript -e 'quit app \"Google Chrome\"'")
+                print("    python Crawl_shangxidq.py open")
+                print("或手动执行：")
+                print(cdp_launch_command())
+                raise FetchError("CDP 端口不可用")
+
+            print(f">>> [浏览器] 正在附着到已运行的 Chrome：{CDP_ENDPOINT}")
+            self._browser = self._pw.chromium.connect_over_cdp(CDP_ENDPOINT)
+            self._ctx = (self._browser.contexts[0]
+                         if self._browser.contexts else self._browser.new_context())
+        else:
+            os.makedirs(USER_DATA_DIR, exist_ok=True)
+            print(f">>> [浏览器] 启动真实 Chrome（profile: {USER_DATA_DIR}）")
+            launch_kwargs = dict(
+                user_data_dir=USER_DATA_DIR,
+                headless=HEADLESS,
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1360, "height": 900},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--start-maximized",
+                ],
+                ignore_default_args=["--enable-automation"],
+            )
+            if BROWSER_CHANNEL:
+                launch_kwargs["channel"] = BROWSER_CHANNEL
+            try:
+                self._ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+            except Exception as e:
+                print(f">>> [浏览器] 用系统 Chrome 启动失败({e})，改用 Playwright 自带 Chromium")
+                launch_kwargs.pop("channel", None)
+                self._ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+
+        self._ctx.set_default_timeout(NAV_TIMEOUT_MS)
+        self._ctx.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+
+        if not USE_CDP:
+            try:
+                self._ctx.add_init_script(
+                    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                )
+            except Exception:
+                pass
+
+        self._page = self._pick_page()
+
+        try:
+            self.ua = self._page.evaluate("() => navigator.userAgent") or ""
+        except Exception:
+            self.ua = ""
+
+        self._report_clearance()
+
+        print(">>> [浏览器] 预热首页，检查 Cloudflare 状态 ...")
+        try:
+            self.get_html(DOMAIN + "/", warmup=True)
+            print(">>> [浏览器] 已可正常访问站点 ✅")
+        except Exception as e:
+            print(f">>> [浏览器] 预热异常（不致命，继续）：{e}")
+
+        if FAST_MODE:
+            self._sync_fast_session()
+
+    def _pick_page(self):
+        pages = [p for p in self._ctx.pages if not p.is_closed()]
+        for p in pages:
+            try:
+                if SITE_KEY in (p.url or ""):
+                    return p
+            except Exception:
+                continue
+        if pages:
+            return pages[0]
+        return self._ctx.new_page()
+
+    def _report_clearance(self):
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
+        if "cf_clearance" in cookies:
+            print(">>> [Cloudflare] 已检测到 cf_clearance cookie ✅（本次应无需再验证）")
+        else:
+            print(">>> [Cloudflare] 未检测到 cf_clearance cookie ⚠️")
+            if USE_CDP:
+                print(f"    建议：先在这个 Chrome 窗口打开 {DOMAIN}/ 手动过一次验证。")
+
+    def close(self):
+        try:
+            if self._ctx and not USE_CDP:
+                self._ctx.close()
+        except Exception:
+            pass
+        try:
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        self._ctx = self._pw = self._page = self._browser = None
+
+    def _page_state(self):
+        try:
+            info = self._page.evaluate(_STATE_JS)
+        except Exception:
+            return "unknown", ""
+        try:
+            html = self._page.content()
+        except Exception:
+            html = ""
+        try:
+            cf_frame = any("challenges.cloudflare.com" in (f.url or "")
+                           for f in self._page.frames)
+        except Exception:
+            cf_frame = False
+
+        if info.get("hasSite"):
+            return "site", html
+        if info.get("hasChl") or info.get("titleChl") or cf_frame:
+            return "challenge", html
+        if info.get("len", 0) < 50:
+            return "unknown", html
+        return "unknown", html
+
+    def _notify_challenge(self, url):
+        print("\a", end="", flush=True)
+        print("\n" + "=" * 72)
+        print("  ⚠️  检测到 Cloudflare 人机验证页面，脚本已暂停")
+        print("  👉  请切到 Chrome 窗口，勾选 “确认您是真人 / Verify you are human”")
+        print(f"  ⏳  脚本至少会等你 {CHALLENGE_GRACE} 秒，最长等待 {CHALLENGE_WAIT} 秒。")
+        print(f"      URL: {url}")
+        if not USE_CDP:
+            print("-" * 72)
+            print("  💡 如果反复转圈永远过不了，强烈建议改用【手动过验证 + CDP 附着】：")
+            print("       1) osascript -e 'quit app \"Google Chrome\"'")
+            print("       2) python Crawl_shangxidq.py open")
+            print("       3) 在窗口里手动过验证（一次就过）")
+            print("       4) python Crawl_shangxidq.py cdp fast")
+        print("=" * 72 + "\n")
+        try:
+            self._page.bring_to_front()
+        except Exception:
+            pass
+        if platform.system() == "Darwin":
+            try:
+                subprocess.run(
+                    ["osascript", "-e", 'tell application "Google Chrome" to activate'],
+                    check=False, capture_output=True)
+            except Exception:
+                pass
+
+    def _try_click_turnstile(self) -> bool:
+        try:
+            for fr in self._page.frames:
+                if "challenges.cloudflare.com" not in (fr.url or ""):
+                    continue
+                for sel in ("input[type=checkbox]",
+                            "#challenge-stage input[type=checkbox]",
+                            "label.ctp-checkbox-label",
+                            "#cf-stage input"):
+                    try:
+                        loc = fr.locator(sel)
+                        if loc.count() > 0 and loc.first.is_visible():
+                            loc.first.click(timeout=2000)
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return False
+
+    def _wait_until_ready(self, url, _depth=0):
+        soft_deadline = time.time() + SITE_READY_TIMEOUT
+        hard_deadline = time.time() + CHALLENGE_WAIT
+        challenge_seen = False
+        grace_until = 0.0
+        next_click_at = 0.0
+        last_tip = 0.0
+        stable = 0
+        html = ""
+
+        while True:
+            state, html = self._page_state()
+
+            if state == "site" and not (challenge_seen and time.time() < grace_until):
+                stable += 1
+                need = PASS_STABLE_HITS if challenge_seen else 1
+                if stable >= need:
+                    if challenge_seen:
+                        print("    ✅ 人机验证已通过，继续抓取\n")
+                        time.sleep(1.0)
+                        cur = (self._page.url or "").split("#")[0].rstrip("/")
+                        tgt = url.split("#")[0].rstrip("/")
+                        if _depth == 0 and cur != tgt:
+                            self._page.goto(url, wait_until="domcontentloaded",
+                                            timeout=NAV_TIMEOUT_MS)
+                            time.sleep(PAGE_SETTLE)
+                            return self._wait_until_ready(url, _depth=1)
+                        try:
+                            html = self._page.content()
+                        except Exception:
+                            pass
+                        if FAST_MODE:
+                            self._sync_fast_session()
+                    return html
+            else:
+                stable = 0
+
+            if state == "challenge":
+                if not challenge_seen:
+                    challenge_seen = True
+                    self._notify_challenge(url)
+                    grace_until   = time.time() + CHALLENGE_GRACE
+                    next_click_at = time.time() + AUTO_CLICK_FIRST_DELAY
+                    last_tip = time.time()
+                if AUTO_CLICK_TURNSTILE and time.time() >= next_click_at:
+                    if self._try_click_turnstile():
+                        print("    [自动] 已尝试点击 Turnstile 复选框")
+                    next_click_at = time.time() + AUTO_CLICK_EVERY
+
+            if challenge_seen:
+                if time.time() - last_tip > 20:
+                    print(f"    ... 仍在等待人机验证（剩余 {int(hard_deadline - time.time())}s）")
+                    last_tip = time.time()
+                if time.time() > hard_deadline:
+                    raise FetchError(f"等待 Cloudflare 人机验证超时: {url}")
+            else:
+                if time.time() > soft_deadline:
+                    return html
+
+            time.sleep(POLL_INTERVAL)
+
+    def get_html(self, url, warmup=False):
+        self.start()
+
+        fast = self._fast_get(url)
+        if fast is not None:
+            return fast
+
+        resp = self._page.goto(url, wait_until="domcontentloaded",
+                               timeout=NAV_TIMEOUT_MS)
+        status = resp.status if resp else 0
+        if status == 404:
+            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+
+        time.sleep(PAGE_SETTLE)
+        html = self._wait_until_ready(url)
+
+        if status >= 500 or status == 429:
+            state, _ = self._page_state()
+            if state != "site":
+                raise FetchError(f"HTTP {status}: {url}")
+
+        return html
+
+    def _make_fast_session(self):
+        last_err = None
+        candidates = ([self._impersonate] if self._impersonate else []) \
+                     + FAST_IMPERSONATE_CANDIDATES
+        for imp in candidates:
+            if not imp:
+                continue
+            try:
+                s = cffi.Session(impersonate=imp)
+                if self._impersonate != imp:
+                    print(f">>> [FAST] 使用 TLS 指纹: {imp}")
+                self._impersonate = imp
+                return s
+            except Exception as e:
+                last_err = e
+                continue
+        print(f">>> [FAST] 无法创建 curl_cffi Session：{last_err}")
+        return None
+
+    def _sync_fast_session(self, verbose=True):
+        if self._fast_disabled or not FAST_MODE:
+            return
+        try:
+            cookies = {c["name"]: c["value"] for c in self._ctx.cookies(DOMAIN)}
+        except Exception:
+            cookies = {}
+        if not cookies:
+            self._fast_ok = False
+            if verbose:
+                print(">>> [FAST] 浏览器暂无 cookie，继续使用浏览器通道")
+            return
+
+        s = self._make_fast_session()
+        if s is None:
+            self._fast_ok = False
+            self._fast_disabled = True
+            return
+
+        s.headers.update({
+            "User-Agent": self.ua or s.headers.get("User-Agent", ""),
+            "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                       "image/avif,image/webp,*/*;q=0.8"),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": DOMAIN + "/",
+            "Upgrade-Insecure-Requests": "1",
+        })
+        self._fast = (s, cookies)
+        self._fast_ok = True
+        self._fast_sync_at = time.time()
+        if verbose:
+            has_clr = "cf_clearance" in cookies
+            print(f">>> [FAST] 已同步 {len(cookies)} 个 cookie 到快速通道 "
+                  f"(cf_clearance: {'有 ✅' if has_clr else '无 ⚠️'})")
+
+    def _fast_get(self, url, is_binary=False):
+        if not FAST_MODE or self._fast_disabled:
+            return None
+
+        if self._fast_ok and (time.time() - self._fast_sync_at > FAST_RESYNC_INTERVAL):
+            self._sync_fast_session(verbose=False)
+
+        if not (self._fast_ok and self._fast):
+            return None
+
+        s, cookies = self._fast
+        try:
+            r = s.get(url, cookies=cookies, timeout=REQUEST_TIMEOUT,
+                      allow_redirects=True)
+            if r.status_code in (403, 503):
+                print(f"    [FAST] HTTP {r.status_code}，重新同步 cookie 后本次降级浏览器通道")
+                self._fast_ok = False
+                self._sync_fast_session(verbose=False)
+                if self._fast_ok:
+                    self._fast_resync_fail += 1
+                    if self._fast_resync_fail >= FAST_MAX_RESYNC_FAIL:
+                        print("    [FAST] 连续多次被拦，本次运行关闭 FAST 通道")
+                        self._fast_ok = False
+                        self._fast_disabled = True
+                return None
+            if r.status_code == 404:
+                raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+            if r.status_code >= 400:
+                return None
+
+            if is_binary:
+                self._fast_resync_fail = 0
+                return r.content
+
+            if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                r.encoding = r.apparent_encoding or "utf-8"
+            if _looks_like_challenge(r.text):
+                print("    [FAST] 命中挑战页，重新同步 cookie 后本次降级浏览器通道")
+                self._fast_ok = False
+                self._sync_fast_session(verbose=False)
+                return None
+
+            self._fast_resync_fail = 0
+            return r.text
+        except NoRetryFetchError:
+            raise
+        except Exception as e:
+            print(f"    [FAST] 请求异常({e})，本次降级浏览器通道")
+            self._fast_ok = False
+            self._sync_fast_session(verbose=False)
+            return None
+
+    def get_bytes(self, url):
+        self.start()
+        fast = self._fast_get(url, is_binary=True)
+        if fast is not None:
+            return fast
+        r = self._ctx.request.get(url, timeout=REQUEST_TIMEOUT * 1000)
+        if r.status == 404:
+            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
+        if r.status >= 400:
+            raise FetchError(f"HTTP {r.status}: {url}")
+        return r.body()
+
+
+_fetcher = BrowserFetcher()
+atexit.register(_fetcher.close)
+
+
+def fetch(url, is_binary=False):
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            if is_binary:
+                return _fetcher.get_bytes(url)
+            return _fetcher.get_html(url)
+        except NoRetryFetchError:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF * attempt
+                if "验证" in str(e) or "Cloudflare" in str(e):
+                    wait = max(wait, 15)
+                print(f"    [重试 {attempt}/{MAX_RETRIES}] 请求失败: {e}，{wait:.1f}s 后重试")
+                time.sleep(wait)
+    raise last_err if last_err else FetchError(f"请求失败: {url}")
+
+
+# ============== 工具函数 ==============
 def extract_episode_number(info_text):
     """从 info 中提取纯数字集数"""
     if not info_text:
         return None
     match = re.search(r'(\d+)', info_text)
     return int(match.group(1)) if match else None
-
-# ============== CDP 与 网络会话管理 ==============
-_session = cffi.Session(impersonate="chrome124")
-_chrome_cookies = None
-_cdp_connected = False
-_cdp_ws_url = None
-
-def open_chrome_for_auth():
-    """打开独立调试 Chrome 窗口供用户进行人机验证"""
-    chrome_paths = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium"
-    ]
-    exec_path = next((p for p in chrome_paths if os.path.exists(p)), None)
-    if not exec_path:
-        print("❌ 未找到 Google Chrome 应用程序！")
-        return
-
-    os.makedirs(CHROME_USER_DATA, exist_ok=True)
-    cmd = [
-        exec_path,
-        f"--remote-debugging-port={CDP_PORT}",
-        f"--user-data-dir={CHROME_USER_DATA}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        DOMAIN
-    ]
-    print(f">>> [Chrome] 正在打开独立窗口 (端口: {CDP_PORT})...")
-    print(f">>> [提示] 请在打开的浏览器中通过 Cloudflare 人机验证，验证后【请勿关闭该窗口】！")
-    subprocess.Popen(cmd)
-
-def check_and_init_cdp():
-    """检测 CDP 端口并同步真实 UA 及最新 Cookie"""
-    global _cdp_connected, _cdp_ws_url, HEADERS, _chrome_cookies
-    try:
-        req = urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=2)
-        v_data = json.loads(req.read().decode())
-        real_ua = v_data.get("User-Agent", "")
-        if real_ua:
-            HEADERS["User-Agent"] = real_ua
-            print(f">>> [CDP] 成功连接调试端口 9222，已同步真实 User-Agent: {real_ua[:60]}...")
-            _cdp_connected = True
-
-        req_list = urllib.request.urlopen(f"http://127.0.0.1:{CDP_PORT}/json/list", timeout=2)
-        tabs = json.loads(req_list.read().decode())
-        for tab in tabs:
-            if tab.get("type") == "page":
-                _cdp_ws_url = tab.get("webSocketDebuggerUrl")
-                break
-        return True
-    except Exception:
-        _cdp_connected = False
-        return False
-
-def _load_chrome_cookies():
-    """读取 shangxidq 的 Cookie"""
-    # 1. 尝试从独立 profile 目录或 Chrome 读取
-    try:
-        cj = browser_cookie3.chrome(domain_name=COOKIE_DOMAIN)
-        cookies = {c.name: c.value for c in cj}
-        if cookies:
-            print(f">>> [Cookie] 已从 Chrome 读取 {len(cookies)} 个 cookie: {list(cookies.keys())}")
-            return cookies
-    except Exception as e:
-        pass
-
-    try:
-        cj = browser_cookie3.chrome(cookie_file=os.path.join(CHROME_USER_DATA, "Default/Cookies"), domain_name=COOKIE_DOMAIN)
-        cookies = {c.name: c.value for c in cj}
-        if cookies:
-            print(f">>> [Cookie] 已从独立调试 Profile 读取 {len(cookies)} 个 cookie: {list(cookies.keys())}")
-            return cookies
-    except Exception:
-        pass
-
-    return {}
-
-def fetch(url, is_binary=False, use_cookies=True):
-    global _chrome_cookies
-    cookies = None
-    if use_cookies:
-        if _chrome_cookies is None:
-            _chrome_cookies = _load_chrome_cookies()
-        cookies = _chrome_cookies
-
-    try:
-        resp = _session.get(
-            url,
-            headers=HEADERS,
-            cookies=cookies,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code == 403:
-            print(f"    [403调试] 遇到拦截，尝试更新 Cookie 并重试...")
-            _chrome_cookies = _load_chrome_cookies()
-            resp = _session.get(
-                url,
-                headers=HEADERS,
-                cookies=_chrome_cookies,
-                timeout=REQUEST_TIMEOUT,
-            )
-        resp.raise_for_status()
-        if is_binary:
-            return resp.content
-        if not resp.encoding or resp.encoding.lower() in ("iso-8859-1",):
-            resp.encoding = resp.apparent_encoding or "utf-8"
-        return resp.text
-    except Exception as e:
-        if "403" in str(e) and not is_binary:
-            print(f"    [提示] 仍被 Cloudflare 拦截，请确认独立 Chrome 窗口已通过验证并未关闭。")
-        raise e
 
 def _re_class(base):
     return re.compile(r"^" + base.replace("_", "_+") + r"$")
@@ -405,24 +914,14 @@ def download_and_localize_image(img_url):
         return ""
     local_path = os.path.join(IMG_DIR, fn)
     if not os.path.exists(local_path):
-        content = None
-        last_err = ""
-        for use_cookies in (False, True):
-            try:
-                content = fetch(img_url, is_binary=True, use_cookies=use_cookies)
-                break
-            except Exception as e:
-                last_err = e
-        if content is None:
-            print(f"  [图片下载失败] {img_url}: {last_err}")
-            return ""
         try:
+            content = fetch(img_url, is_binary=True)
             os.makedirs(IMG_DIR, exist_ok=True)
             with open(local_path, "wb") as f:
                 f.write(content)
             print(f"  [图片] 已下载 -> {fn}")
         except Exception as e:
-            print(f"  [图片写入失败] {fn}: {e}")
+            print(f"  [图片下载失败] {img_url}: {e}")
             return ""
     return fn
 
@@ -433,12 +932,6 @@ def extract_info_date(info):
     return m.group(1) if m else None
 
 def get_max_episode_number(episodes):
-    """
-    从选集字典的集名中提取最大有效集编号：
-    1. 优先解析 SxxExx 格式（如 S05E08），自动提取最大季的对应最大集
-    2. 解析 第X季第Y集 格式
-    3. 解析常规单集数字
-    """
     if not episodes:
         return 0
 
@@ -475,7 +968,6 @@ def get_max_episode_number(episodes):
         if m:
             max_num = max(max_num, int(m.group(1)))
             
-    # 【修改】：删除了 if max_num == 0: max_num = len(episodes)
     return max_num
 
 def _url_keys_sorted(existing):
@@ -653,7 +1145,6 @@ def get_list(list_url):
         items.append((name, info, urljoin(DOMAIN, href), img))
     return items
 
-# ============== 详情页解析 ==============
 def _clean_val(v):
     v = normalize_text(v)
     if v in EMPTY_VALUES or is_garbled(v):
@@ -991,7 +1482,7 @@ def find_existing_global(data, name, sub_url, log=print):
     base_name = clean_season_one(norm_name)
     norm_sub_url = normalize_url(sub_url)
 
-    # 1. 优先通过 URL 匹配（规范化后比对）
+    # 1. 优先通过 URL 匹配
     if norm_sub_url:
         for group in ["Movie", "Drama", "Show", "Anime"]:
             for item in data.get(group, []):
@@ -1004,18 +1495,16 @@ def find_existing_global(data, name, sub_url, log=print):
                                 log(f"      [URL匹配去重] 发现 URL 一致 (URL: {sub_url}, 已有:「{existing_name}」, 抓取:「{name}」)")
                             return group, item
 
-    # 2. 其次通过名称匹配（忽略空格）
+    # 2. 其次通过名称匹配
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             existing_raw_name = item.get("name", "")
             existing_norm_name = normalize_name(existing_raw_name)
             
-            # 2.1 完全相等
             if existing_norm_name == norm_name:
                 log(f"      [名称去重（忽略空格）] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
                 return group, item
             
-            # 2.2 兼容“柯蒂斯总统”与“柯蒂斯总统 第一季 / 柯蒂斯总统第1季”
             existing_base_name = clean_season_one(existing_norm_name)
             if base_name and existing_base_name and base_name == existing_base_name:
                 log(f"      [季数兼容去重] 匹配成功：已有「{existing_raw_name}」 ↔ 抓取「{name}」")
@@ -1050,7 +1539,6 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
     playlist = existing.setdefault("playlist", [])
     site_max = get_max_episode_number(new_episodes)
     
-    # 统计其他渠道最大集数
     other_max = 0
     for pl in playlist:
         if pl.get("name") == PLAYLIST_NAME:
@@ -1058,7 +1546,6 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
         other_max = max(other_max, get_max_episode_number(pl.get("episodes", {})))
 
     info_updated = False
-    # 【修改】：增加 matched_group 判断，排除 Movie
     if matched_group in ("Drama", "Anime", "Show") and site_max > other_max and site_max > 0:
         candidate_info = f"更新至第{site_max}集"
         if existing.get("info") != candidate_info:
@@ -1250,7 +1737,6 @@ def process_list_page(data, list_url, group, page_name):
                         url_key = _ensure_site_url(existing, url, force_new=(site_index is None))
                         action = "in_place"
 
-                    # 核心判断：新抓取集数严格大于其他所有渠道集数时，刷新 info
                     info_changed = False
                     if new_max > global_max and new_max > 0:
                         candidate_info = f"更新至第{new_max}集"
@@ -1345,7 +1831,6 @@ def process_list_page(data, list_url, group, page_name):
                         new_url_key = append_site_channel(existing, new_eps, url)
                         merge_missing_fields(existing, rec, buf.append)
                         
-                        # 【修改】：仅限 Drama / Anime / Show 剧集类更新 info
                         if matched_group in ("Drama", "Anime", "Show") and new_max > other_channels_max_eps and new_max > 0:
                             existing["info"] = f"更新至第{new_max}集"
 
@@ -1366,7 +1851,6 @@ def process_list_page(data, list_url, group, page_name):
                 flush()
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 
-                # 新增时若是剧集且有集数，格式化 info
                 ep_cnt = get_max_episode_number(new_eps)
                 if current_group in ("Drama", "Anime") and ep_cnt > 0:
                     rec["info"] = f"更新至第{ep_cnt}集"
@@ -1446,17 +1930,37 @@ def backfill_existing(data):
             time.sleep(SLEEP_BETWEEN)
     print(f"\n[补全模式] 完成：扫描 {total} 条候选，成功更新 {updated} 条。")
 
+# ============== 命令行解析 ==============
+def parse_cli():
+    global USE_CDP, HEADLESS, FAST_MODE, AUTO_CLICK_TURNSTILE
+    args = [a.lower().lstrip("-") for a in sys.argv[1:]]
+
+    if "open" in args or "launch" in args:
+        launch_chrome_for_cdp()
+        sys.exit(0)
+
+    if "cdp" in args:
+        USE_CDP = True
+        AUTO_CLICK_TURNSTILE = False
+        print(">>> [模式] CDP：将附着到你手动启动的 Chrome（不会关闭它）")
+    if "headless" in args:
+        HEADLESS = True
+        print(">>> [模式] 无头（注意：可能无法通过 Cloudflare）")
+    if "fast" in args:
+        FAST_MODE = True
+        print(">>> [模式] FAST：启用 curl_cffi 加速通道")
+    if "click" in args:
+        AUTO_CLICK_TURNSTILE = True
+        print(">>> [模式] 允许脚本自动点击 Turnstile")
+
+    return "backfill" in args
+
 # ============== 主流程 ==============
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ("open", "--open"):
-        open_chrome_for_auth()
-        return
-
+    setup_logging()
+    is_backfill = parse_cli()
     start_caffeinate()
     os.makedirs(IMG_DIR, exist_ok=True)
-    
-    # 尝试连接 Chrome 调试端口
-    check_and_init_cdp()
 
     print("=" * 60)
     print("📦 数据安全检查")
@@ -1466,20 +1970,25 @@ def main():
     if os.path.exists(JSON_PATH + ".tmp"):
         print(f">>> [提示] 发现残留临时文件 {JSON_PATH}.tmp，可自行检查后删除")
 
-    if len(sys.argv) > 1 and sys.argv[1] in ("backfill", "--backfill"):
-        backfill_existing(data)
+    try:
+        _fetcher.start()
+
+        if is_backfill:
+            backfill_existing(data)
+            print("\n====================================")
+            print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
+            return
+
+        total_ok, total_fail = 0, 0
+        for list_url, group, page_name in LIST_PAGES:
+            ok, fail = process_list_page(data, list_url, group, page_name)
+            total_ok += ok
+            total_fail += fail
+
         print("\n====================================")
-        print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
-        return
-
-    total_ok, total_fail = 0, 0
-    for list_url, group, page_name in LIST_PAGES:
-        ok, fail = process_list_page(data, list_url, group, page_name)
-        total_ok += ok
-        total_fail += fail
-
-    print("\n====================================")
-    print(f"所有抓取任务完成! 成功 {total_ok} 条，失败 {total_fail} 条。数据已实时保存在 {JSON_PATH}")
+        print(f"所有抓取任务完成! 成功 {total_ok} 条，失败 {total_fail} 条。数据已实时保存在 {JSON_PATH}")
+    finally:
+        _fetcher.close()
 
 if __name__ == "__main__":
     main()
