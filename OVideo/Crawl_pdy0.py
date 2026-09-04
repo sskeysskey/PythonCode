@@ -184,7 +184,7 @@ ANIME_MAX_EPISODES_LIMIT = 25
 EPISODE_WHITELIST = {"test"}
 
 FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"}
-EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
+EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜"}
 QIANGXIAN_KEYWORDS = ['TC', 'TS', '抢先', 'HC']
 
 ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}

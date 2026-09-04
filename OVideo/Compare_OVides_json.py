@@ -45,7 +45,7 @@ def compare_json(obj1, obj2, path=""):
     return diffs
 
 def main():
-    file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/backup/OVideos_20260829_141338.json'
+    file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/backup/OVideos_20260904_103340.json'
     # file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping.json'
     # file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos_backup.json'
     file2_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'

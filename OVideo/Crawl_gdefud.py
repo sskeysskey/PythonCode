@@ -121,6 +121,8 @@ RETRY_BACKOFF = 5.0     # 第 n 次失败后等待 RETRY_BACKOFF * n 秒
 # 落盘节流：每 N 条变更写一次磁盘（1 = 实时写盘）
 SAVE_EVERY    = 1
 
+LOWER_PRIORITY_CHANNELS = {"huxitech", "xb6v"}
+
 # ============== 浏览器 / Cloudflare 相关配置 ==============
 USER_DATA_DIR   = os.path.expanduser("~/.gdefud_chrome_profile")
 BROWSER_CHANNEL = "chrome"
@@ -169,13 +171,13 @@ BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
                    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
                    "阿松与阿暖", "红色珍珠", "飞越疯人院", "魔法光源股份有限公司第二季", "长夜将尽"]
 
-# URL 黑名单（在这里添加你要屏蔽的 URL 关键字，包含这些字串的 URL 将被跳过）
+# URL 黑名单
 BLACKLIST_URLS = [
     "https://gdefud.com/voddetail/118212.html",
     "https://gdefud.com/voddetail/118001.html",
 ]
 
-# 白名单（在这里添加你要放行的名称，跳过地区屏蔽）
+# 白名单
 WHITELIST_NAMES = [
     "北斗神拳 拳王军杂兵们的挽歌", "麻辣教师第二季", "新攻壳机动队"
 ]
@@ -331,7 +333,6 @@ def launch_chrome_for_cdp(open_url=True):
 # ==========================================================
 #                     真实浏览器抓取层
 # ==========================================================
-# 用 DOM 结构判定页面状态，比字符串匹配可靠得多
 _STATE_JS = """
 () => {
   const q = s => !!document.querySelector(s);
@@ -395,8 +396,7 @@ class BrowserFetcher:
 
         if USE_CDP:
             if not cdp_alive():
-                print("\n!!! 没有检测到可用的 Chrome 调试端口 "
-                      f"{CDP_ENDPOINT}\n")
+                print(f"\n!!! 没有检测到可用的 Chrome 调试端口 {CDP_ENDPOINT}\n")
                 print("请先执行：")
                 print("    osascript -e 'quit app \"Google Chrome\"'")
                 print("    python Crawl_gdefud.py open")
@@ -995,7 +995,10 @@ def episodes_are_numbered(episodes):
     cnt = 0
     for n in episodes:
         n = n.strip()
-        if re.search(r"\d+\s*[集期话話]", n) or re.fullmatch(r"第?\s*\d{1,4}\s*", n):
+        # 增加对 SxxExx、EPxx、Exx 格式的支持
+        if (re.search(r"\d+\s*[集期话話]", n) 
+            or re.search(r"(?:[sS]\d+)?\s*[eE][pP]?\s*\d+", n) 
+            or re.fullmatch(r"第?\s*\d{1,4}\s*", n)):
             cnt += 1
     return cnt >= max(1, len(episodes) // 2)
 
@@ -1036,7 +1039,10 @@ def same_progress_info(a, b):
 def get_max_episode_number(episodes):
     max_num = 0
     for name in episodes.keys():
-        m = re.search(r'(\d+)\s*[集期话話]', name)
+        # 优先提取 E 或 EP 后的实际集数（避免把 S02E08 中的 02 当成集数）
+        m = re.search(r'(?:[sS]\d+)?\s*[eE][pP]?\s*(\d+)', name)
+        if not m:
+            m = re.search(r'(\d+)\s*[集期话話]', name)
         if not m:
             m = re.search(r'第\s*(\d+)', name)
         if not m:
@@ -1085,44 +1091,48 @@ def merge_missing_fields(existing, rec, log=print):
     return changed
 
 
-def promote_gdefud_to_front(existing, new_episodes, sub_url):
-    url_key  = _attach_url(existing, sub_url)
+def insert_gdefud_by_priority(existing, new_episodes, sub_url):
+    """
+    根据集数及优先级插入/调整 gdefud 的位置：
+    1. 集数更多的渠道排前面。
+    2. 当集数相同时，gdefud 必须排在 huxitech 和 xb6v 之前。
+    """
+    url_key = _attach_url(existing, sub_url)
     playlist = existing.setdefault("playlist", [])
-    gd_index = next((i for i, pl in enumerate(playlist)
-                     if pl.get("name") == PLAYLIST_NAME), None)
-    if gd_index is not None:
-        pl = playlist.pop(gd_index)
-        pl["episodes"] = new_episodes
-        playlist.insert(0, pl)
-        return url_key, "moved"
-
-    playlist.insert(0, {"name": PLAYLIST_NAME, "episodes": new_episodes})
-    return url_key, "inserted"
-
-
-def upsert_gdefud_channel(existing, new_episodes, sub_url):
-    url_key  = _attach_url(existing, sub_url)
-    playlist = existing.setdefault("playlist", [])
-
-    # 1. 如果已存在 gdefud，先将其移除（后续统一重新插入指定位置）
+    
+    # 1. 弹出已有的 gdefud 项
+    gd_item = None
     gd_index = next((i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME), None)
     if gd_index is not None:
-        playlist.pop(gd_index)
+        gd_item = playlist.pop(gd_index)
+        gd_item["episodes"] = new_episodes
+    else:
+        gd_item = {"name": PLAYLIST_NAME, "episodes": new_episodes}
 
-    # 2. 找到当前剩余渠道中集数最多的渠道索引（max_idx）
-    max_idx = 0
-    max_eps = -1
-    for i, pl in enumerate(playlist):
+    new_cnt = episode_progress(new_episodes)
+
+    # 2. 遍历剩余渠道，找到最适合 gdefud 插入的索引位置
+    insert_pos = len(playlist)  # 默认追加到最后
+    for idx, pl in enumerate(playlist):
         cnt = episode_progress(pl.get("episodes", {}))
-        if cnt > max_eps:
-            max_eps = cnt
-            max_idx = i
+        pl_name = pl.get("name", "")
 
-    # 3. 插入到集数最多的渠道下方（即 max_idx + 1 位）
-    insert_pos = (max_idx + 1) if playlist else 0
-    playlist.insert(insert_pos, {"name": PLAYLIST_NAME, "episodes": new_episodes})
+        # 规则 A：当前渠道集数比 gdefud 少 -> gdefud 必须排它前面
+        if new_cnt > cnt:
+            insert_pos = idx
+            break
 
-    return url_key, "inserted_after_max"
+        # 规则 B：当前渠道集数与 gdefud 相同
+        elif new_cnt == cnt:
+            # 如果碰到了 huxitech 或 xb6v，gdefud 必须插在它们前面
+            if pl_name in LOWER_PRIORITY_CHANNELS:
+                insert_pos = idx
+                break
+            # 如果是其他渠道，允许 gdefud 落在它们后面，继续向后遍历
+
+    # 3. 插入到计算好的位置
+    playlist.insert(insert_pos, gd_item)
+    return url_key, insert_pos
 
 
 def is_valid_episode_name(name):
@@ -1760,7 +1770,6 @@ def process_list_page(data, list_url, group, page_name):
                     None
                 )
                 old_eps = playlist[gd_index].get("episodes", {}) if gd_index is not None else None
-
                 url_missing = not has_existing_site_url(existing, url)
 
                 existing_max = 0
@@ -1776,94 +1785,16 @@ def process_list_page(data, list_url, group, page_name):
                 #   注意：不再把“位置不对(pos_changed)”当作变更 —— 手动调整过的顺序会被保留。
                 eps_changed = (gd_index is None) or (old_eps != new_eps)
 
+                # ================= 统一优先级与调序逻辑 =================
+                # 1. 预期目标集数/info计算
                 if matched_group in ("Drama", "Anime", "Show"):
-                    if new_max >= existing_max:
-                        if eps_changed:
-                            new_info_text = build_progress_info(new_eps, old_info) or old_info
-                        else:
-                            new_info_text = old_info
-
-                        info_changed = not same_progress_info(new_info_text, old_info)
-
-                        if not (eps_changed or info_changed or fields_changed or url_missing):
-                            flush()
-                            print(f"    - 无字段变更，跳过：{real_name}")
-                            skipped += 1
-                            time.sleep(SLEEP_BETWEEN)
-                            continue
-
-                        if eps_changed:
-                            url_key, action = promote_gdefud_to_front(existing, new_eps, url)
-                        else:
-                            # 内容一致：保持原有顺序，只补 URL
-                            url_key = _attach_url(existing, url)
-                            action = "kept_order"
-
-                        if info_changed:
-                            existing["info"] = new_info_text
-                            buf.append(f"    [info更新] 「{old_info}」 -> 「{new_info_text}」")
-
-                        if matched_group in ("Drama", "Anime") and new_max <= existing_max:
-                            pass
-                        else:
-                            existing["update"] = now_str
-
-                        if eps_changed:
-                            buf.append(f"    [{matched_group}] 新抓取集数 {new_max} >= 其它渠道最大 "
-                                       f"{existing_max}，插入并置顶")
-                        else:
-                            buf.append(f"    [{matched_group}] 内容一致，保持原有 playlist 顺序"
-                                       f"（仅补全字段/URL/info）")
-
-                        mark_dirty(data)
-                        flush()
-                        if action == "moved":
-                            print(f"    ✅ 更新({matched_group})：gdefud 已更新并置顶到 playlist 首位"
-                                  f"{f'（补写 {url_key}）' if url_key else ''}")
-                        elif action == "inserted":
-                            print(f"    ✅ 更新({matched_group})：gdefud 作为新渠道写入 "
-                                  f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
-                        else:
-                            print(f"    ✅ 更新({matched_group})：内容未变，保持 playlist 原有顺序"
-                                  f"{f'（补写 {url_key}）' if url_key else ''}")
-                        ok += 1
+                    if eps_changed:
+                        new_info_text = build_progress_info(new_eps, old_info) or old_info
                     else:
-                        if not (eps_changed or fields_changed or url_missing):
-                            flush()
-                            print(f"    - 无字段变更，跳过：{real_name}")
-                            skipped += 1
-                            time.sleep(SLEEP_BETWEEN)
-                            continue
-
-                        if eps_changed:
-                            url_key, action = upsert_gdefud_channel(existing, new_eps, url)
-                        else:
-                            url_key = _attach_url(existing, url)
-                            action = "kept_order"
-
-                        if matched_group not in ("Drama", "Anime"):
-                            existing["update"] = now_str
-
-                        if eps_changed:
-                            buf.append(f"    [{matched_group}] 新抓取集数 {new_max} < 其它渠道最大 "
-                                       f"{existing_max}，插入到最大集数渠道下方")
-                        else:
-                            buf.append(f"    [{matched_group}] 内容一致，保持原有 playlist 顺序"
-                                       f"（仅补全字段/URL）")
-
-                        mark_dirty(data)
-                        flush()
-                        if action == "kept_order":
-                            print(f"    ✅ 更新({matched_group})：内容未变，保持 playlist 原有顺序"
-                                  f"{f'（补写 {url_key}）' if url_key else ''}")
-                        else:
-                            print(f"    ✅ 更新({matched_group})：gdefud 已插入/更新到最大集数渠道下方"
-                                  f"{f'（补写 {url_key}）' if url_key else ''}")
-                        ok += 1
-
+                        new_info_text = old_info
+                    info_changed = not same_progress_info(new_info_text, old_info)
                 else:
                     scraped_info = rec.get("info", "")
-
                     if eps_changed:
                         new_info_text = build_progress_info(new_eps, old_info)
                         if new_info_text:
@@ -1874,39 +1805,47 @@ def process_list_page(data, list_url, group, page_name):
                             final_info = old_info
                     else:
                         final_info = old_info if old_info else scraped_info
-
                     info_changed = not same_progress_info(final_info, old_info)
+                    new_info_text = final_info
 
-                    if not (eps_changed or info_changed or fields_changed or url_missing):
-                        flush()
-                        print(f"    - 无字段变更，跳过：{real_name}")
-                        skipped += 1
-                        time.sleep(SLEEP_BETWEEN)
-                        continue
+                # 2. 检查当前 gdefud 的位置是否符合优先级（集数优先；同集数先于 huxitech/xb6v）
+                current_idx = next((i for i, pl in enumerate(playlist) if pl.get("name") == PLAYLIST_NAME), -1)
+                temp_playlist = [pl for pl in playlist if pl.get("name") != PLAYLIST_NAME]
+                expected_pos = len(temp_playlist)
+                for p_idx, pl in enumerate(temp_playlist):
+                    cnt = episode_progress(pl.get("episodes", {}))
+                    pl_name = pl.get("name", "")
+                    if new_max > cnt or (new_max == cnt and pl_name in LOWER_PRIORITY_CHANNELS):
+                        expected_pos = p_idx
+                        break
+                pos_needs_adjust = (current_idx != expected_pos)
 
-                    if eps_changed:
-                        url_key, action = promote_gdefud_to_front(existing, new_eps, url)
-                    else:
-                        # 内容一致：保持原有顺序，只补 URL
-                        url_key = _attach_url(existing, url)
-                        action = "kept_order"
-
-                    if info_changed:
-                        existing["info"] = final_info
-                        buf.append(f"    [info更新] 「{old_info}」 -> 「{final_info}」")
-                    existing["update"] = now_str
-                    mark_dirty(data)
+                # 3. 检查是否有实质变更
+                if not (eps_changed or info_changed or fields_changed or url_missing or pos_needs_adjust):
                     flush()
-                    if action == "moved":
-                        print(f"    ✅ 更新(Movie)：gdefud 已更新并置顶到 playlist 首位"
-                              f"{f'（补写 {url_key}）' if url_key else ''}")
-                    elif action == "inserted":
-                        print(f"    ✅ 更新(Movie)：gdefud 作为新渠道写入 "
-                              f"{url_key or '(已有URL)'}，并置顶到 playlist 首位")
-                    else:
-                        print(f"    ✅ 更新(Movie)：内容未变，保持 playlist 原有顺序"
-                              f"{f'（补写 {url_key}）' if url_key else ''}")
-                    ok += 1
+                    print(f"    - 无字段变更且顺序正常，跳过：{real_name}")
+                    skipped += 1
+                    time.sleep(SLEEP_BETWEEN)
+                    continue
+
+                # 4. 执行优先级插入与排序
+                url_key, final_pos = insert_gdefud_by_priority(existing, new_eps, url)
+
+                if info_changed:
+                    existing["info"] = new_info_text
+                    buf.append(f"    [info更新] 「{old_info}」 -> 「{new_info_text}」")
+
+                if not (matched_group in ("Drama", "Anime") and new_max < existing_max):
+                    existing["update"] = now_str
+
+                buf.append(f"    [{matched_group}] gdefud(集数:{new_max}) 已排序至第 {final_pos + 1} 位"
+                           f"(同集数优先于 huxitech/xb6v)")
+
+                mark_dirty(data)
+                flush()
+                print(f"    ✅ 更新({matched_group})：gdefud 已排入 playlist 索引 {final_pos}"
+                      f"{f'（补写 {url_key}）' if url_key else ''}")
+                ok += 1
 
             else:
                 flush()

@@ -178,9 +178,9 @@ SITE_PRIORITY = {
 }
 
 LIST_PAGES = [
-    ("https://shangxidq.com/vodshow/4--time---------2026.html", "Anime", "动漫(4)"),
-    ("https://shangxidq.com/vodshow/3--time---------2026.html", "Show",  "综艺(3)"),
-    ("https://shangxidq.com/vodshow/2--time---------2026.html", "Drama", "电视剧(2)"),
+    # ("https://shangxidq.com/vodshow/4--time---------2026.html", "Anime", "动漫(4)"),
+    # ("https://shangxidq.com/vodshow/3--time---------2026.html", "Show",  "综艺(3)"),
+    # ("https://shangxidq.com/vodshow/2--time---------2026.html", "Drama", "电视剧(2)"),
     ("https://shangxidq.com/vodshow/1--time---------2026.html", "Movie", "电影(1)"),
 ]
 
