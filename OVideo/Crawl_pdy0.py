@@ -181,7 +181,7 @@ CURRENT_YEAR = str(time.localtime().tm_year)
 
 DRAMA_MAX_EPISODES_LIMIT = 25
 ANIME_MAX_EPISODES_LIMIT = 25
-EPISODE_WHITELIST = {"test"}
+EPISODE_WHITELIST = {"剑来 第一季"}
 
 FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"}
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜"}

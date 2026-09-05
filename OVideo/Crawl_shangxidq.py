@@ -164,7 +164,7 @@ CHALLENGE_MARKERS = (
 SITE_MARKERS = ("ewave-", "stui-", "vodshow", "vodplay", "ewave-vodlist")
 
 BLACKLIST_NAMES = [
-    "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记",
+    "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记", "永恒和一日",
     "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1"
 ]
 BLACKLIST_URLS = []
