@@ -60,6 +60,7 @@ PROVIDERS = {
         "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后 Cmd+R
         "related_gate": False,          # 复制按钮出现后是否等待 related 图再重定位
         "cursor_before_scroll": (709, 749),  # 内容不合格重试前把鼠标移到这里再滚动
+        "copy_offset": (0, 0),
     },
     "deepseek": {
         "label": "DeepSeek",
@@ -70,6 +71,7 @@ PROVIDERS = {
         "refresh_on_stall": True,
         "related_gate": False,
         "cursor_before_scroll": (709, 749),
+        "copy_offset": (-35, 0),        # 靠左 35 像素点击
     },
     "doubao": {
         "label": "豆包",
@@ -82,6 +84,7 @@ PROVIDERS = {
         "refresh_on_stall": False,
         "related_gate": True,
         "cursor_before_scroll": None,
+        "copy_offset": (0, 0),
     },
 }
 
@@ -178,11 +181,16 @@ def is_content_qualified(text, min_chinese=50) -> bool:
     return len(re.findall(r'[\u4e00-\u9fff]', text)) > min_chinese
 
 
-def perform_click(location, shape):
+def perform_click(location, shape, offset=(0, 0)):
     phys_x = location[0] + shape[1] // 2
     phys_y = location[1] + shape[0] // 2
     lx = int(phys_x / SCALE_FACTOR)
     ly = int(phys_y / SCALE_FACTOR)
+    
+    if offset:
+        lx += offset[0]
+        ly += offset[1]
+        
     pyautogui.click(lx, ly)
     return lx, ly
 
@@ -325,7 +333,8 @@ def main():
                 continue        # 未实际点击，不消耗 attempt
 
         # ---- 4. 点击复制并校验 ----
-        lx, ly = perform_click(location, shape)
+        copy_offset = cfg.get("copy_offset", (0, 0))
+        lx, ly = perform_click(location, shape, offset=copy_offset)
         print(f"第 {attempt} 次尝试 - 点击复制按钮: {lx}, {ly}")
         sleep(0.5)
         content = pyperclip.paste()

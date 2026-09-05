@@ -411,8 +411,16 @@ def clean_doubao(lines):
 # =========================================================
 def clean_deepseek(lines):
     deleted = []
+
+    # ---------- 逻辑块 A：第一段规则过滤 ----------
+    if lines:
+        first_line = lines[0].strip()
+        # 字符数小于 22 且包含“总结”字样，则移出正文并记录到已删除列表
+        if len(first_line) < 22 and "总结" in first_line:
+            deleted.append(lines.pop(0))
+
+    # ---------- 逻辑块 B：剥离模块前缀 ----------
     cleaned_lines = []
-    
     # 匹配行首的 "模块一："、"模块1:"、"模块十二：" 等格式（兼容中英文冒号与多余空格）
     module_pattern = re.compile(r'^模块\s*[一二三四五六七八九十\d]+\s*[：:]\s*')
 
