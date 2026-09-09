@@ -7,7 +7,7 @@ import shutil
 import glob
 import subprocess
 import sys
-import tempfile # <--- 新增
+import tempfile
 from datetime import datetime
 from time import sleep
 

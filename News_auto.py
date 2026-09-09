@@ -88,6 +88,25 @@ PROVIDERS = {
     },
 }
 
+# ================= provider 名称归一化 =================
+# News_Engine 现在传的是 qianwen_ui / deepseek_ui / doubao_ui，
+# 这里统一剥掉通道后缀，_api 结尾的直接报错（应该走 Modules/API_Client.py）
+PROVIDER_ALIASES = {
+    "qianwen": "qianwen", "qianwen_ui": "qianwen", "qianwen-ui": "qianwen",
+    "qwen": "qianwen", "qwen_ui": "qianwen", "tongyi": "qianwen", "tongyi_ui": "qianwen",
+    "deepseek": "deepseek", "deepseek_ui": "deepseek", "deepseek-ui": "deepseek",
+    "ds": "deepseek", "ds_ui": "deepseek",
+    "doubao": "doubao", "doubao_ui": "doubao", "doubao-ui": "doubao",
+}
+
+
+def normalize_provider(raw: str) -> str:
+    p = (raw or "").strip().lower()
+    if p.endswith("_api") or p.endswith("-api"):
+        print(f"错误：'{raw}' 是 API provider，请调用 Modules/API_Client.py，而不是 News_auto.py")
+        sys.exit(EXIT_TEMPLATE_MISSING)
+    return PROVIDER_ALIASES.get(p, p)
+
 # 拒答话术（三家共用）
 REFUSAL_PHRASES = [
     "抱歉，我无法回答这个问题，我们聊聊别的吧",
@@ -245,7 +264,7 @@ def main():
         print("用法: News_auto.py <qianwen|deepseek|doubao> [min_chinese]")
         sys.exit(EXIT_TEMPLATE_MISSING)
 
-    provider = sys.argv[1].strip().lower()
+    provider = normalize_provider(sys.argv[1])
     if provider not in PROVIDERS:
         print(f"错误：未知 provider '{provider}'，可选：{list(PROVIDERS.keys())}")
         sys.exit(EXIT_TEMPLATE_MISSING)

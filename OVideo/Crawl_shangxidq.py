@@ -165,10 +165,11 @@ SITE_MARKERS = ("ewave-", "stui-", "vodshow", "vodplay", "ewave-vodlist")
 
 BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记", "永恒和一日",
-    "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1"
+    "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1",
+    "人生赢家"
 ]
 BLACKLIST_URLS = []
-WHITELIST_NAMES = []
+WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "骸骨骑士大人异世界冒险中Ⅱ"]
 
 SITE_PRIORITY = {
     "huxitech":  0,
@@ -178,9 +179,9 @@ SITE_PRIORITY = {
 }
 
 LIST_PAGES = [
-    # ("https://shangxidq.com/vodshow/4--time---------2026.html", "Anime", "动漫(4)"),
-    # ("https://shangxidq.com/vodshow/3--time---------2026.html", "Show",  "综艺(3)"),
-    # ("https://shangxidq.com/vodshow/2--time---------2026.html", "Drama", "电视剧(2)"),
+    ("https://shangxidq.com/vodshow/4--time---------2026.html", "Anime", "动漫(4)"),
+    ("https://shangxidq.com/vodshow/3--time---------2026.html", "Show",  "综艺(3)"),
+    ("https://shangxidq.com/vodshow/2--time---------2026.html", "Drama", "电视剧(2)"),
     ("https://shangxidq.com/vodshow/1--time---------2026.html", "Movie", "电影(1)"),
 ]
 

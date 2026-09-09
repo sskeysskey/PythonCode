@@ -495,10 +495,13 @@ def safe_filename(url):
 def should_update_date(old_date, new_date):
     """
     判断是否应该用 new_date 替换 old_date：
-    1. 原 date 为空，直接更新。
-    2. 新年份 < 旧年份（抓到了旧季年份），拒绝替换。
-    3. 新年份 > 旧年份（资源年份升级），允许替换。
-    4. 年份相同时，如果新日期更详细（长度更长），允许替换。
+    1. new_date 为空，绝不更新。
+    2. 原 old_date 为空，直接填入。
+    3. 分别提取两者的「最前面4位年份」：
+       - 新年份 > 旧年份：允许更新（如 2022 -> 2026）
+       - 新年份 < 旧年份：拒绝更新（如 2026 -> 2022，即便新字串更长也拒绝）
+       - 新年份 == 旧年份：仅在新字串长度严格大于旧字串时更新（如补充了月日或括号备注），否则不更新
+    4. 若无法提取有效年份，保守处理：已有旧数据则不覆盖。
     """
     if not new_date:
         return False
@@ -508,21 +511,27 @@ def should_update_date(old_date, new_date):
     old_str = str(old_date).strip()
     new_str = str(new_date).strip()
 
-    # 正则提取 4 位年份 (19xx / 20xx)
-    old_m = re.search(r'(19\d{2}|20\d{2})', old_str)
-    new_m = re.search(r'(19\d{2}|20\d{2})', new_str)
+    # 提取字符串中【最前面】出现的 4 位有效年份（优先匹配 19xx / 20xx，兜底匹配连续4位数字）
+    old_m = re.search(r'((?:19|20)\d{2})', old_str) or re.search(r'(\d{4})', old_str)
+    new_m = re.search(r'((?:19|20)\d{2})', new_str) or re.search(r'(\d{4})', new_str)
 
     if old_m and new_m:
         old_year = int(old_m.group(1))
         new_year = int(new_m.group(1))
-        if new_year < old_year:
-            return False
+
+        # 规则 1：年份更新（2022 -> 2026） -> 允许更新
         if new_year > old_year:
             return True
+
+        # 规则 2：年份倒退（2026 -> 2022） -> 拒绝更新（无论新字串有多长）
+        if new_year < old_year:
+            return False
+
+        # 规则 3：年份相同（如均为 2026） -> 只有更长（信息更详细）才更新
         return len(new_str) > len(old_str)
 
-    # 无法提取年份时的兜底逻辑
-    return len(new_str) > len(old_str)
+    # 无法对比有效年份时的保守兜底：不覆盖已有数据
+    return False
 
 # ============== 播放列表提取 ==============
 def extract_episodes(soup, base_url=BASE_URL, host_normalize_to=None):

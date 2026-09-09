@@ -101,7 +101,7 @@ FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", 
 FILTER_REGIONS_OVERRIDE = {
     # 电影(35)：放开「日本」，其余保持屏蔽
     "https://www.cifppc.com/vodshow/35--time---------.html":
-        ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国"],
+        ["中国", "大陆", "内地", "中国大陆", "中国内地"],
 
     # 电影(1)：只屏蔽「泰国和中国」，其余地区全部放开
     "https://www.cifppc.com/vodshow/1--time---------2026.html":
@@ -1251,7 +1251,10 @@ def process_list_page(data, list_url, group, page_name):
                 region = rec.get("地区", "")
                 region_clean = region.strip()
 
-                if any(keyword == region_clean for keyword in filter_regions):
+                # 如果当前属于电影(Movie)，放行泰国（从待过滤名单中剔除“泰国”）
+                active_filter = [r for r in filter_regions if r != "泰国"] if current_group == "Movie" else filter_regions
+
+                if any(keyword == region_clean for keyword in active_filter):
                     flush()
                     print(f"    - 跳过：地区为「{region}」，在过滤列表中")
                     ok += 1

@@ -2,17 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 统一的「AI 中文结果落盘」脚本
-替代 Qianwen_News.py / Deepseek_News.py / Doubao_News.py
+替代 Qianwen_News.py / Deepseek_News.py / Doubao_News.py / Poe_News.py
 
 用法:
     News_post.py <provider> <url>
-        provider : qianwen | deepseek | doubao （决定使用哪套清洗规则）
+        provider : qianwen | deepseek | doubao
+                   也接受带通道后缀的写法：qianwen_ui / qianwen_api / deepseek_ui /
+                   deepseek_api / doubao_ui ...（后缀只用于日志标注，不影响清洗规则）
         url      : 当前文章 URL
 
-清洗档案（CLEAN_PROFILES）：
-    qianwen  -> clean_qianwen  （原 Qianwen_News.py 的 A/B/C 逻辑块）
-    doubao   -> clean_doubao   （原 Doubao_News.py 的 A/B/C 逻辑块）
-    deepseek -> raw            （原 Deepseek_News.py：清洗逻辑整体注释掉 = 不清洗）
+清洗档案（CLEAN_PROFILES，按「品牌」决定，与通道无关）：
+    qianwen  -> clean_qianwen
+    doubao   -> clean_doubao
+    deepseek -> clean_deepseek
+    其它     -> raw（仅做通用预处理，不做品牌级清洗）
 """
 
 import glob
@@ -54,14 +57,43 @@ SEGMENT_TO_HTML_FILE = {
     "nikkeiasia": "nikkei_asia.html",
 }
 
-# provider -> 清洗档案
+# ================= provider 归一化 =================
+# 清洗档案只按「品牌」区分：不管是 Chrome 网页版还是 API，同品牌用同一套清洗规则。
 CLEAN_PROFILES = {
     "qianwen": "qianwen",
     "doubao": "doubao",
     "deepseek": "deepseek",
 }
+
+PROVIDER_ALIASES = {
+    "qwen": "qianwen",
+    "tongyi": "qianwen",
+    "ds": "deepseek",
+}
+
+# 需要剥离的通道后缀（仅用于识别，不影响清洗规则）
+CHANNEL_SUFFIXES = ("_api", "-api", "_ui", "-ui", "_web", "-web", "_chrome", "-chrome")
+
 # 是否把被删除的文本记录到 News/delete_content.txt
 LOG_DELETED = True
+
+# 是否剥离整行的 markdown 代码围栏（``` / ```markdown）。
+# API 返回偶尔会把整篇总结包在代码块里，开启后可避免正文出现 ``` 残留。
+STRIP_CODE_FENCES = True
+
+
+def normalize_provider(raw: str):
+    """
+    把 qianwen_ui / qianwen_api / deepseek-api / qwen 等归一化。
+    返回 (品牌名, is_api)；is_api 只用于日志标注。
+    """
+    p = (raw or "").strip().lower()
+    is_api = p.endswith("_api") or p.endswith("-api")
+    for suf in CHANNEL_SUFFIXES:
+        if p.endswith(suf):
+            p = p[: -len(suf)]
+            break
+    return PROVIDER_ALIASES.get(p, p), is_api
 
 
 # ================= 通用工具 =================
@@ -189,7 +221,7 @@ def move_and_record_images(url: str) -> None:
 
 
 # =========================================================
-#   清洗档案 1：千问（原 Qianwen_News.py 逻辑块 A/B/C）
+#   清洗档案 1：千问（逻辑块 A/B/C）
 # =========================================================
 def clean_qianwen(lines):
     deleted = []
@@ -277,13 +309,16 @@ def clean_qianwen(lines):
     transition_keywords = ["以下", "新闻", "事件", "模块", "总结", "详细", "核心", "内容", "要点"]
     for line in lines:
         s = line.strip()
+
+        # 过滤整行仅由横线、破折号组成的分隔线（兼容 ---、——、- - - 等）
+        if re.fullmatch(r'[-—–－─\s]{2,}', s):
+            deleted.append(line)
+            continue
         if s.startswith("拓展阅读"):
             deleted.append(line); continue
         if s == "广告":
             deleted.append(line); continue
         if s.startswith("AdChoices"):
-            deleted.append(line); continue
-        if len(s) > 0 and s.replace('-', '') == '':
             deleted.append(line); continue
         if len(s) <= 40:
             hit = sum(1 for k in transition_keywords if k in s)
@@ -297,7 +332,7 @@ def clean_qianwen(lines):
 
 
 # =========================================================
-#   清洗档案 2：豆包（原 Doubao_News.py 逻辑块 A/B/C）
+#   清洗档案 2：豆包（逻辑块 A/B/C）
 # =========================================================
 def clean_doubao(lines):
     deleted = []
@@ -390,11 +425,12 @@ def clean_doubao(lines):
     transition_keywords = ["以下", "新闻", "事件", "模块", "总结", "详细", "核心", "内容", "要点"]
     for line in lines:
         s = line.strip()
+        if re.fullmatch(r'[-—–－─\s]{2,}', s):
+            deleted.append(line)
+            continue
         if s == "广告":
             deleted.append(line); continue
         if s.startswith("AdChoices"):
-            deleted.append(line); continue
-        if len(s) > 0 and s.replace('-', '') == '':
             deleted.append(line); continue
         if len(s) <= 40:
             hit = sum(1 for kw in transition_keywords if kw in s)
@@ -406,8 +442,9 @@ def clean_doubao(lines):
 
     return filtered, deleted
 
+
 # =========================================================
-#   清洗档案 3：DeepSeek 
+#   清洗档案 3：DeepSeek
 # =========================================================
 def clean_deepseek(lines):
     deleted = []
@@ -425,20 +462,37 @@ def clean_deepseek(lines):
     module_pattern = re.compile(r'^模块\s*[一二三四五六七八九十\d]+\s*[：:]\s*')
 
     for line in lines:
-        # 剥离 "模块X：" 前缀
         new_line = module_pattern.sub('', line).strip()
         cleaned_lines.append(new_line)
 
     return cleaned_lines, deleted
 
 
+# =========================================================
+#   清洗调度
+# =========================================================
 def clean_content(profile: str, content: str):
-    """返回 (清洗后的正文, 被删除的行列表)"""
-    if not content or profile == "raw":
+    """
+    返回 (清洗后的正文, 被删除的行列表)
+    通用预处理对所有 provider 生效；品牌级清洗按 profile 分派。
+    """
+    if not content:
         return content, []
+
+    # --- 通用预处理 ---
+    # 1) 去掉 markdown 强调符号
     content = content.replace('#', '').replace('*', '')
+    # 2) 去掉部分模型漏出的思维链标签块
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.S)
+    content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.S)
+
     lines = [line.strip() for line in content.splitlines()]
-    
+
+    # 3) 去掉整行的 markdown 代码围栏（``` / ```markdown）
+    if STRIP_CODE_FENCES:
+        lines = [ln for ln in lines if not re.fullmatch(r'`{3,}[a-zA-Z]*', ln.strip())]
+
+    # --- 品牌级清洗 ---
     if profile == "doubao":
         lines, deleted = clean_doubao(lines)
     elif profile == "deepseek":
@@ -447,34 +501,38 @@ def clean_content(profile: str, content: str):
         lines, deleted = clean_qianwen(lines)
     else:
         deleted = []
-        
+
     return "\n".join(lines), deleted
 
 
-def log_deleted(provider, url, deleted):
+def log_deleted(provider_label, url, deleted):
     if not (LOG_DELETED and deleted):
         return
     os.makedirs(TXT_DIRECTORY, exist_ok=True)
     path = os.path.join(TXT_DIRECTORY, "delete_content.txt")
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with open(path, 'a', encoding='utf-8') as f:
-        f.write(f"[{now_str}] ({provider}) URL: {url}\n")
+        f.write(f"[{now_str}] ({provider_label}) URL: {url}\n")
         f.write("\n".join(deleted) + "\n")
         f.write("-" * 50 + "\n\n")
 
 
 # ================= 主流程 =================
 def main() -> None:
-    provider = (sys.argv[1] if len(sys.argv) > 1 else "qianwen").strip().lower()
+    raw_provider = (sys.argv[1] if len(sys.argv) > 1 else "qianwen").strip()
     url = sys.argv[2] if len(sys.argv) > 2 else "No URL provided"
+
+    provider, is_api = normalize_provider(raw_provider)
     profile = CLEAN_PROFILES.get(provider, "raw")
+    # 日志里保留原始名（含通道后缀），便于回溯是网页版还是 API 产出的
+    provider_label = f"{raw_provider}{'' if not is_api else ''}"
 
     check_english_ratio()
     sleep(0.2)
 
     clipboard_content = get_clipboard_content()
     clipboard_content, deleted = clean_content(profile, clipboard_content)
-    log_deleted(provider, url, deleted)
+    log_deleted(provider_label, url, deleted)
 
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)

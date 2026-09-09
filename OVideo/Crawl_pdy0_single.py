@@ -11,9 +11,9 @@ import ssl
 from urllib3.util.ssl_ import create_urllib3_context
 from urllib.parse import urljoin, urlparse
 
-# ===================== 配置（和原代码一致） =====================
+# ===================== 配置 =====================
 VERBOSE_LOG = False
-PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}  # 从 pdy0.py 引入 chnland
+PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
 DETAIL_BASE_URL = "https://www.pys2.com"
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
@@ -54,7 +54,6 @@ class TLSAdapter(requests.adapters.HTTPAdapter):
         return super().init_poolmanager(*args, **kwargs)
 
 _tls_session.mount("https://", TLSAdapter())
-http_session = c_requests.Session(impersonate="chrome", http_version=1)
 
 # ===================== 工具函数 =====================
 def log(message: str, force: bool = False):
@@ -112,7 +111,6 @@ def fetch(url: str) -> str | None:
     return None
 
 def get_all_url_keys(item: dict) -> list[str]:
-    """返回条目中所有 url 相关的 key，按 url, url1, url2... 顺序排列。"""
     keys = [k for k in item.keys()
             if k == "url" or (k.startswith("url") and k[3:].isdigit())]
 
@@ -122,12 +120,6 @@ def get_all_url_keys(item: dict) -> list[str]:
     return sorted(keys, key=_sort_key)
 
 def is_all_urls_protected(item: dict) -> bool:
-    """
-    判断一个条目的所有 url（url/url1/url2...）是否仅来自受保护域名
-    （chnland.com 或 6vdy.org）。
-      - 至少要有一个有效（非空）url
-      - 任意一个 url 不属于受保护域名，则返回 False
-    """
     PROTECTED_URL_DOMAINS = ("chnland.com", "6vdy.org")
     url_keys = get_all_url_keys(item)
     if not url_keys:
@@ -142,10 +134,35 @@ def is_all_urls_protected(item: dict) -> bool:
             return False
     return has_valid
 
-# ===================== 封面下载（和原代码一致） =====================
+# ===================== 封面下载（强化版） =====================
+def _is_valid_image(content: bytes) -> bool:
+    """严格验证二进制数据是否为真实有效图片（防止误存 HTML 错误页/防盗链页）"""
+    if not content or len(content) < 500:
+        return False
+    # 检查是否为 HTML 错误页面
+    head = content[:256].lower()
+    if b"<html" in head or b"<!doctype" in head or b"<body" in head:
+        return False
+    # Magic numbers 校验
+    is_jpeg = content.startswith(b"\xff\xd8\xff")
+    is_png = content.startswith(b"\x89PNG\r\n\x1a\n")
+    is_gif = content.startswith(b"GIF87a") or content.startswith(b"GIF89a")
+    is_webp = (len(content) > 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP")
+    is_bmp = content.startswith(b"BM")
+    return is_jpeg or is_png or is_gif or is_webp or is_bmp
+
 def download_cover(img_url: str, video_id: str) -> str:
+    """
+    多阶梯封面下载策略：
+      1. 本地有效性检查（若已存在且有效直接返回）
+      2. 直连多方案重试（支持带/不带 Referer、curl_cffi 与 requests 降级）
+      3. 第三方图片加速代理双通道（wsrv.nl / weserv.nl），彻底解决外部图床防盗链
+      4. 严格校验与清晰日志
+    """
     if not img_url:
+        print("  ⚠️ [封面] 未获取到封面图片 URL")
         return ""
+
     ensure_dir(COVER_IMAGE_DIR)
     base = img_url.split("?")[0].split("#")[0]
     ext = os.path.splitext(base)[1].lower()
@@ -153,60 +170,94 @@ def download_cover(img_url: str, video_id: str) -> str:
         ext = ".jpg"
     filename = f"{video_id}{ext}"
     filepath = os.path.join(COVER_IMAGE_DIR, filename)
-    if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-        return filename
 
-    headers = dict(HEADERS)
-    headers["Referer"] = DETAIL_BASE_URL
-    headers["Connection"] = "close"
+    # 1. 检查本地是否已存在合法图片
+    if os.path.exists(filepath):
+        try:
+            if os.path.getsize(filepath) > 500:
+                with open(filepath, "rb") as f:
+                    if _is_valid_image(f.read(512)):
+                        print(f"  [封面] 本地已存在有效封面: {filename}")
+                        return filename
+            os.remove(filepath)  # 损坏或无效的小文件清理重下
+        except Exception:
+            pass
+
+    print(f"  [封面] 开始下载: {img_url}")
+
+    def _save(content: bytes) -> bool:
+        if not _is_valid_image(content):
+            return False
+        with open(filepath, "wb") as f:
+            f.write(content)
+        return os.path.getsize(filepath) > 0
+
     url_candidates = [img_url]
     if img_url.startswith("https://"):
         url_candidates.append("http://" + img_url[8:])
     elif img_url.startswith("http://"):
         url_candidates.append("https://" + img_url[7:])
 
-    def _save(content):
-        if not content or len(content) < 200:
-            return False
-        with open(filepath, "wb") as f:
-            f.write(content)
-        return os.path.getsize(filepath) > 0
+    # 2. 直连尝试：分「带 Referer（防站点盗链）」和「空 Referer（防外部图床拦截）」两种模式
+    referer_configs = [
+        {"Referer": DETAIL_BASE_URL},
+        {}  # 空 Referer，解决豆瓣/微博等外链图床拦截
+    ]
 
-    for url in url_candidates:
-        try:
-            resp = c_requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, impersonate="chrome", verify=False)
-            if resp.status_code == 200 and _save(resp.content):
-                print(f"[封面] {filename}")
-                return filename
-        except:
-            pass
+    for ref_header in referer_configs:
+        curr_headers = dict(HEADERS)
+        curr_headers.update(ref_header)
+        for url in url_candidates:
+            # 2.1 尝试 curl_cffi
+            try:
+                resp = c_requests.get(url, headers=curr_headers, timeout=REQUEST_TIMEOUT, impersonate="chrome124", verify=False)
+                if resp.status_code == 200 and _save(resp.content):
+                    print(f"  ✅ [封面直连成功] {filename}")
+                    return filename
+            except Exception:
+                pass
 
+            # 2.2 尝试 requests (标准/TLS Adapter)
+            try:
+                resp = _std_session.get(url, headers=curr_headers, timeout=REQUEST_TIMEOUT, verify=False)
+                if resp.status_code == 200 and _save(resp.content):
+                    print(f"  ✅ [封面直连成功(requests)] {filename}")
+                    return filename
+            except Exception:
+                pass
+
+    # 3. 降级走第三方图片代理（去除 Referer，规避一切源站防盗链与 IP 限制）
+    print("  ↪ [封面] 直连受阻，尝试第三方图片代理通道...")
     parsed = urlparse(img_url)
-    hp = parsed.netloc + parsed.path + (f"?{parsed.query}" if parsed.query else "")
-    for proxy in IMAGE_PROXY_TEMPLATES:
-        purl = proxy.format(host_and_path=hp)
-        try:
-            resp = c_requests.get(purl, headers=headers, timeout=REQUEST_TIMEOUT*2, impersonate="chrome", verify=False)
-            if resp.status_code == 200 and _save(resp.content):
-                print(f"[封面(代理)] {filename}")
-                return filename
-        except:
-            pass
+    host_and_path = parsed.netloc + parsed.path
+    if parsed.query:
+        host_and_path += "?" + parsed.query
 
-    for url in url_candidates:
-        try:
-            resp = _tls_session.get(url, headers=headers, timeout=REQUEST_TIMEOUT, verify=False)
-            if resp.status_code == 200 and _save(resp.content):
-                return filename
-        except:
-            pass
+    proxy_headers = {"User-Agent": HEADERS["User-Agent"]}
+
+    for proxy_tpl in IMAGE_PROXY_TEMPLATES:
+        proxy_url = proxy_tpl.format(host_and_path=host_and_path)
+        # 轮询 curl_cffi 与 requests
+        for use_curl in (False, True):
+            try:
+                if use_curl:
+                    resp = c_requests.get(proxy_url, headers=proxy_headers, timeout=REQUEST_TIMEOUT * 2, impersonate="chrome124", verify=False)
+                else:
+                    resp = _std_session.get(proxy_url, headers=proxy_headers, timeout=REQUEST_TIMEOUT * 2, verify=False)
+
+                if resp.status_code == 200 and _save(resp.content):
+                    via = proxy_tpl.split("/?")[0]
+                    method = "curl_cffi" if use_curl else "requests"
+                    print(f"  ✅ [封面代理成功|{method}] {filename} via {via}")
+                    return filename
+            except Exception:
+                pass
+
+    print(f"  ❌ [封面下载失败] 无法下载: {img_url}")
     return ""
 
 # ===================== 播放列表解析 =====================
 def parse_playlist(soup):
-    # 兼容多种页面结构：
-    #   旧结构：使用 #url-content1（"在线观看"区块）作为容器
-    #   新结构：无"在线观看"字段，直接使用 .playlist-box（"播放列表"）
     online = (soup.select_one("#url-content1")
               or soup.select_one(".playlist-box")
               or soup)
@@ -219,10 +270,10 @@ def parse_playlist(soup):
     excluded = []
     for tab in tabs:
         target = tab.get("data-target", "")
-        if not target:                 # 跳过没有 data-target 的占位 slide
+        if not target:
             continue
         name = ""
-        for c in tab.contents:         # 取直接文本节点，避免混入 badge 角标数字
+        for c in tab.contents:
             if isinstance(c, str) and c.strip():
                 name = c.strip()
                 break
@@ -263,12 +314,12 @@ def parse_detail_page(html, url, name="", info=""):
         print("[警告] 无播放源")
         return None
 
-    # ===================== 自动提取 name =====================
+    # 自动提取 name
     h3_tag = soup.select_one(".vod-info .info h3 a")
     if h3_tag:
         name = clean_ws(h3_tag.get_text(strip=True))
 
-    # ===================== 自动提取 info（HD/TC/抢先等） =====================
+    # 自动提取 info
     info = ""
     otherbox = soup.select_one(".vod-info .otherbox") or soup.select_one(".otherbox")
     if otherbox:
@@ -276,7 +327,7 @@ def parse_detail_page(html, url, name="", info=""):
         if em_tag:
             info = clean_ws(em_tag.get_text(strip=True))
 
-    # ===================== 最后更新时间（对齐主程序逻辑） =====================
+    # 最后更新时间
     update = ""
     if otherbox:
         ems = otherbox.find_all("em")
@@ -287,22 +338,25 @@ def parse_detail_page(html, url, name="", info=""):
             elif len(ems) >= 2:
                 update = clean_ws(ems[-1].get_text(strip=True))
 
+    # 更加精准地获取主海报 URL
+    img_url = ""
+    img = soup.select_one(".vod-info .pic img") or soup.select_one(".pic img")
+    if img:
+        img_url = (img.get("data-original")
+                   or img.get("data-src")
+                   or img.get("src")
+                   or "").strip()
+        if img_url.startswith("//"):
+            img_url = "https:" + img_url
+
     data = {
         "name": name, "url": url, "info": info,
-        "update": update, "update_pk": update, "image": "",
+        "update": update, "update_pk": update,
+        "image": "", "_img_url": img_url,
         "导演": "", "编剧": [], "主演": [], "类型": [], "地区": "",
         "date": "", "alias": "", "intro": "",
         "评分": {"豆瓣": "", "IMDB": ""}, "playlist": playlist
     }
-
-    img = soup.select_one(".pic img")
-    if img:
-        img_url = img.get("data-original") or img.get("data-src") or img.get("src") or ""
-        if img_url.startswith("//"):
-            img_url = "https:" + img_url
-        if img_url:
-            data["image"] = download_cover(img_url, extract_video_id(url, name))
-            time.sleep(SLEEP_BETWEEN_REQUESTS)
 
     info_block = soup.select_one(".vod-info .info") or soup
     span = _find_span_by_label(info_block, "导演：")
@@ -375,10 +429,6 @@ def load_existing(path):
     return {}
 
 def build_index(existing: dict) -> dict:
-    """
-    构建跨分类全局索引（与主程序一致）。
-    结构: {(name, path): {"info","update","image","real_name","real_path","category","list_idx"}}
-    """
     idx = {}
     for cat, items in existing.items():
         if isinstance(items, list):
@@ -410,7 +460,7 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=4)
     os.replace(tmp, OUTPUT_FILE)
 
-# ===================== 主逻辑（移植主程序完整更新规则） =====================
+# ===================== 主逻辑 =====================
 def main():
     print("===== 单独详情页抓取工具 =====")
     url = input("请输入详情页URL：").strip()
@@ -436,16 +486,13 @@ def main():
     item_name = detail["name"]
     item_info = detail["info"]
     item_path = get_url_path(url)
+    img_url = detail.pop("_img_url", "")
 
-    # =============================================================
-    # 跨分类多维度去重判定（移植自主程序 process_item）
-    # 注意：single 是手动强制抓取，不做"跳过/过滤"判定
-    # =============================================================
+    # 跨分类多维度去重判定
     key = (item_name, item_path)
     old_data = global_index.get(key)
     matched_by_path_only = False
     is_special_6vdy_update = False
-    special_update_target = None
 
     # 1. 跨分类全局 path 查找
     if old_data is None:
@@ -456,14 +503,13 @@ def main():
                 matched_by_path_only = True
                 break
 
-    # 2. 跨分类同名特殊占位更新规则（6vdy / chnland）
+    # 2. 跨分类同名特殊占位更新规则
     if old_data is None:
         for cat, existing_list in all_data.items():
             if not isinstance(existing_list, list):
                 continue
             for list_idx, existing_item in enumerate(existing_list):
                 if existing_item.get("name") == item_name:
-                    # 使用 pdy0.py 中的逻辑：判断是否所有 URL 都是受保护域名
                     if is_all_urls_protected(existing_item):
                         is_special_6vdy_update = True
                         old_url_keys = get_all_url_keys(existing_item)
@@ -484,6 +530,18 @@ def main():
 
     is_update = (old_data is not None) or is_special_6vdy_update
 
+    # 获取旧分类和旧条目
+    old_entry = None
+    old_category = None
+    target_list_idx = None
+    if is_update:
+        old_category = old_data.get("category")
+        target_list_idx = old_data.get("list_idx")
+        if old_category and old_category in all_data:
+            existing_list = all_data[old_category]
+            if target_list_idx is not None and target_list_idx < len(existing_list):
+                old_entry = existing_list[target_list_idx]
+
     # tag 判定
     if is_update:
         if is_special_6vdy_update:
@@ -503,21 +561,32 @@ def main():
 
     print(f"{tag} {item_name}  {url}  info={item_info}")
 
-    # ===== 任何更新 name 不要改 =====
+    # ===== 智能封面处理与下载 =====
+    final_image = ""
+    # 若是更新，且本地存在合法的旧封面文件，优先复用，避免不必要的网络请求
+    if is_update and old_data and old_data.get("image"):
+        old_img_file = old_data.get("image")
+        old_img_path = os.path.join(COVER_IMAGE_DIR, old_img_file)
+        if os.path.exists(old_img_path) and os.path.getsize(old_img_path) > 500:
+            final_image = old_img_file
+            print(f"  [封面复用] 沿用已有封面: {final_image}")
+
+    # 若未复用（本地缺失/新条目/旧条目无图），启动强化下载
+    if not final_image and img_url:
+        video_id = extract_video_id(url, item_name)
+        downloaded = download_cover(img_url, video_id)
+        if downloaded:
+            final_image = downloaded
+        elif is_update and old_data and old_data.get("image"):
+            # 下载失败时兜底保留原字段名称，不置空
+            final_image = old_data.get("image")
+            print(f"  [封面兜底] 下载未成功，保留旧记录封面字段: {final_image}")
+
+    detail["image"] = final_image
+
+    # 任何更新保持旧名称
     if is_update:
         detail["name"] = key[0]
-
-    # 获取旧分类和旧条目
-    old_entry = None
-    old_category = None
-    target_list_idx = None
-    if is_update:
-        old_category = old_data.get("category")
-        target_list_idx = old_data.get("list_idx")
-        if old_category and old_category in all_data:
-            existing_list = all_data[old_category]
-            if target_list_idx is not None and target_list_idx < len(existing_list):
-                old_entry = existing_list[target_list_idx]
 
     # 合并受保护源
     if old_entry:
@@ -537,7 +606,6 @@ def main():
             kept_names = [p.get("name") for p in protected_in_old]
             print(f"     [保留受保护源] {kept_names} (已置顶 6vdy和chnland)")
 
-            # 根据 pdy0.py 逻辑，比较受保护源与新源的集数
             protected_max_ep = max(
                 (len(p.get("episodes", {})) for p in protected_in_old),
                 default=0
@@ -602,14 +670,13 @@ def main():
         ordered_detail["url"] = detail["url"]
 
     if is_special_6vdy_update and old_entry:
-        # 先保留旧条目里已有的附加 url 字段（如 url1），再把新 URL 写入目标槽位
         old_url_keys = get_all_url_keys(old_entry)
         existing_url_vals = []
         max_idx = 0
         for k in old_url_keys:
             v = old_entry.get(k, "")
             existing_url_vals.append(v)
-            if k != "url":  # "url" 已在上面写入
+            if k != "url":
                 ordered_detail[k] = v
                 max_idx = max(max_idx, int(k[3:]))
         new_url = detail["url"]
@@ -645,9 +712,7 @@ def main():
             else:
                 print(f"     [update_pk 变化] {old_upk} → {new_upk}")
 
-    # =============================================================
-    # 跨分类数据写入
-    # =============================================================
+    # 数据写入
     if is_update:
         if old_category != cat_name:
             print(f"     [跨分类移动] 检测到分类漂移: {old_category} ➔ {cat_name}")
