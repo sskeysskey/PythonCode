@@ -423,9 +423,27 @@ function extractAndCopy() {
     return false;
   }
 
-  // 处理 bloomberg.com
+  // ==========================================
+  // 处理 bloomberg.com (针对 Shadow DOM 与特殊 Listicle 页面强化)
+  // ==========================================
   else if (window.location.hostname.includes("bloomberg.com")) {
-    // 定义主要内容选择器
+    // 递归获取 document 以及所有 open Shadow DOM 的根节点
+    const getAllRoots = (root = document) => {
+      const roots = [root];
+      const treeWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let currentNode = treeWalker.nextNode();
+      while (currentNode) {
+        if (currentNode.shadowRoot) {
+          roots.push(...getAllRoots(currentNode.shadowRoot));
+        }
+        currentNode = treeWalker.nextNode();
+      }
+      return roots;
+    };
+
+    const allRoots = getAllRoots(document);
+
+    // 定义主要内容选择器（包含常规正文及 Listicle/Shadow DOM 中的标题和段落）
     const mainSelectors = [
       'p[class*="ArticleBodyText_articleBodyContent"]',
       '.body-content p[class*="media-ui-Paragraph_text"]',
@@ -439,13 +457,16 @@ function extractAndCopy() {
       'main#dvz__mount div[class*="css--paragraph-wrapper"] > p',
       'li[data-component="unordered-list-item"]',
       'li[class*="media-ui-UnorderedList_item"]',
-      // ★★★ 新增：新版 ds-- 结构（photo essay / feature 页面）★★★
       'p[class*="ds--paragraph"]',
       'main.dvz-content p[class*="ds--paragraph"]',
-      '#dvz_mount p[class*="ds--paragraph"]'
+      '#dvz_mount p[class*="ds--paragraph"]',
+      // ★★★ 适配特殊专题与 Listicle 结构 ★★★
+      '.ds--listicle-item-wrapper .top',
+      '.ds--listicle-wrapper .title',
+      '.ds--listicle-item-wrapper .blurb p',
+      '.blurb p'
     ];
 
-    // 需要排除的选择器
     const excludeSelectors = [
       '.UpNext_upNext__C39c6',
       '[data-testid="story-card-small"]',
@@ -457,16 +478,14 @@ function extractAndCopy() {
     ];
 
     let paragraphs = [];
+    const combinedSelector = mainSelectors.join(', ');
 
-    // 获取主要内容
-    mainSelectors.forEach(selector => {
-      document.querySelectorAll(selector).forEach(element => {
-        // 检查是否在被排除的区域内
+    // 穿透所有 Shadow DOM 树查找符合条件的文本元素
+    allRoots.forEach(root => {
+      root.querySelectorAll(combinedSelector).forEach(element => {
         const isInExcludedArea = excludeSelectors.some(exSel =>
           element.closest(exSel) !== null
         );
-        // ★★★ 新增：如果段落内嵌了 figure（即图片容器），则跳过
-        // 避免把 figcaption 的说明文字当作正文抓下来
         if (element.querySelector('figure')) return;
 
         if (!isInExcludedArea) {
@@ -478,353 +497,279 @@ function extractAndCopy() {
     // 提取和清理文本
     textContent = [...new Set(paragraphs)]
       .map(el => {
-        let text = el.textContent || '';
+        let text = '';
+        // 针对带序号的标题 (.top 内含 .index 和 .title)，格式化为 "1. 标题内容" 避免文字粘连
+        if (el.classList.contains('top') && el.querySelector('.title')) {
+          const idx = el.querySelector('.index')?.textContent.trim() || '';
+          const title = el.querySelector('.title')?.textContent.trim() || '';
+          text = `${idx} ${title}`.trim();
+        } else {
+          text = el.textContent || '';
+        }
+
         return text
           .trim()
-          // 移除 HTML 注释
           .replace(/<!--[\s\S]*?-->/g, '')
-          // 移除特殊符号
           .replace(/[•∞@]/g, '')
-          // 去掉伪元素标记
           .replace(/:marker/g, '')
-          // 规范化空白
           .replace(/\s+/g, ' ')
           .replace(/&nbsp;/g, ' ')
-          // 移除调试标记，如 "== $0"
           .replace(/==\s*\$\d+/g, '')
-          // 移除剩余标签
-          // .replace(/<\/?[^>]+(>|$)/g, '')
           .trim();
       })
       .filter(text => {
         return text
-          && text.length > 10                // 最小长度
-          && !/^[@•∞]/.test(text)            // 不以特殊字符开头
-          && !/^\s*$/.test(text)             // 不全是空白
+          && text.length > 3                 // 放宽最小长度，防止过滤较短的小标题
+          && !/^[@•∞]/.test(text)
+          && !/^\s*$/.test(text)
           && !['flex', 'Advertisement'].includes(text)
           && !/^[.\s]*$/.test(text)
           && !/^Up Next:/.test(text)
           && !/^You are using an/.test(text)
-          && !/^Read More:/i.test(text);     // ★★★ 新增：过滤掉以 "Read More:" 开头的段落 (加了 'i' 忽略大小写) ★★★
+          && !/^Read More:/i.test(text);
       })
       .join('\n\n');
 
-    // 如果提取到了有效文本，则进行图片下载
+    // 图片处理
     if (textContent) {
-      // 查找所有类型的图片容器
-      // 新增：同时查找新结构中的 figure 标签，通常带有 svelte-xxxx 类名，且在 main.dvz-content 内
-      const figureElements = document.querySelectorAll(
-        'figure[data-component="article-image"], ' +
-        'main.dvz-content figure[class*="svelte-"], ' +
-        'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], ' +
-        'main#dvz__mount section[class*="--root-container"] figure, ' +
-        '.body-content figure, ' +
-        // ★★★ 新增：新版 ds-- 结构的 figure（photo essay 头图 + 正文图 + 多图网格）★★★
-        'figure.ds--figure, ' +
-        'main.dvz-content figure.ds--figure, ' +
-        '#dvz_mount figure.ds--figure'
-      );
-
-      // 检查是否找到了符合条件的图片
       let foundValidImages = false;
-
-      // 用于存储已处理的图片URL
       const processedUrls = new Set();
 
-      if (figureElements && figureElements.length > 0) {
-        figureElements.forEach(figure => {
+      // 通用下载图片调度函数
+      const triggerImageDownload = (highestResUrl, caption, altText = '') => {
+        if (!highestResUrl) return;
+
+        highestResUrl = highestResUrl.replace(/\s+/g, '');
+        if (highestResUrl.startsWith('//')) {
+          highestResUrl = window.location.protocol + highestResUrl;
+        } else if (highestResUrl.startsWith('/')) {
+          highestResUrl = new URL(highestResUrl, window.location.origin).href;
+        } else if (!highestResUrl.match(/^https?:\/\//i) && !highestResUrl.startsWith('blob:')) {
+          try {
+            highestResUrl = new URL(highestResUrl, window.location.href).href;
+          } catch (e) {
+            console.error('Error creating absolute URL:', e, highestResUrl);
+            return;
+          }
+        }
+
+        if (processedUrls.has(highestResUrl)) return;
+        processedUrls.add(highestResUrl);
+        foundValidImages = true;
+
+        let extension = 'jpg';
+        try {
+          const pathname = new URL(highestResUrl).pathname;
+          const lastDot = pathname.lastIndexOf('.');
+          if (lastDot !== -1 && lastDot < pathname.length - 1) {
+            const extCandidate = pathname.substring(lastDot + 1).toLowerCase().split('?')[0];
+            if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(extCandidate)) {
+              extension = extCandidate;
+            }
+          }
+        } catch (e) {
+          console.warn('Could not parse URL for extension, defaulting to jpg:', highestResUrl);
+        }
+
+        const cleanTextForFilename = (text) => {
+          if (!text) return '';
+          return text
+            .replace(/&nbsp;/g, ' ')
+            .replace(/Photograph(?:er)?[\s\S]*$/i, '')
+            .replace(/\s*(?:Source[-:–—]?)\s*.*$/i, '')
+            .replace(/[/\\?%*:|"<>+]/g, '-')
+            .trim();
+        };
+
+        let cleanedCaption = cleanTextForFilename(caption);
+        let cleanedAlt = cleanTextForFilename(altText);
+
+        let filename;
+        if (cleanedCaption) {
+          filename = `${cleanedCaption}.${extension}`;
+        } else if (cleanedAlt) {
+          filename = `${cleanedAlt}.${extension}`;
+        } else {
+          filename = `bloomberg-image-${Date.now()}.${extension}`;
+        }
+
+        const maxLen = 200;
+        if (filename.length > maxLen) {
+          const namePart = filename.substring(0, filename.length - (extension.length + 1));
+          filename = namePart.substring(0, maxLen - (extension.length + 1)) + '.' + extension;
+        }
+        if (filename.startsWith('.' + extension)) {
+          filename = `bloomberg-image-${Date.now()}.${extension}`;
+        }
+
+        chrome.runtime.sendMessage({
+          action: 'downloadImage',
+          url: highestResUrl,
+          filename: filename
+        });
+      };
+
+      // 1. 处理所有 roots 中的各类 figure
+      const figureSelector = [
+        'figure[data-component="article-image"]',
+        'main.dvz-content figure[class*="svelte-"]',
+        'main#dvz__mount figure[class*="css--lede-image-inner-wrapper"]',
+        'main#dvz__mount section[class*="--root-container"] figure',
+        '.body-content figure',
+        'figure.ds--figure',
+        'main.dvz-content figure.ds--figure',
+        '#dvz_mount figure.ds--figure'
+      ].join(', ');
+
+      allRoots.forEach(root => {
+        root.querySelectorAll(figureSelector).forEach(figure => {
           let img = null;
           let caption = '';
           let highestResUrl = '';
-          let figureType = 'unknown'; // To help debug or adapt logic
 
-          // Try to identify figure type and extract img/caption accordingly
-
-          // Type 1: Old structure (data-component="article-image")
           if (figure.matches('figure[data-component="article-image"]')) {
-            figureType = 'old_structure';
             img = figure.querySelector('img.ui-image.high-res-img');
             if (img) {
               if (img.srcset) {
-                const srcsetEntries = img.srcset.split(',')
-                  .map(entry => {
-                    const parts = entry.trim().split(' ');
-                    const url = parts[0].trim();
-                    const width = parseInt(parts[parts.length - 1]) || 0;
-                    return { url, width };
-                  })
-                  .filter(entry => entry.url && entry.width > 0)
-                  .sort((a, b) => b.width - a.width);
-                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                const entries = img.srcset.split(',').map(e => {
+                  const parts = e.trim().split(' ');
+                  return { url: parts[0].trim(), width: parseInt(parts[parts.length - 1]) || 0 };
+                }).filter(e => e.url && e.width > 0).sort((a, b) => b.width - a.width);
+                if (entries.length > 0) highestResUrl = entries[0].url;
               }
               if (!highestResUrl && img.src) highestResUrl = img.src;
 
-              const figcaptionElement = figure.querySelector('figcaption');
-              // ★★★ 新增/修改 ② ★★★
-              // 优化了标题提取逻辑。优先查找包含 "Caption_caption" 类名的 `<span>`，
-              // 这样可以精确获取描述文本，避免包含 "Source: ..." 等信息。
-              // 如果找不到，则回退到原来的逻辑，确保兼容旧版页面。
-              if (figcaptionElement) {
-                const specificCaptionSpan = figcaptionElement.querySelector('span[class*="Caption_caption"]');
-                if (specificCaptionSpan) {
-                  caption = specificCaptionSpan.textContent.trim();
+              const fc = figure.querySelector('figcaption');
+              if (fc) {
+                const specificSpan = fc.querySelector('span[class*="Caption_caption"]');
+                if (specificSpan) {
+                  caption = specificSpan.textContent.trim();
                 } else {
-                  // Fallback to original logic
-                  const captionSpans = figcaptionElement.querySelectorAll('span');
-                  if (captionSpans && captionSpans.length > 0) {
-                    caption = Array.from(captionSpans).map(span => span.textContent.trim()).filter(text => text).join(' ');
-                  } else {
-                    caption = figcaptionElement.textContent.trim();
-                  }
+                  const spans = fc.querySelectorAll('span');
+                  caption = spans && spans.length > 0 ? Array.from(spans).map(s => s.textContent.trim()).filter(Boolean).join(' ') : fc.textContent.trim();
                 }
               }
             }
-          }
-          // Type 2: Svelte-like structure (main.dvz-content figure[class*="svelte-"])
-          else if (figure.matches('main.dvz-content figure[class*="svelte-"]')) {
-            figureType = 'svelte_structure';
-            img = figure.querySelector('dvz-lede-image-container img');
-            if (!img) img = figure.querySelector('img');
-
+          } else if (figure.matches('main.dvz-content figure[class*="svelte-"]')) {
+            img = figure.querySelector('dvz-lede-image-container img') || figure.querySelector('img');
             if (img && img.src) {
               highestResUrl = img.src;
-              const figcaptionElement = figure.querySelector('figcaption');
-              if (figcaptionElement) {
-                const specificCaptionSpan = figcaptionElement.querySelector('span.caption');
-                if (specificCaptionSpan) {
-                  caption = specificCaptionSpan.textContent.trim();
+              const fc = figure.querySelector('figcaption');
+              if (fc) {
+                const specificSpan = fc.querySelector('span.caption');
+                if (specificSpan) {
+                  caption = specificSpan.textContent.trim();
                 } else {
-                  const captionSpans = figcaptionElement.querySelectorAll('span');
-                  if (captionSpans && captionSpans.length > 0) {
-                    // 合并所有span的文本内容
-                    caption = Array.from(captionSpans)
-                      .map(span => span.textContent.trim())
-                      .filter(text => text) // 过滤空文本
-                      .join(' ');
-                  } else {
-                    caption = figcaptionElement.textContent.trim();
-                  }
+                  const spans = fc.querySelectorAll('span');
+                  caption = spans && spans.length > 0 ? Array.from(spans).map(s => s.textContent.trim()).filter(Boolean).join(' ') : fc.textContent.trim();
                 }
               }
             }
-          }
-          // Type 3: New "css--" structure (e.g., lede image)
-          else if (figure.matches('main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], main#dvz__mount section[class*="--root-container"] figure')) {
-            figureType = 'css_structure';
-            img = figure.querySelector('img.css--lede-image'); // Specific to lede image
-            if (!img) img = figure.querySelector('img'); // More generic fallback within the figure
-
+          } else if (figure.matches('main#dvz__mount figure[class*="css--lede-image-inner-wrapper"], main#dvz__mount section[class*="--root-container"] figure')) {
+            img = figure.querySelector('img.css--lede-image') || figure.querySelector('img');
             if (img) {
-              const srcsetAttr = img.srcset || img.dataset.srcset; // Prioritize srcset, then data-srcset
+              const srcsetAttr = img.srcset || img.dataset.srcset;
               if (srcsetAttr) {
-                const srcsetEntries = srcsetAttr.split(',')
-                  .map(entry => {
-                    // 提取URL和宽度
-                    const parts = entry.trim().split(' ');
-                    const url = parts[0].trim();
-                    // 从类似 "1200w" 的字符串中提取数字
-                    const width = parseInt(parts[parts.length - 1]) || 0;
-                    return { url, width };
-                  })
-                  .filter(entry => entry.url && entry.width > 0)
-                  .sort((a, b) => b.width - a.width);
-                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                const entries = srcsetAttr.split(',').map(e => {
+                  const parts = e.trim().split(' ');
+                  return { url: parts[0].trim(), width: parseInt(parts[parts.length - 1]) || 0 };
+                }).filter(e => e.url && e.width > 0).sort((a, b) => b.width - a.width);
+                if (entries.length > 0) highestResUrl = entries[0].url;
               }
               if (!highestResUrl && img.src) highestResUrl = img.src;
 
-              // Caption for new "css--" structure
-              // The caption might be in div.css--caption-outer-wrapper > figcaption.css--caption-wrapper
               const captionWrapper = figure.querySelector('div.css--caption-outer-wrapper');
-              let figcaptionElement = null;
-              if (captionWrapper) {
-                figcaptionElement = captionWrapper.querySelector('figcaption.css--caption-wrapper');
-              } else { // If outer wrapper not found, try directly
-                figcaptionElement = figure.querySelector('figcaption.css--caption-wrapper');
-              }
-
-              if (figcaptionElement) {
-                const creditSpan = figcaptionElement.querySelector('span.css--credit');
-                if (creditSpan) {
-                  caption = creditSpan.textContent.trim();
-                } else { // Fallback if specific span.css--credit is not found
-                  caption = figcaptionElement.textContent.trim();
-                }
+              const fc = captionWrapper ? captionWrapper.querySelector('figcaption.css--caption-wrapper') : figure.querySelector('figcaption.css--caption-wrapper');
+              if (fc) {
+                const creditSpan = fc.querySelector('span.css--credit');
+                caption = creditSpan ? creditSpan.textContent.trim() : fc.textContent.trim();
               }
             }
-          }
-
-          // Type 4: .body-content 内嵌入的裸 figure（Bloomberg 新版正文图）
-          else if (figure.matches('.body-content figure')) {
-            figureType = 'body_content_figure';
+          } else if (figure.matches('.body-content figure')) {
             img = figure.querySelector('img');
             if (img) {
-              // 优先使用 srcset 取最高分辨率
               if (img.srcset) {
-                const srcsetEntries = img.srcset.split(',')
-                  .map(entry => {
-                    const parts = entry.trim().split(' ');
-                    const url = parts[0].trim();
-                    const width = parseInt(parts[parts.length - 1]) || 0;
-                    return { url, width };
-                  })
-                  .filter(entry => entry.url && entry.width > 0)
-                  .sort((a, b) => b.width - a.width);
-                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                const entries = img.srcset.split(',').map(e => {
+                  const parts = e.trim().split(' ');
+                  return { url: parts[0].trim(), width: parseInt(parts[parts.length - 1]) || 0 };
+                }).filter(e => e.url && e.width > 0).sort((a, b) => b.width - a.width);
+                if (entries.length > 0) highestResUrl = entries[0].url;
               }
               if (!highestResUrl && img.src) highestResUrl = img.src;
 
-              // figcaption 里一般是 <p>文本</p> 结构
-              const figcaptionElement = figure.querySelector('figcaption');
-              if (figcaptionElement) {
-                const captionP = figcaptionElement.querySelector('p');
-                if (captionP) {
-                  caption = captionP.textContent.trim();
-                } else {
-                  caption = figcaptionElement.textContent.trim();
-                }
-                // 去掉 "Source: xxx" / "Photographer: xxx" 这类署名
-                caption = caption
+              const fc = figure.querySelector('figcaption');
+              if (fc) {
+                const captionP = fc.querySelector('p');
+                caption = (captionP ? captionP.textContent : fc.textContent).trim()
                   .replace(/\s*Source\s*[:：].*$/i, '')
                   .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
                   .trim();
               }
             }
-          }
-
-          // Type 5: 新版 "ds--" 结构（dvz-content / dvz_mount 下的 photo essay & feature article）
-          else if (figure.matches('figure.ds--figure')) {
-            figureType = 'ds_structure';
+          } else if (figure.matches('figure.ds--figure')) {
             img = figure.querySelector('img.ds--image') || figure.querySelector('img');
-
             if (img) {
-              // 优先用 srcset 取最高分辨率
               if (img.srcset) {
-                const srcsetEntries = img.srcset.split(',')
-                  .map(entry => {
-                    const parts = entry.trim().split(/\s+/);
-                    const url = parts[0].trim();
-                    const width = parseInt(parts[parts.length - 1]) || 0;
-                    return { url, width };
-                  })
-                  .filter(entry => entry.url && entry.width > 0)
-                  .sort((a, b) => b.width - a.width);
-                if (srcsetEntries.length > 0) highestResUrl = srcsetEntries[0].url;
+                const entries = img.srcset.split(',').map(e => {
+                  const parts = e.trim().split(/\s+/);
+                  return { url: parts[0].trim(), width: parseInt(parts[parts.length - 1]) || 0 };
+                }).filter(e => e.url && e.width > 0).sort((a, b) => b.width - a.width);
+                if (entries.length > 0) highestResUrl = entries[0].url;
               }
               if (!highestResUrl && img.src) highestResUrl = img.src;
 
-              // figcaption 一般是 <figcaption class="... ds--caption ...">文本</figcaption>
-              const figcaptionElement =
-                figure.querySelector('figcaption.ds--caption') ||
+              const fc = figure.querySelector('figcaption.ds--caption') ||
                 figure.querySelector('figcaption[class*="ds--caption"]') ||
                 figure.querySelector('figcaption');
-
-              if (figcaptionElement) {
-                // 有的版本里把摄影师/来源单独包在 span 里，优先取主描述
-                const captionMain = figcaptionElement.querySelector('span:not([class*="credit"]):not([class*="source"])');
-                if (captionMain && captionMain.textContent.trim()) {
-                  caption = captionMain.textContent.trim();
-                } else {
-                  caption = figcaptionElement.textContent.trim();
-                }
-                // 去掉 "Source: xxx" / "Photographer: xxx" 这类署名
-                caption = caption
+              if (fc) {
+                const captionMain = fc.querySelector('span:not([class*="credit"]):not([class*="source"])');
+                caption = (captionMain && captionMain.textContent.trim() ? captionMain.textContent : fc.textContent).trim()
                   .replace(/\s*Source\s*[:：].*$/i, '')
                   .replace(/\s*Photograph(?:er)?\s*[:：].*$/i, '')
                   .trim();
               }
-
-              // 图集 photo-essay 头图通常没有 figcaption，回退到 alt
-              if (!caption && img.alt) {
-                caption = img.alt.trim();
-              }
+              if (!caption && img.alt) caption = img.alt.trim();
             }
           }
 
-          // Common processing for img and caption if found
           if (img && highestResUrl) {
-            // Clean URL and ensure it's absolute
-            highestResUrl = highestResUrl.replace(/\s+/g, '');
-            if (highestResUrl.startsWith('//')) { // Protocol-relative URL
-              highestResUrl = window.location.protocol + highestResUrl;
-            } else if (highestResUrl.startsWith('/')) { // Origin-relative URL
-              highestResUrl = new URL(highestResUrl, window.location.origin).href;
-            } else if (!highestResUrl.match(/^https?:\/\//i) && !highestResUrl.startsWith('blob:')) {
-              // Potentially a path-relative URL, resolve against document base URI
-              try {
-                highestResUrl = new URL(highestResUrl, window.location.href).href;
-              } catch (e) {
-                console.error('Error creating absolute URL from path-relative:', e, highestResUrl);
-                return; // Skip this image if URL is problematic
-              }
-            }
-            // Absolute URLs (http, https) will pass through correctly with new URL() if base is provided.
-
-            if (!processedUrls.has(highestResUrl)) {
-              processedUrls.add(highestResUrl);
-              foundValidImages = true;
-
-              // 改进文件扩展名提取
-              let extension = 'jpg'; // 默认扩展名
-              try {
-                const pathname = new URL(highestResUrl).pathname;
-                const lastDot = pathname.lastIndexOf('.');
-                if (lastDot !== -1 && lastDot < pathname.length - 1) {
-                  const extCandidate = pathname.substring(lastDot + 1).toLowerCase().split('?')[0]; // Remove query params from ext
-                  if (['png', 'jpg', 'jpeg', 'webp', 'svg'].includes(extCandidate)) {
-                    extension = extCandidate;
-                  }
-                }
-              } catch (e) {
-                console.warn('Could not parse URL for extension, defaulting to jpg:', highestResUrl);
-              }
-
-
-              let filename;
-              const cleanTextForFilename = (text) => {
-                if (!text) return '';
-                return text
-                  .replace(/&nbsp;/g, ' ')
-                  .replace(/Photograph(?:er)?[\s\S]*$/i, '')
-                  .replace(/\s*(?:Source[-:–—]?)\s*.*$/i, '')
-                  .replace(/[/\\?%*:|"<>+]/g, '-') // Remove invalid chars
-                  .trim();
-              };
-
-              let cleanedCaption = cleanTextForFilename(caption);
-              let cleanedAlt = cleanTextForFilename(img.alt);
-
-              if (cleanedCaption) {
-                filename = `${cleanedCaption}.${extension}`;
-              } else if (cleanedAlt) {
-                filename = `${cleanedAlt}.${extension}`;
-              } else {
-                // 如果既没有alt也没有caption，使用时间戳
-                const timestamp = new Date().getTime();
-                filename = `bloomberg-image-${timestamp}.${extension}`;
-              }
-
-              // Ensure filename is not excessively long
-              const maxLen = 200;
-              if (filename.length > maxLen) {
-                const namePart = filename.substring(0, filename.length - (extension.length + 1));
-                filename = namePart.substring(0, maxLen - (extension.length + 1)) + '.' + extension;
-              }
-
-              // Ensure filename is not empty before extension
-              if (filename.startsWith('.' + extension)) {
-                filename = `bloomberg-image-${new Date().getTime()}.${extension}`;
-              }
-
-
-              chrome.runtime.sendMessage({
-                action: 'downloadImage',
-                url: highestResUrl,
-                filename: filename
-              });
-            }
+            triggerImageDownload(highestResUrl, caption, img.alt);
           }
         });
-      }
+      });
+
+      // 2. ★★★ 新增：处理非 figure 包裹的 Listicle / 交互组件内图片 ★★★
+      const standaloneImageSelector = [
+        '.ds--listicle-item-wrapper img.image',
+        '.image-positioner img',
+        '.ds--listicle-wrapper img'
+      ].join(', ');
+
+      allRoots.forEach(root => {
+        root.querySelectorAll(standaloneImageSelector).forEach(img => {
+          if (!img) return;
+          let highestResUrl = '';
+          if (img.srcset) {
+            const entries = img.srcset.split(',').map(e => {
+              const parts = e.trim().split(/\s+/);
+              return { url: parts[0].trim(), width: parseInt(parts[parts.length - 1]) || 0 };
+            }).filter(e => e.url && e.width > 0).sort((a, b) => b.width - a.width);
+            if (entries.length > 0) highestResUrl = entries[0].url;
+          }
+          if (!highestResUrl && img.src) highestResUrl = img.src;
+
+          // 尝试取当前条目的标题作为图片说明
+          let caption = '';
+          const itemWrapper = img.closest('.ds--listicle-item-wrapper, .wrapper');
+          if (itemWrapper) {
+            const titleEl = itemWrapper.querySelector('.title');
+            if (titleEl) caption = titleEl.textContent.trim();
+          }
+          if (!caption && img.alt) caption = img.alt.trim();
+
+          triggerImageDownload(highestResUrl, caption, img.alt);
+        });
+      });
 
       if (!foundValidImages) {
         chrome.runtime.sendMessage({ action: 'noImages' });
