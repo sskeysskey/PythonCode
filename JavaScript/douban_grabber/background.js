@@ -60,7 +60,29 @@ function scrapeDoubanPage() {
     return full.slice(idx + 1).trim();
   }
 
-  // 5. 导演：rel="v:directedBy"，多个用 " / " 连接（返回单个字符串）
+  // 5. 提取“又名”整段纯文本（优先作为 alias）
+  function extractAka() {
+    if (!info) return '';
+    const pls = info.querySelectorAll('span.pl');
+    for (const pl of pls) {
+      const t = (pl.textContent || '').replace(/[:：\s]/g, '');
+      if (t === '又名') {
+        let node = pl.nextSibling;
+        let text = '';
+        // 遍历 pl 后的所有节点，直到遇到 <br> 或下一个元素标记
+        while (node && node.nodeName !== 'BR') {
+          if (node.nodeType === 3 /* TEXT_NODE */ || node.nodeType === 1 /* ELEMENT_NODE */) {
+            text += node.textContent;
+          }
+          node = node.nextSibling;
+        }
+        return text.replace(/\s+/g, ' ').trim();
+      }
+    }
+    return '';
+  }
+
+  // 6. 导演：rel="v:directedBy"，多个用 " / " 连接（返回单个字符串）
   function extractDirector() {
     if (!info) return '';
     const links = info.querySelectorAll('a[rel="v:directedBy"]');
@@ -135,7 +157,8 @@ function scrapeDoubanPage() {
   return {
     type: 'douban',
     name: extractName(),
-    foreign_title: extractForeignTitle(),
+    aka: extractAka(),                   // 新增：又名字段
+    foreign_title: extractForeignTitle(), // 备用外文标题
     date: extractDate(),
     douban_rating: extractRating(),
     director: extractDirector(),

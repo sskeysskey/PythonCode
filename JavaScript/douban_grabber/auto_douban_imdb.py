@@ -4,8 +4,8 @@
 豆瓣 + IMDb 一次性抓取与回写
 流程：
   剪贴板取名字 → 在 OVideos.json 找项目 →
-  抓豆瓣(日期/评分/外文标题/导演/编剧/主演/类型) → 写回 →
-  用外文标题搜 IMDb → 抓 IMDb 评分 → 写回 → 结束
+  抓豆瓣(日期/评分/外文标题/又名/导演/编剧/主演/类型) → 写回 →
+  用又名第一段(或外文标题)搜 IMDb → 抓 IMDb 评分 → 写回 → 结束
 依赖: pyautogui, 以及同目录下你已有的 screenshot.py
 """
 
@@ -151,10 +151,43 @@ def _should_write(old, new):
     # 二者都非空 => 新的更长才写
     return _content_len(new) > _content_len(old)
 
+def is_chinese(text: str) -> bool:
+    """判断字符串是否包含汉字。"""
+    return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+
+def pick_imdb_search_query(aka: str, foreign_title: str) -> str:
+    """
+    确定传给 IMDb 搜索的词：
+    1. 按 '/' 拆分 aka，顺次寻找第一个「非中文（不含汉字）」的片段。
+    2. 若 aka 中全为中文或无 aka，则优先检查 foreign_title 是否非中文。
+    3. 若仍找不到非中文，做安全兜底：优先取 foreign_title，次之取 aka 第一段。
+    """
+    if aka:
+        parts = [p.strip() for p in aka.split('/') if p.strip()]
+        # 顺次往后找，直到找到第一个不是中文的字串
+        for part in parts:
+            if not is_chinese(part):
+                return part
+
+    # 如果 aka 里的片段全是中文，尝试使用 foreign_title（豆瓣主标题的外文名）
+    if foreign_title and not is_chinese(foreign_title):
+        return foreign_title
+
+    # 兜底：如果全是中文，至少返回一个有内容的字符串进行尝试
+    if foreign_title:
+        return foreign_title
+
+    if aka:
+        parts = [p.strip() for p in aka.split('/') if p.strip()]
+        if parts:
+            return parts[0]
+
+    return ''
 
 # ------------------ 写回逻辑 ------------------
 def update_douban(item, scraped) -> bool:
-    """写回日期 + 豆瓣评分 + 导演/编剧/主演/类型/alias。IMDB 字段不动。"""
+    """写回日期 + 豆瓣评分 + 导演/编剧/主演/类型/alias/intro。IMDB 字段不动。"""
     date   = str(scraped.get('date', '')).strip()
     douban = str(scraped.get('douban_rating', '')).strip()
     changed = False
@@ -226,19 +259,21 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 类型    : 不满足写入条件，保持原样（抓到：{genres or '空'}）")
 
-    # alias（字符串，取自外文标题 foreign_title）
-    alias = str(scraped.get('foreign_title', '')).strip()
+    # alias（优先取又名 aka 的完整内容；若无则回退使用 foreign_title）
+    aka = str(scraped.get('aka', '')).strip()
+    foreign_title = str(scraped.get('foreign_title', '')).strip()
+    alias = aka if aka else foreign_title
+
     if _should_write(item.get('alias'), alias):
         old = item.get('alias')
         item['alias'] = alias
         changed = True
-        print(f"  │ alias   : {old or '空'} -> {alias}")
+        source_label = "又名" if aka else "主标题外文"
+        print(f"  │ alias ({source_label}) : {old or '空'} -> {alias}")
     else:
         print(f"  │ alias   : 不满足写入条件，保持原样（抓到：{alias or '空'}）")
 
-    print("  └──────────────────────────────────────")
-
-    # 新增：简介 (intro)
+    # 简介 (intro)
     intro = str(scraped.get('intro', '')).strip()
     if _should_write(item.get('intro'), intro):
         old_intro = item.get('intro', '')
@@ -252,7 +287,6 @@ def update_douban(item, scraped) -> bool:
         print(f"  │ 简介    : 不满足写入条件，保持原样（抓到长度：{len(intro)}）")
 
     print("  └──────────────────────────────────────")
-    
     return changed
 
 
@@ -377,7 +411,7 @@ def process_page(input_detector, popup_img_path, download_glob, paste_text, labe
     click_image_center(input_detector, location, shape, y_offset=0)
     time.sleep(0.5)
 
-    # 4. 清空原有内容再粘贴（更稳）
+    # 4. 清空原有内容再粘贴
     pyautogui.hotkey('command', 'a')
     time.sleep(0.1)
     pyautogui.hotkey('command', 'v')
@@ -453,10 +487,17 @@ def main():
         paste_text=name, label="豆瓣"
     )
 
-    foreign_title = ''
+    imdb_search_query = ''
     if douban_scraped:
+        aka = str(douban_scraped.get('aka', '')).strip()
         foreign_title = str(douban_scraped.get('foreign_title', '')).strip()
-        print(f"🎬 抓到外文标题: {foreign_title or '（空）'}")
+
+        print(f"🎬 抓到又名 (aka): {aka or '（空）'}")
+        print(f"🎬 抓到外文标题 (foreign_title): {foreign_title or '（空）'}")
+
+        # 确定传给 IMDb 搜索的词：如果分段是中文则顺次往后找，直到找到非中文分段
+        imdb_search_query = pick_imdb_search_query(aka, foreign_title)
+
         if update_douban(item, douban_scraped):
             save_json(OVIDEOS_JSON, data)
             print("💾 豆瓣数据已写回 OVideos.json。")
@@ -466,17 +507,17 @@ def main():
         print("⚠️ 豆瓣抓取失败。")
 
     # ========== 第二阶段：IMDb ==========
-    if not foreign_title:
-        print("\n❌ 未获得外文标题，无法搜索 IMDb，程序结束。")
+    if not imdb_search_query:
+        print("\n❌ 未获得有效检索名（又名与外文标题均为空），无法搜索 IMDb，程序结束。")
         print("=== 结束 ===")
         return
 
-    print(f"\n🔎 用外文标题「{foreign_title}」搜索 IMDb")
+    print(f"\n🔎 用搜索词「{imdb_search_query}」搜索 IMDb")
     activate_chrome_and_switch_to_imdb()
     imdb_detector = ScreenDetector(template_names=IMDB_INPUT_IMG, clickValue='left')
     imdb_scraped = process_page(
         imdb_detector, IMDB_POPUP_IMG, IMDB_DOWNLOAD_GLOB,
-        paste_text=foreign_title, label="IMDb"
+        paste_text=imdb_search_query, label="IMDb"
     )
 
     if imdb_scraped:
