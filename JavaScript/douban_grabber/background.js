@@ -2,16 +2,34 @@
 function scrapeDoubanPage() {
   const info = document.querySelector('#info');
 
+  // 通用：读取 #info 中某个 <span class="pl">标签</span> 后面直到 <br> 的纯文本
+  function textAfterLabel(labels) {
+    if (!info) return '';
+    const wanted = labels.map(s => s.replace(/[:：\s]/g, ''));
+    const pls = info.querySelectorAll('span.pl');
+    for (const pl of pls) {
+      const t = (pl.textContent || '').replace(/[:：\s]/g, '');
+      if (wanted.includes(t)) {
+        let node = pl.nextSibling;
+        let text = '';
+        while (node && node.nodeName !== 'BR') {
+          if (node.nodeType === 3 || node.nodeType === 1) text += node.textContent || '';
+          node = node.nextSibling;
+        }
+        return text.replace(/\s+/g, ' ').trim();
+      }
+    }
+    return '';
+  }
+
   // 1. 日期
   function extractDate() {
     const spans = document.querySelectorAll('span[property="v:initialReleaseDate"]');
-    if (spans.length > 0) {
-      const content = spans[0].getAttribute('content') || spans[0].textContent || '';
+    for (const s of spans) {
+      const content = s.getAttribute('content') || s.textContent || '';
       const m = content.match(/(\d{4}-\d{2}-\d{2})/);
       if (m) return m[1];
     }
-    // 兜底：直接在 #info 区域里找第一个日期
-    const info = document.querySelector('#info');
     const txt = info ? (info.innerText || '') : '';
     const m2 = txt.match(/(\d{4}-\d{2}-\d{2})/);
     return m2 ? m2[1] : '';
@@ -32,76 +50,81 @@ function scrapeDoubanPage() {
     return (document.title || '').replace(/\(豆瓣\)\s*$/, '').trim();
   }
 
-  // 4. 外文标题（= alias）：豆瓣格式为「中文标题 + 空格 + 原文/外文标题」
-  //    中文标题可能自带空格（如「第二季」「第一部」），因此不能简单取第一个空格之后。
-  //    优先策略：外文标题一般从第一个含拉丁字母的 token 开始。
-  //    兜底策略：纯日文/韩文等无拉丁字母的原名，回退到「第一个空格之后」。
+  // 4. 年份
+  function extractYear() {
+    const el = document.querySelector('#content h1 span.year');
+    if (!el) return '';
+    const m = (el.textContent || '').match(/(\d{4})/);
+    return m ? m[1] : '';
+  }
+
+  // 5. 主标题里的外文部分：「中文标题 + 空格 + 原文标题」
+  //    中文标题可能自带空格（如「第二季」），所以从第 2 个 token 起找第一个含拉丁字母的词；
+  //    纯日文/韩文原名（无拉丁字母）回退到第一个空格之后。
   function extractForeignTitle() {
     const el = document.querySelector('span[property="v:itemreviewed"]');
     let full = el ? (el.textContent || '').trim() : '';
     if (!full) return '';
 
-    // 规范空白：全角/多空格 => 单个半角空格
-    full = full.replace(/\s+/g, ' ').trim();
-
+    full = full.replace(/[\u3000\s]+/g, ' ').trim();
     const tokens = full.split(' ');
-    if (tokens.length <= 1) return '';        // 只有一段 => 纯中文标题，无外文标题
+    if (tokens.length <= 1) return '';
 
-    // 从第 2 个 token 起（第 1 个必是中文标题），找第一个含拉丁字母的词
-    const hasLatin = /[A-Za-z]/;
+    const hasLatin = /[A-Za-z\u00C0-\u024F]/;
     for (let i = 1; i < tokens.length; i++) {
-      if (hasLatin.test(tokens[i])) {
-        return tokens.slice(i).join(' ');     // 从该词到结尾即为外文标题
-      }
+      if (hasLatin.test(tokens[i])) return tokens.slice(i).join(' ');
     }
-
-    // 没有任何拉丁字母（如纯日文原名「ハイウェイの堕天使」）=> 回退到第一个空格之后
     const idx = full.indexOf(' ');
     return full.slice(idx + 1).trim();
   }
 
-  // 5. 提取“又名”整段纯文本（优先作为 alias）
+  // 6. 又名（整段 + 拆分数组）
   function extractAka() {
-    if (!info) return '';
-    const pls = info.querySelectorAll('span.pl');
-    for (const pl of pls) {
-      const t = (pl.textContent || '').replace(/[:：\s]/g, '');
-      if (t === '又名') {
-        let node = pl.nextSibling;
-        let text = '';
-        // 遍历 pl 后的所有节点，直到遇到 <br> 或下一个元素标记
-        while (node && node.nodeName !== 'BR') {
-          if (node.nodeType === 3 /* TEXT_NODE */ || node.nodeType === 1 /* ELEMENT_NODE */) {
-            text += node.textContent;
-          }
-          node = node.nextSibling;
-        }
-        return text.replace(/\s+/g, ' ').trim();
-      }
+    return textAfterLabel(['又名']);
+  }
+  function splitAka(aka) {
+    if (!aka) return [];
+    return aka.split(/[\/／|｜]/)
+      .map(s => s.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  }
+
+  // 7. ★ IMDb ID：豆瓣 #info 里直接有 "IMDb: tt#######"
+  function extractImdbId() {
+    const byLabel = textAfterLabel(['IMDb', 'IMDB', 'IMDb链接', 'IMDb编号']);
+    let m = byLabel.match(/tt\d{6,}/i);
+    if (m) return m[0].toLowerCase();
+
+    if (info) {
+      m = (info.innerText || '').match(/tt\d{6,}/i);
+      if (m) return m[0].toLowerCase();
+    }
+    const a = document.querySelector('a[href*="imdb.com/title/tt"]');
+    if (a) {
+      m = (a.getAttribute('href') || '').match(/tt\d{6,}/i);
+      if (m) return m[0].toLowerCase();
     }
     return '';
   }
 
-  // 6. 导演：rel="v:directedBy"，多个用 " / " 连接（返回单个字符串）
+  // 8. 导演：rel="v:directedBy"，多个用 " / " 连接
   function extractDirector() {
     if (!info) return '';
-    const links = info.querySelectorAll('a[rel="v:directedBy"]');
-    const arr = Array.from(links)
+    return Array.from(info.querySelectorAll('a[rel="v:directedBy"]'))
       .map(a => (a.textContent || '').trim())
-      .filter(Boolean);
-    return arr.join(' / ');
+      .filter(Boolean)
+      .join(' / ');
   }
 
-  // 6. 主演：rel="v:starring"（返回数组）
+  // 9. 主演：rel="v:starring"
   function extractStarring() {
     if (!info) return [];
-    const links = info.querySelectorAll('a[rel="v:starring"]');
-    return Array.from(links)
+    return Array.from(info.querySelectorAll('a[rel="v:starring"]'))
       .map(a => (a.textContent || '').trim())
       .filter(Boolean);
   }
 
-  // 7. 按 .pl 标签名提取其 .attrs 下所有链接文本（用于「编剧」，因为它没有 rel 属性）
+  // 10. 按 .pl 标签名提取其 .attrs 下所有链接文本（用于「编剧」）
   function extractByLabel(label) {
     if (!info) return [];
     const pls = info.querySelectorAll('span.pl');
@@ -111,8 +134,7 @@ function scrapeDoubanPage() {
         const wrap = pl.parentElement;
         const attrs = wrap ? wrap.querySelector('span.attrs') : null;
         if (attrs) {
-          const links = attrs.querySelectorAll('a');
-          return Array.from(links)
+          return Array.from(attrs.querySelectorAll('a'))
             .map(a => (a.textContent || '').trim())
             .filter(Boolean);
         }
@@ -121,16 +143,15 @@ function scrapeDoubanPage() {
     return [];
   }
 
-  // 8. 类型：property="v:genre"（返回数组）
+  // 11. 类型：property="v:genre"
   function extractGenres() {
     if (!info) return [];
-    const nodes = info.querySelectorAll('span[property="v:genre"]');
-    return Array.from(nodes)
+    return Array.from(info.querySelectorAll('span[property="v:genre"]'))
       .map(n => (n.textContent || '').trim())
       .filter(Boolean);
   }
 
-  // 9. 短评（保留）
+  // 12. 短评
   function extractReviews() {
     const nodes = document.querySelectorAll('.short-content');
     const out = [];
@@ -145,20 +166,26 @@ function scrapeDoubanPage() {
     return out;
   }
 
-  // 10：提取剧情简介 (intro)
+  // 13. 剧情简介
   function extractIntro() {
     const el = document.querySelector('span[property="v:summary"]');
     if (!el) return '';
-    // 获取文本并清理多余的空白字符和换行
-    let text = el.textContent || el.innerText || '';
-    return text.replace(/\s+/g, ' ').trim();
+    return (el.textContent || el.innerText || '').replace(/\s+/g, ' ').trim();
   }
+
+  const aka = extractAka();
 
   return {
     type: 'douban',
     name: extractName(),
-    aka: extractAka(),                   // 新增：又名字段
-    foreign_title: extractForeignTitle(), // 备用外文标题
+    year: extractYear(),
+    aka: aka,
+    aka_list: splitAka(aka),
+    foreign_title: extractForeignTitle(),
+    imdb_id: extractImdbId(),          // ★ 新增：直达 IMDb 的钥匙
+    countries: textAfterLabel(['制片国家/地区']),
+    languages: textAfterLabel(['语言']),
+    episodes: textAfterLabel(['集数']),
     date: extractDate(),
     douban_rating: extractRating(),
     director: extractDirector(),
@@ -166,7 +193,7 @@ function scrapeDoubanPage() {
     starring: extractStarring(),
     genres: extractGenres(),
     reviews: extractReviews(),
-    intro: extractIntro(), // <--- 新增这行
+    intro: extractIntro(),
     url: location.href,
     grabbed_at: new Date().toISOString()
   };
@@ -174,23 +201,67 @@ function scrapeDoubanPage() {
 
 // ================== IMDb 页面抓取 ==================
 function scrapeImdbPage() {
+  // JSON-LD 兜底（IMDb 的 class 名是编译哈希，随时会变）
+  function fromJsonLd() {
+    const nodes = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const n of nodes) {
+      try {
+        const d = JSON.parse(n.textContent || '{}');
+        if (d && (d.aggregateRating || d.name)) return d;
+      } catch (e) { /* ignore */ }
+    }
+    return null;
+  }
+  const ld = fromJsonLd();
+
   function extractRating() {
     const el = document.querySelector('[data-testid="hero-rating-bar__aggregate-rating__score"] span')
-      || document.querySelector('div[data-testid="hero-rating-bar__aggregate-rating__score"] span')
-      || document.querySelector('span.sc-a30a09c4-1');
-    return el ? el.textContent.trim() : '';
+      || document.querySelector('div[data-testid="hero-rating-bar__aggregate-rating__score"] span');
+    if (el) {
+      const m = (el.textContent || '').match(/(\d+(?:\.\d+)?)/);
+      if (m) return m[1];
+    }
+    if (ld && ld.aggregateRating && ld.aggregateRating.ratingValue != null) {
+      return String(ld.aggregateRating.ratingValue).trim();
+    }
+    // 最后兜底：页面上形如 8.4/10
+    const m2 = (document.body.innerText || '').match(/\b(\d\.\d)\s*\/\s*10\b/);
+    return m2 ? m2[1] : '';
+  }
+
+  function extractVotes() {
+    if (ld && ld.aggregateRating && ld.aggregateRating.ratingCount != null) {
+      return String(ld.aggregateRating.ratingCount);
+    }
+    return '';
   }
 
   function extractTitle() {
     const el = document.querySelector('h1[data-testid="hero__pageTitle"] span')
-      || document.querySelector('h1 span');
-    return el ? el.textContent.trim() : (document.title || '').trim();
+      || document.querySelector('h1 span')
+      || document.querySelector('h1');
+    if (el) return (el.textContent || '').trim();
+    if (ld && ld.name) return String(ld.name).trim();
+    return (document.title || '').replace(/\s*-\s*IMDb\s*$/i, '').trim();
+  }
+
+  function extractYear() {
+    const m = (document.body.innerText || '').match(/\b(19|20)\d{2}\b/);
+    return m ? m[0] : '';
+  }
+
+  function extractImdbId() {
+    const m = location.pathname.match(/tt\d{6,}/i);
+    return m ? m[0].toLowerCase() : '';
   }
 
   return {
     type: 'imdb',
     title: extractTitle(),
+    year: extractYear(),
+    imdb_id: extractImdbId(),
     imdb_rating: extractRating(),
+    imdb_votes: extractVotes(),
     url: location.href,
     grabbed_at: new Date().toISOString()
   };

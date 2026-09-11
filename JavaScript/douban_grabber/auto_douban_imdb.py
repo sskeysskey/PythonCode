@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-豆瓣 + IMDb 一次性抓取与回写
+豆瓣 + IMDb 一次性抓取与回写  (v3)
+
 流程：
   剪贴板取名字 → 在 OVideos.json 找项目 →
-  抓豆瓣(日期/评分/外文标题/又名/导演/编剧/主演/类型) → 写回 →
-  用又名第一段(或外文标题)搜 IMDb → 抓 IMDb 评分 → 写回 → 结束
+  抓豆瓣(日期/评分/外文标题/又名/imdb_id/导演/编剧/主演/类型/简介) → 写回 →
+  ┌ 若豆瓣页面带 IMDb ID → 直接跳转 https://www.imdb.com/title/ttXXXX/（最稳，跳过搜索）
+  └ 否则 → 按语种优先级挑检索词 → IMDb 搜索框 → 抓评分
+  → 写回 → 结束
+
 依赖: pyautogui, 以及同目录下你已有的 screenshot.py
 """
 
@@ -38,11 +42,15 @@ IMDB_POPUP_IMG   = '/Users/yanzhang/Coding/python_code/Resource/imdb_popup.png'
 DOUBAN_DOWNLOAD_GLOB = 'douban_result*.json'
 IMDB_DOWNLOAD_GLOB   = 'imdb_result*.json'
 
+# —— IMDb 直达 ——
+IMDB_TITLE_URL = 'https://www.imdb.com/title/{}/'
+
 # —— 等待时间（秒）——
 WAIT_AFTER_PASTE      = 2
 WAIT_POPUP_APPEAR     = 20
 WAIT_PAGE_LOAD        = 4
 WAIT_DOWNLOAD_TIMEOUT = 30
+WAIT_NAV_TIMEOUT      = 15   # 直达跳转时等待 URL 变化
 SECOND_CLICK_Y_OFFSET = 50   # 第二次点击相对图片中心的 Y 偏移（逻辑像素）
 # ===========================================
 
@@ -107,15 +115,208 @@ def click_image_center(detector, location, shape, y_offset=0):
     print(f"点击(逻辑坐标): ({logic_x}, {logic_y})  y_offset={y_offset}")
 
 
+# ============================================================
+#                语种判定 / 检索词挑选（核心重写）
+# ============================================================
+# 拉丁字母（含重音扩展）
+RE_LATIN   = re.compile(r'[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]')
+# 汉字
+RE_HAN     = re.compile(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]')
+# 日文假名（平/片假名、半角片假名）
+RE_KANA    = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF\uFF66-\uFF9D]')
+# 韩文
+RE_HANGUL  = re.compile(r'[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]')
+# 其他非拉丁字母体系：西里尔/希腊/希伯来/阿拉伯/天城文/泰文
+RE_OTHER   = re.compile(r'[\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF'
+                        r'\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F]')
+# 括号里的地区/版本注释，如 (台) （港） [美] 【韩】
+RE_REGION_TAG = re.compile(r'[\(\uFF08\[\uFF3B\u3010][^\)\uFF09\]\uFF3D\u3011]{0,12}'
+                           r'[\)\uFF09\]\uFF3D\u3011]')
+# 连续的「拉丁可检索片段」
+RE_LATIN_RUN = re.compile(r"[A-Za-z\u00C0-\u024F\u1E00-\u1EFF0-9'\u2019\-\.\:\&, ]+")
+
+_STRIP_CHARS = " \t\u3000-\u2013\u2014:\uFF1A,\uFF0C\u3001.\u00b7\"\u201c\u201d'\u2018\u2019"
+
+TIER_PURE_LATIN  = 0   # 纯英文/拉丁
+TIER_MIXED_LATIN = 1   # 拉丁 + 非拉丁混排（抽拉丁片段）
+TIER_NON_CN_EN   = 2   # 非中文且非英文（日/韩/俄/印地…）
+TIER_CHINESE     = 3   # 纯中文
+TIER_DROP        = 9   # 丢弃
+
+
+def clean_candidate(text: str) -> str:
+    """清洗单个候选串：去地区注释、归一空白、剥首尾杂符号。"""
+    if not text:
+        return ''
+    t = str(text)
+    t = RE_REGION_TAG.sub(' ', t)
+    t = t.replace('\u3000', ' ')
+    t = re.sub(r'\s+', ' ', t).strip()
+    t = t.strip(_STRIP_CHARS).strip()
+    return t
+
+
+def _script_flags(t: str) -> dict:
+    return {
+        'latin':  bool(RE_LATIN.search(t)),
+        'han':    bool(RE_HAN.search(t)),
+        'kana':   bool(RE_KANA.search(t)),
+        'hangul': bool(RE_HANGUL.search(t)),
+        'other':  bool(RE_OTHER.search(t)),
+    }
+
+
+def extract_latin_run(t: str) -> str:
+    """从混排串里抽出最长的拉丁片段，如「Chumbak 幸福邻距离」→「Chumbak」。"""
+    runs = [r.strip(_STRIP_CHARS).strip() for r in RE_LATIN_RUN.findall(t)]
+    runs = [r for r in runs if RE_LATIN.search(r) and len(r) >= 2]
+    return max(runs, key=len) if runs else ''
+
+
+def is_chinese(text: str) -> bool:
+    """纯中文判定：含汉字，且不含假名/韩文/其他文字体系。"""
+    t = str(text or '')
+    f = _script_flags(t)
+    return f['han'] and not (f['kana'] or f['hangul'] or f['other'])
+
+
+def is_english(text: str) -> bool:
+    """纯拉丁判定（可含数字、标点、重音字母）。"""
+    t = clean_candidate(text)
+    if not t:
+        return False
+    f = _script_flags(t)
+    non_latin = f['han'] or f['kana'] or f['hangul'] or f['other']
+    if f['latin'] and not non_latin:
+        return True
+    # 纯 ASCII 数字标题，如 "1917"
+    return (not non_latin) and t.isascii() and any(c.isalnum() for c in t)
+
+
+def classify_candidate(text: str):
+    """返回 (tier, 实际用于检索的字符串)。"""
+    t = clean_candidate(text)
+    if not t:
+        return TIER_DROP, ''
+    f = _script_flags(t)
+    non_latin = f['han'] or f['kana'] or f['hangul'] or f['other']
+
+    if f['latin'] and not non_latin:
+        return TIER_PURE_LATIN, t
+    if f['latin'] and non_latin:
+        return TIER_MIXED_LATIN, (extract_latin_run(t) or t)
+    if non_latin:
+        if f['han'] and not (f['kana'] or f['hangul'] or f['other']):
+            return TIER_CHINESE, t
+        return TIER_NON_CN_EN, t
+    # 无任何字母：数字/符号标题
+    if t.isascii() and any(c.isalnum() for c in t):
+        return TIER_PURE_LATIN, t
+    return TIER_DROP, ''
+
+
+def split_aka(aka: str):
+    """把「又名」整段按 / ／ | ｜ 拆分、清洗、去重（保持原顺序）。"""
+    if not aka:
+        return []
+    parts = re.split(r'[/\uFF0F|\uFF5C]', str(aka))
+    out, seen = [], set()
+    for p in parts:
+        c = clean_candidate(p)
+        if not c:
+            continue
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+def rank_imdb_candidates(aka: str, foreign_title: str, chinese_name: str = ''):
+    """
+    生成候选并排序。排序主键 = 语种 tier（0 英文 → 1 混排 → 2 非中非英 → 3 中文），
+    次键 = 来源顺序（又名#1..n → 主标题外文 → 中文名兜底）。
+    返回 [(tier, pos, query, source_label), ...]
+    """
+    raw = []
+    for i, p in enumerate(split_aka(aka)):
+        raw.append((p, f'又名#{i + 1}'))
+
+    ft = clean_candidate(foreign_title)
+    if ft:
+        raw.append((ft, '主标题外文'))
+
+    cn = clean_candidate(chinese_name)
+    if cn:
+        raw.append((cn, '中文名(兜底)'))
+
+    scored, seen_q = [], set()
+    for pos, (text, src) in enumerate(raw):
+        tier, query = classify_candidate(text)
+        if tier == TIER_DROP or not query:
+            continue
+        key = query.lower()
+        if key in seen_q:
+            continue
+        seen_q.add(key)
+        scored.append((tier, pos, query, src))
+
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return scored
+
+
+def pick_imdb_search_query(aka: str, foreign_title: str, chinese_name: str = ''):
+    """返回 (query, source_label, ranked)；找不到时 query 为 ''。"""
+    ranked = rank_imdb_candidates(aka, foreign_title, chinese_name)
+    if not ranked:
+        return '', '', []
+    tier, _pos, query, src = ranked[0]
+    return query, f'{src} / tier{tier}', ranked
+
+
+def print_candidates(ranked, limit=8):
+    if not ranked:
+        print("  （无可用检索词候选）")
+        return
+    tier_name = {0: '纯英文', 1: '含英文混排', 2: '非中非英', 3: '纯中文'}
+    print("  检索词候选（tier 越小越优先）：")
+    for tier, pos, query, src in ranked[:limit]:
+        print(f"    · tier{tier}({tier_name.get(tier, '?')})  [{src}]  {query}")
+
+
+def normalize_imdb_id(v) -> str:
+    """把任意输入规范成 ttXXXXXXX，失败返回 ''。"""
+    m = re.search(r'tt\d{6,}', str(v or ''), re.I)
+    return m.group(0).lower() if m else ''
+
+
 # ------------------ 在 json 里按名字找项目 ------------------
 def find_item_by_name(data, name):
-    target = name.strip()
+    target = str(name).strip()
+    if not target:
+        return None, None, None
+
+    # 1) 精确匹配 name
     for category, items in data.items():
         if not isinstance(items, list):
             continue
         for idx, item in enumerate(items):
             if isinstance(item, dict) and str(item.get('name', '')).strip() == target:
                 return category, idx, item
+
+    # 2) 回退：alias 里任一分段等于目标（大小写不敏感）
+    low = target.lower()
+    for category, items in data.items():
+        if not isinstance(items, list):
+            continue
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            for part in split_aka(str(item.get('alias', ''))):
+                if part.lower() == low:
+                    print(f"ℹ️ 通过 alias 匹配到项目（alias 分段：{part}）")
+                    return category, idx, item
     return None, None, None
 
 
@@ -136,7 +337,6 @@ def _should_write(old, new):
     - 数组  ：比元素个数
     new 本身若为空则一律不写。
     """
-    # 新内容为空 => 不写
     if isinstance(new, list):
         if not new:
             return False
@@ -144,50 +344,15 @@ def _should_write(old, new):
         if not str(new).strip():
             return False
 
-    # 原内容为空 => 写
     if _content_len(old) == 0:
         return True
 
-    # 二者都非空 => 新的更长才写
     return _content_len(new) > _content_len(old)
 
-def is_chinese(text: str) -> bool:
-    """判断字符串是否包含汉字。"""
-    return bool(re.search(r'[\u4e00-\u9fff]', text))
-
-
-def pick_imdb_search_query(aka: str, foreign_title: str) -> str:
-    """
-    确定传给 IMDb 搜索的词：
-    1. 按 '/' 拆分 aka，顺次寻找第一个「非中文（不含汉字）」的片段。
-    2. 若 aka 中全为中文或无 aka，则优先检查 foreign_title 是否非中文。
-    3. 若仍找不到非中文，做安全兜底：优先取 foreign_title，次之取 aka 第一段。
-    """
-    if aka:
-        parts = [p.strip() for p in aka.split('/') if p.strip()]
-        # 顺次往后找，直到找到第一个不是中文的字串
-        for part in parts:
-            if not is_chinese(part):
-                return part
-
-    # 如果 aka 里的片段全是中文，尝试使用 foreign_title（豆瓣主标题的外文名）
-    if foreign_title and not is_chinese(foreign_title):
-        return foreign_title
-
-    # 兜底：如果全是中文，至少返回一个有内容的字符串进行尝试
-    if foreign_title:
-        return foreign_title
-
-    if aka:
-        parts = [p.strip() for p in aka.split('/') if p.strip()]
-        if parts:
-            return parts[0]
-
-    return ''
 
 # ------------------ 写回逻辑 ------------------
 def update_douban(item, scraped) -> bool:
-    """写回日期 + 豆瓣评分 + 导演/编剧/主演/类型/alias/intro。IMDB 字段不动。"""
+    """写回日期 + 豆瓣评分 + imdb_id + 导演/编剧/主演/类型/alias/intro。"""
     date   = str(scraped.get('date', '')).strip()
     douban = str(scraped.get('douban_rating', '')).strip()
     changed = False
@@ -217,7 +382,22 @@ def update_douban(item, scraped) -> bool:
     else:
         print("  │ 豆瓣评分 : 页面未抓到，保持原样")
 
-    # ---- 新增字段：仅当原字段为空 或 新内容更长时才写入 ----
+    # IMDb ID（新增，最有价值的字段）
+    imdb_id = normalize_imdb_id(scraped.get('imdb_id', ''))
+    if imdb_id:
+        old_id = normalize_imdb_id(item.get('imdb_id', ''))
+        if not old_id:
+            item['imdb_id'] = imdb_id
+            changed = True
+            print(f"  │ imdb_id : 空 -> {imdb_id}")
+        elif old_id != imdb_id:
+            print(f"  │ imdb_id : ⚠️ 冲突（原 {old_id} / 豆瓣 {imdb_id}），保持原样")
+        else:
+            print(f"  │ imdb_id : {imdb_id}（无变化）")
+    else:
+        print("  │ imdb_id : 页面未提供")
+
+    # ---- 以下字段：仅当原字段为空 或 新内容更长时才写入 ----
 
     # 导演（字符串，多个已在插件端用 " / " 连接）
     director = str(scraped.get('director', '')).strip()
@@ -230,8 +410,7 @@ def update_douban(item, scraped) -> bool:
         print(f"  │ 导演    : 不满足写入条件，保持原样（抓到：{director or '空'}）")
 
     # 编剧（数组）
-    screenwriters = scraped.get('screenwriters', []) or []
-    screenwriters = [str(x).strip() for x in screenwriters if str(x).strip()]
+    screenwriters = [str(x).strip() for x in (scraped.get('screenwriters') or []) if str(x).strip()]
     if _should_write(item.get('编剧'), screenwriters):
         item['编剧'] = screenwriters
         changed = True
@@ -240,8 +419,7 @@ def update_douban(item, scraped) -> bool:
         print(f"  │ 编剧    : 不满足写入条件，保持原样（抓到：{screenwriters or '空'}）")
 
     # 主演（数组）
-    starring = scraped.get('starring', []) or []
-    starring = [str(x).strip() for x in starring if str(x).strip()]
+    starring = [str(x).strip() for x in (scraped.get('starring') or []) if str(x).strip()]
     if _should_write(item.get('主演'), starring):
         item['主演'] = starring
         changed = True
@@ -250,8 +428,7 @@ def update_douban(item, scraped) -> bool:
         print(f"  │ 主演    : 不满足写入条件，保持原样（抓到：{starring or '空'}）")
 
     # 类型（数组）
-    genres = scraped.get('genres', []) or []
-    genres = [str(x).strip() for x in genres if str(x).strip()]
+    genres = [str(x).strip() for x in (scraped.get('genres') or []) if str(x).strip()]
     if _should_write(item.get('类型'), genres):
         item['类型'] = genres
         changed = True
@@ -259,11 +436,10 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 类型    : 不满足写入条件，保持原样（抓到：{genres or '空'}）")
 
-    # alias（优先取又名 aka 的完整内容；若无则回退使用 foreign_title）
+    # alias（优先又名整段；无又名则回退主标题外文）
     aka = str(scraped.get('aka', '')).strip()
     foreign_title = str(scraped.get('foreign_title', '')).strip()
     alias = aka if aka else foreign_title
-
     if _should_write(item.get('alias'), alias):
         old = item.get('alias')
         item['alias'] = alias
@@ -276,10 +452,9 @@ def update_douban(item, scraped) -> bool:
     # 简介 (intro)
     intro = str(scraped.get('intro', '')).strip()
     if _should_write(item.get('intro'), intro):
-        old_intro = item.get('intro', '')
+        old_intro = str(item.get('intro', '') or '')
         item['intro'] = intro
         changed = True
-        # 截断显示，避免控制台输出太长
         old_display = (old_intro[:15] + '...') if len(old_intro) > 15 else (old_intro or '空')
         new_display = (intro[:15] + '...') if len(intro) > 15 else intro
         print(f"  │ 简介    : {old_display} -> {new_display}")
@@ -290,10 +465,20 @@ def update_douban(item, scraped) -> bool:
     return changed
 
 
-def update_imdb(item, scraped) -> bool:
-    """写回 IMDb 评分到 评分.IMDB 字段。"""
+def update_imdb(item, scraped, expected_id='') -> bool:
+    """写回 IMDb 评分到 评分.IMDB；带 ID 校验，防止写错片子。"""
     imdb = str(scraped.get('imdb_rating', '')).strip()
+    got_id = normalize_imdb_id(scraped.get('imdb_id', '') or scraped.get('url', ''))
+    exp_id = normalize_imdb_id(expected_id)
+
     print("  ┌────────────── IMDb写回 ──────────────")
+    print(f"  │ 落地页    : {scraped.get('title', '') or '?'}  {got_id or ''}")
+
+    if exp_id and got_id and exp_id != got_id:
+        print(f"  │ ❌ ID 不匹配（期望 {exp_id} / 实际 {got_id}），拒绝写入")
+        print("  └──────────────────────────────────────")
+        return False
+
     if not imdb:
         print("  │ IMDb评分 : 页面未抓到，跳过写入")
         print("  └──────────────────────────────────────")
@@ -309,11 +494,23 @@ def update_imdb(item, scraped) -> bool:
         print(f"  │ IMDb评分 : {old} -> {imdb}")
     else:
         print(f"  │ IMDb评分 : {imdb}")
+
+    # 顺手补 imdb_id
+    if got_id and not normalize_imdb_id(item.get('imdb_id', '')):
+        item['imdb_id'] = got_id
+        print(f"  │ imdb_id : 空 -> {got_id}")
+
     print("  └──────────────────────────────────────")
     return True
 
 
-# ------------------ 激活 Chrome 并切到目标站点 ------------------
+# ------------------ Chrome 控制 ------------------
+def _osa(script: str) -> str:
+    proc = subprocess.run(["osascript", "-e", script],
+                          capture_output=True, encoding="utf-8")
+    return (proc.stdout or '').strip()
+
+
 def _activate_and_switch(keyword, open_url, label):
     print(f"\n===== 激活Chrome并查找 {label} 标签 =====")
     script = f'''
@@ -356,9 +553,7 @@ def _activate_and_switch(keyword, open_url, label):
         end if
     end tell
     '''
-    proc = subprocess.run(["osascript", "-e", script],
-                          capture_output=True, encoding="utf-8")
-    result = proc.stdout.strip()
+    result = _osa(script)
     time.sleep(1.8)
     if result == "FOUND":
         print(f"✅ 成功切换到 {label} 标签页\n")
@@ -375,25 +570,92 @@ def activate_chrome_and_switch_to_douban():
 
 
 def activate_chrome_and_switch_to_imdb():
-    _activate_and_switch("imdb.com",
-                         "https://www.imdb.com/",
-                         "IMDb")
+    _activate_and_switch("imdb.com", "https://www.imdb.com/", "IMDb")
 
 
-# ------------------ 通用抓取流程（豆瓣/IMDb 共用） ------------------
+def get_chrome_active_url() -> str:
+    return _osa('tell application "Google Chrome" to return URL of '
+                'active tab of window 1 as string')
+
+
+def open_url_in_chrome(url: str, reuse_keyword: str) -> bool:
+    """优先复用含 reuse_keyword 的已有标签页，把它导航到 url；否则新开标签。"""
+    script = f'''
+    set targetWin to missing value
+    set targetIdx to 0
+    tell application "Google Chrome"
+        activate
+        delay 0.3
+        repeat with w in every window
+            set tabCount to count of tabs of w
+            repeat with i from 1 to tabCount
+                set u to URL of tab i of w as string
+                if u contains "{reuse_keyword}" and u is not "" then
+                    set targetWin to w
+                    set targetIdx to i
+                    exit repeat
+                end if
+            end repeat
+            if targetWin is not missing value then exit repeat
+        end repeat
+
+        if targetWin is not missing value then
+            set index of targetWin to 1
+            set active tab index of targetWin to targetIdx
+            set URL of active tab of window 1 to "{url}"
+            return "REUSED"
+        else
+            if (count of windows) is 0 then
+                make new window
+            end if
+            set index of window 1 to 1
+            tell window 1 to make new tab with properties {{URL:"{url}"}}
+            return "NEWTAB"
+        end if
+    end tell
+    '''
+    res = _osa(script)
+    if res in ("REUSED", "NEWTAB"):
+        print(f"✅ Chrome 已导航（{res}）：{url}")
+        return True
+    print(f"❌ Chrome 导航失败，返回：{res}")
+    return False
+
+
+def wait_for_active_url_contains(needle: str, timeout: int) -> bool:
+    start = time.time()
+    while time.time() - start < timeout:
+        u = get_chrome_active_url()
+        if needle.lower() in (u or '').lower():
+            return True
+        time.sleep(0.4)
+    return False
+
+
+# ------------------ 触发插件并取结果 ------------------
+def trigger_plugin_and_get_json(download_glob, label):
+    clear_old_downloads(download_glob)
+    pyautogui.hotkey('option', 'n')
+    print(f"已触发 Option+N（{label}），等待插件下载结果...")
+    downloaded = wait_for_download(download_glob, WAIT_DOWNLOAD_TIMEOUT)
+    if not downloaded:
+        print(f"❌ {label} 下载超时，未获取到结果。")
+        return None
+    try:
+        scraped = load_json(downloaded)
+    except Exception as e:
+        print(f"读取下载 json 失败: {e}")
+        scraped = None
+    move_to_trash(downloaded)
+    return scraped
+
+
+# ------------------ 搜索框流程（豆瓣/IMDb 共用） ------------------
 def process_page(input_detector, popup_img_path, download_glob, paste_text, label):
-    """
-    input_detector : 已经用对应 input 图创建好的 ScreenDetector
-    popup_img_path : 弹窗模板图绝对路径
-    download_glob  : 插件下载的文件名模式
-    paste_text     : 要粘贴进搜索框的内容
-    """
-    print(f"\n----- 开始处理 {label} 页面 -----")
+    print(f"\n----- 开始处理 {label} 页面（搜索路线）-----")
 
-    # 1. 把要搜索的文字放进剪贴板
     copy_to_clipboard(paste_text)
 
-    # 2. 循环等待 input 搜索框图片出现
     location, shape = None, None
     start = time.time()
     print(f"等待 {label} 输入框图片，最长 {WAIT_POPUP_APPEAR} 秒...")
@@ -407,17 +669,14 @@ def process_page(input_detector, popup_img_path, download_glob, paste_text, labe
         print(f"❌ 未找到 {label} 搜索框，跳过。")
         return None
 
-    # 3. 第一次点击：聚焦搜索框
     click_image_center(input_detector, location, shape, y_offset=0)
     time.sleep(0.5)
 
-    # 4. 清空原有内容再粘贴
     pyautogui.hotkey('command', 'a')
     time.sleep(0.1)
     pyautogui.hotkey('command', 'v')
     time.sleep(WAIT_AFTER_PASTE)
 
-    # 5. 等待联想弹窗图片出现
     print(f"侦测 {label} 弹窗（联想结果）...")
     popup_detector = ScreenDetector(template_names=popup_img_path, clickValue='left')
     popup_found = False
@@ -433,36 +692,29 @@ def process_page(input_detector, popup_img_path, download_glob, paste_text, labe
         print(f"❌ 未找到 {label} 弹窗，跳过。")
         return None
 
-    # 6. 第二次点击：选第一个联想结果（图片中心 Y+offset）
     click_image_center(input_detector, location, shape, y_offset=SECOND_CLICK_Y_OFFSET)
-
-    # 7. 等待页面加载
     time.sleep(WAIT_PAGE_LOAD)
 
-    # 8. 清旧下载，触发插件 Option+N
-    clear_old_downloads(download_glob)
-    pyautogui.hotkey('option', 'n')
-    print("已触发 Option+N，等待插件下载结果...")
+    return trigger_plugin_and_get_json(download_glob, label)
 
-    # 9. 等待下载
-    downloaded = wait_for_download(download_glob, WAIT_DOWNLOAD_TIMEOUT)
-    if not downloaded:
-        print(f"❌ {label} 下载超时，未获取到结果。")
+
+# ------------------ IMDb 直达流程（有 imdb_id 时最优） ------------------
+def process_imdb_by_id(imdb_id):
+    url = IMDB_TITLE_URL.format(imdb_id)
+    print(f"\n----- IMDb 直达路线：{url} -----")
+    if not open_url_in_chrome(url, 'imdb.com'):
         return None
-
-    try:
-        scraped = load_json(downloaded)
-    except Exception as e:
-        print(f"读取下载 json 失败: {e}")
-        scraped = None
-
-    move_to_trash(downloaded)
-    return scraped
+    if wait_for_active_url_contains(imdb_id, WAIT_NAV_TIMEOUT):
+        print("✅ 已到达目标 IMDb 页面")
+    else:
+        print("⚠️ 未确认 URL 已切换，仍按固定等待继续尝试")
+    time.sleep(WAIT_PAGE_LOAD)
+    return trigger_plugin_and_get_json(IMDB_DOWNLOAD_GLOB, 'IMDb')
 
 
 # ------------------ 主流程 ------------------
 def main():
-    print("=== 豆瓣 + IMDb 一次性抓取启动 ===")
+    print("=== 豆瓣 + IMDb 一次性抓取启动 (v3) ===")
 
     # 1. 读取剪贴板（项目名）
     name = read_clipboard()
@@ -487,16 +739,20 @@ def main():
         paste_text=name, label="豆瓣"
     )
 
-    imdb_search_query = ''
+    imdb_id = ''
+    imdb_query, query_src, ranked = '', '', []
+
     if douban_scraped:
-        aka = str(douban_scraped.get('aka', '')).strip()
+        aka           = str(douban_scraped.get('aka', '')).strip()
         foreign_title = str(douban_scraped.get('foreign_title', '')).strip()
+        imdb_id       = normalize_imdb_id(douban_scraped.get('imdb_id', ''))
 
-        print(f"🎬 抓到又名 (aka): {aka or '（空）'}")
-        print(f"🎬 抓到外文标题 (foreign_title): {foreign_title or '（空）'}")
+        print(f"🎬 又名 (aka)            : {aka or '（空）'}")
+        print(f"🎬 主标题外文 (foreign)  : {foreign_title or '（空）'}")
+        print(f"🆔 豆瓣页 IMDb ID        : {imdb_id or '（空）'}")
 
-        # 确定传给 IMDb 搜索的词：如果分段是中文则顺次往后找，直到找到非中文分段
-        imdb_search_query = pick_imdb_search_query(aka, foreign_title)
+        imdb_query, query_src, ranked = pick_imdb_search_query(aka, foreign_title, name)
+        print_candidates(ranked)
 
         if update_douban(item, douban_scraped):
             save_json(OVIDEOS_JSON, data)
@@ -504,25 +760,36 @@ def main():
         else:
             print("豆瓣无有效变化，未写回。")
     else:
-        print("⚠️ 豆瓣抓取失败。")
+        print("⚠️ 豆瓣抓取失败，尝试用 OVideos.json 中已有信息继续 IMDb 阶段。")
+        imdb_id = normalize_imdb_id(item.get('imdb_id', ''))
+        imdb_query, query_src, ranked = pick_imdb_search_query(
+            str(item.get('alias', '')), '', name)
+        print_candidates(ranked)
 
     # ========== 第二阶段：IMDb ==========
-    if not imdb_search_query:
-        print("\n❌ 未获得有效检索名（又名与外文标题均为空），无法搜索 IMDb，程序结束。")
-        print("=== 结束 ===")
-        return
+    imdb_scraped = None
 
-    print(f"\n🔎 用搜索词「{imdb_search_query}」搜索 IMDb")
-    activate_chrome_and_switch_to_imdb()
-    imdb_detector = ScreenDetector(template_names=IMDB_INPUT_IMG, clickValue='left')
-    imdb_scraped = process_page(
-        imdb_detector, IMDB_POPUP_IMG, IMDB_DOWNLOAD_GLOB,
-        paste_text=imdb_search_query, label="IMDb"
-    )
+    if imdb_id:
+        imdb_scraped = process_imdb_by_id(imdb_id)
+        if not imdb_scraped:
+            print("⚠️ 直达路线失败，降级为搜索路线。")
+
+    if imdb_scraped is None:
+        if not imdb_query:
+            print("\n❌ 既无 IMDb ID，也无有效检索词，无法继续，程序结束。")
+            print("=== 结束 ===")
+            return
+        print(f"\n🔎 用检索词「{imdb_query}」（来源：{query_src}）搜索 IMDb")
+        activate_chrome_and_switch_to_imdb()
+        imdb_detector = ScreenDetector(template_names=IMDB_INPUT_IMG, clickValue='left')
+        imdb_scraped = process_page(
+            imdb_detector, IMDB_POPUP_IMG, IMDB_DOWNLOAD_GLOB,
+            paste_text=imdb_query, label="IMDb"
+        )
 
     if imdb_scraped:
         print(f"⭐ 抓到 IMDb 评分: {imdb_scraped.get('imdb_rating', '') or '（空）'}")
-        if update_imdb(item, imdb_scraped):
+        if update_imdb(item, imdb_scraped, expected_id=imdb_id):
             save_json(OVIDEOS_JSON, data)
             print("💾 IMDb 数据已写回 OVideos.json。")
         else:

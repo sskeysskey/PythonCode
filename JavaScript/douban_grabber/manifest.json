@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "豆瓣/IMDb 抓取助手",
-  "version": "2.0",
-  "description": "抓取豆瓣电影页面(日期/评分/外文标题)与IMDb页面(评分)，下载为 json",
+  "version": "3.0",
+  "description": "抓取豆瓣页面(日期/评分/又名/外文标题/IMDb ID/主创/简介)与IMDb页面(评分)，下载为 json",
   "permissions": [
     "scripting",
     "downloads",
