@@ -22,17 +22,26 @@ function scrapeDoubanPage() {
     return '';
   }
 
-  // 1. 日期
+  // 1. 日期（完整保留页面展示，如：2026-09-09(西班牙网络)）
   function extractDate() {
     const spans = document.querySelectorAll('span[property="v:initialReleaseDate"]');
     for (const s of spans) {
-      const content = s.getAttribute('content') || s.textContent || '';
-      const m = content.match(/(\d{4}-\d{2}-\d{2})/);
-      if (m) return m[1];
+      // 优先获取 visible textContent，而不是属性 content
+      const text = (s.textContent || '').replace(/\s+/g, ' ').trim();
+      if (/\d{4}-\d{2}-\d{2}/.test(text)) {
+        return text;
+      }
     }
-    const txt = info ? (info.innerText || '') : '';
-    const m2 = txt.match(/(\d{4}-\d{2}-\d{2})/);
-    return m2 ? m2[1] : '';
+    // 兜底：从「上映日期」或「首播」标签后抓取第一段
+    const byLabel = textAfterLabel(['上映日期', '首播']);
+    if (byLabel) {
+      const parts = byLabel.split('/').map(p => p.trim()).filter(Boolean);
+      for (const p of parts) {
+        if (/\d{4}-\d{2}-\d{2}/.test(p)) return p;
+      }
+      return byLabel;
+    }
+    return '';
   }
 
   // 2. 豆瓣评分

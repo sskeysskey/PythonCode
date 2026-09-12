@@ -358,11 +358,15 @@ def update_douban(item, scraped) -> bool:
     changed = False
 
     print("  ┌────────────── 豆瓣写回 ──────────────")
-    # 日期：只在抓到完整 YYYY-MM-DD 时写入
-    if re.match(r'\d{4}-\d{2}-\d{2}', date):
-        item['date'] = date
-        changed = True
-        print(f"  │ 日期 date : {date}")
+    # 日期：只要以 YYYY-MM-DD 开头即视为有效日期（保留后续地区/平台备注）
+    if re.match(r'^\d{4}-\d{2}-\d{2}', date):
+        old_date = str(item.get('date', '')).strip()
+        if old_date != date:
+            item['date'] = date
+            changed = True
+            print(f"  │ 日期 date : {old_date or '空'} -> {date}")
+        else:
+            print(f"  │ 日期 date : {date}（无变化）")
     else:
         print(f"  │ 日期未抓到/格式不符，保持原样（抓到：{date or '空'}）")
 
