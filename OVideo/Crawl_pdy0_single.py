@@ -464,11 +464,33 @@ def save_data(data):
 def main():
     print("===== 单独详情页抓取工具 =====")
     url = input("请输入详情页URL：").strip()
-    cat_name = input("请输入分类（Movie/Drama/Show/Anime）：").strip()
-
-    if not url or not cat_name:
-        print("输入不能为空")
+    if not url:
+        print("URL 不能为空")
         return
+
+    # 分类映射表
+    CATEGORY_MAP = {
+        "1": "Movie",
+        "2": "Drama",
+        "3": "Show",
+        "4": "Anime",
+    }
+
+    # 循环提示，直到输入有效数字（也可以兼容直接输入大小写英文）
+    cat_name = None
+    prompt = "请选择分类 [1: Movie, 2: Drama, 3: Show, 4: Anime]： "
+    while not cat_name:
+        user_choice = input(prompt).strip()
+        # 1. 优先匹配 1/2/3/4
+        if user_choice in CATEGORY_MAP:
+            cat_name = CATEGORY_MAP[user_choice]
+        # 2. 兼容防止习惯性直接输入全称（不区分大小写自动纠正）
+        elif user_choice.lower() in {v.lower(): v for v in CATEGORY_MAP.values()}:
+            cat_name = {v.lower(): v for v in CATEGORY_MAP.values()}[user_choice.lower()]
+        else:
+            print("⚠️ 输入无效！请输入数字 1、2、3 或 4")
+
+    print(f"-> 已选择分类: {cat_name}")
 
     all_data = load_existing(OUTPUT_FILE)
     global_index = build_index(all_data)

@@ -781,57 +781,75 @@ function extractAndCopy() {
 
   // 处理 wsj.com
   else if (window.location.hostname.includes("wsj.com")) {
-    // 扩大搜索范围，有时候内容不在 article 标签直属下，但在 main 或 paywall 容器中
-    // 优先锁定 article，如果没有则回退到 document
     const contentRoot = document.querySelector('article') || document.querySelector('main') || document;
 
     if (contentRoot) {
-      // 【关键修改 1】在选择器数组中增加了 h2 和 h3 标签
-      // 将所有可能的文本选择器放入一个数组
-      // 注意：顺序不再决定提取顺序，DOM流的物理位置决定提取顺序
+      // 1. 获取文章主标题（作为备用上下文和文件名）
+      const pageMainTitle = document.querySelector('h1')?.textContent.trim() || document.title.split(' - ')[0] || 'wsj';
+
+      // 【关键修改 1】丰富文本选择器：加入专题特刊的 .mqe-doc 容器、原生标题与段落
       const textSelectors = [
-        // 1. 视差画廊 (Parallax Gallery)
+        // 专题/特刊（MQE / Inset 系列）
+        '.bigTop .header-text h1',
+        '.bigTop .header-text h2',
+        '.mqe-doc h2',
+        '.mqe-doc h3',
+        '.mqe-doc h4',
+        '.mqe-doc p',
+        '.ext-work-survival-section-header h2',
+        '.ext-work-survival-expert-interlude h4',
+
+        // 视差画廊 (Parallax Gallery)
         '.pg-media-text h4',
         '.pg-media-text p',
 
-        // 2. 增加：标准正文中的小标题 (匹配你的 HTML 中的 <h3 data-type="hed">)
+        // 标准正文中的各级标题
         'h2[data-type="hed"]',
         'h3[data-type="hed"]',
+        'h2.title',
+        'h3.medium',
 
-        // 3. 标准正文段落
+        // 标准正文段落
         'p[data-type="paragraph"]',
+        'p.medium',
 
-        // 4. 针对 WSJ 不同版式的特定 CSS类名
+        // WSJ 各种常规版式下的段落类名
         'p.css-1009hy1-StyledNewsKitParagraph',
         'p.css-k3zb6l-Paragraph',
         'p[class*="emoc1hq1"]',
         'p[class*="css-1jdwmf4"]',
 
-        // 5. Paywall 容器下的段落 (作为兜底)
+        // Paywall 容器下的段落兜底
         '.paywall p'
       ];
 
-      // 使用 join(',') 将选择器合并，querySelectorAll 会按照 DOM 在页面中的物理顺序返回元素
-      // 这样返回的 nodeList 是严格按照 HTML 页面从上到下的顺序排列的
+      // 使用 join(',') 保证按 DOM 物理位置先后顺序提取
       const allElements = contentRoot.querySelectorAll(textSelectors.join(','));
-
-      // 将 NodeList 转换为数组并去重 (防止同一个元素被多个选择器命中)
       let uniqueElements = [...new Set(allElements)];
+
+      // 如果上述特定选择器依然没抓到内容（极特殊专题），以 article/main 下所有 p 和 h2/h3 兜底
+      if (uniqueElements.length === 0) {
+        uniqueElements = Array.from(contentRoot.querySelectorAll('h1, h2, h3, h4, p'));
+      }
 
       textContent = uniqueElements
         .map(el => {
-          // 过滤逻辑：跳过不需要的元素
+          // 过滤无需提取的区域
           if (
-            el.closest('.ai2html_export') || // 排除图表内嵌文字
-            el.closest('figcaption') ||      // 排除图片说明(通常由图片下载逻辑处理)
-            el.className.includes('g-pstyle')
+            el.closest('.ai2html_export') ||
+            el.closest('figcaption') ||
+            el.closest('.ext-work-survival-table-of-contents') || // 过滤目录
+            el.className.includes('g-pstyle') ||
+            el.closest('header') ||
+            el.closest('footer') ||
+            el.closest('.byline') ||
+            el.closest('[data-testid="byline"]')
           ) {
             return '';
           }
 
-          // 【关键修改 2】扩展标题判断逻辑，包含 h2, h3, h4
           const tagName = el.tagName.toLowerCase();
-          const isHeader = tagName === 'h2' || tagName === 'h3' || tagName === 'h4';
+          const isHeader = tagName === 'h1' || tagName === 'h2' || tagName === 'h3' || tagName === 'h4';
 
           let text = el.textContent.trim()
             .replace(/<!--[\s\S]*?-->/g, '') // 去除注释
@@ -841,7 +859,7 @@ function extractAndCopy() {
             .replace(/<\/?[^>]+>/g, '') // 去除HTML标签
             .trim();
 
-          // 再次过滤无效文本
+          // 过滤无效文本及推荐/广告内容
           if (
             !text ||
             text.length <= 1 ||
@@ -857,45 +875,45 @@ function extractAndCopy() {
             return '';
           }
 
-          // 如果是标题，前后加换行符及【】以区分
+          // 标题处理：h1用【主标题】，h2/h3/h4用【】包裹
+          if (tagName === 'h1') return `\n\n【${text}】\n`;
           return isHeader ? `\n【${text}】\n` : text;
         })
-        .filter(text => text.length > 0) // 移除空字符串
-        .join('\n\n'); // 用双换行符连接段落
+        .filter(text => text.length > 0)
+        .join('\n\n');
 
-      // 【2】只有当文本提取成功后，再进行图片下载
+      // 【2】图片抓取逻辑
       if (textContent) {
-        // 查找"Show Conversation"元素
         const showConversationElement = document.querySelector('.css-1nc85ca-Show0rHideCommentsSpan');
 
-        // 【修改】扩展图片查找范围，增加对视差画廊图片的抓取
+        // 【关键修改 2】扩大图片抓取范围，支持特刊的大头图、动态插画、背景图/前景图
         let allImages = [
-          // 【新增】抓取视差画廊中的图片
+          // 视差画廊
           ...Array.from(document.querySelectorAll('.pg-element img')),
-          // 【新增】抓取位于 <main> 标签下、<article> 标签外的头图
-          ...Array.from(document.querySelectorAll('main > .bigTop picture img')),
-          // --- 以下为原有选择器，保持不变 ---
-          ...Array.from(document.querySelectorAll('article picture.css-u314cv img')),
+          // 顶栏大图（兼顾 picture 与普通 img）
+          ...Array.from(document.querySelectorAll('.bigTop img, main > .bigTop img')),
+          // 专题页面 inset / mqe-doc 下的所有图片（包含 image-desk, image-foreground 等）
+          ...Array.from(document.querySelectorAll('[data-type="inset"] img, [data-block="dynamic-inset"] img, .mqe-doc img')),
+          // 常规文章正文图片
+          ...Array.from(document.querySelectorAll('article picture img')),
           ...Array.from(document.querySelectorAll('article .origami-item img')),
-          ...Array.from(document.querySelectorAll('article [data-type="inset"] img')),
           ...Array.from(document.querySelectorAll('article figure img'))
         ];
 
-        // 【新增】对抓取到的图片进行去重
         allImages = [...new Set(allImages)];
 
-        // 【新增】过滤掉 "What to Read Next" 等推荐区域的图片
+        // 过滤掉推荐模块与非正文区域的图片
         allImages = allImages.filter(img => {
           if (
             img.closest('[data-testid^="wtrn-block"]') ||
-            img.closest('[aria-label="What to Read Next"]')
+            img.closest('[aria-label="What to Read Next"]') ||
+            img.closest('.author-card')
           ) {
             return false;
           }
           return true;
         });
 
-        // 如果找到"Show Conversation"元素，则过滤掉其后的图片
         if (showConversationElement) {
           allImages = allImages.filter(img => {
             const position = showConversationElement.compareDocumentPosition(img);
@@ -903,24 +921,26 @@ function extractAndCopy() {
           });
         }
 
-        // 继续进行剩余过滤
+        // 基础合法性过滤（图标、微小图片过滤）
         allImages = allImages.filter(img => {
-          const imgSrc = img.src || '';
-
-          if (imgSrc.toLowerCase().endsWith('.svg') ||
+          const imgSrc = img.src || img.getAttribute('src') || '';
+          if (
+            !imgSrc ||
+            imgSrc.toLowerCase().endsWith('.svg') ||
             imgSrc.includes('/icons/') ||
             imgSrc.includes('/social') ||
             imgSrc.includes('/ui/') ||
-            img.closest('button, .share-button, .toolbar')) {
+            img.closest('button, .share-button, .toolbar')
+          ) {
             return false;
           }
 
           const imgWidth = img.width || img.naturalWidth || 0;
           const imgHeight = img.height || img.naturalHeight || 0;
-          if (imgWidth > 0 && imgHeight > 0 && (imgWidth < 150 || imgHeight < 150)) {
+          // 若加载完成则判断尺寸，未完全载入但带高清属性的允许保留
+          if ((imgWidth > 0 && imgWidth < 120) || (imgHeight > 0 && imgHeight < 120)) {
             return false;
           }
-
           return true;
         });
 
@@ -929,99 +949,110 @@ function extractAndCopy() {
         } else {
           const processedUrls = new Set();
 
-          allImages.forEach(img => {
-            if (img) {
-              let highestResUrl = img.src;
+          allImages.forEach((img, imgIndex) => {
+            if (!img) return;
 
-              if (img.srcset) {
-                const cleanSrcset = img.srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-                const srcsetEntries = cleanSrcset.split(',').map(entry => {
-                  const [url, width] = entry.trim().split(/\s+/);
-                  const widthNum = parseInt(width?.replace(/[^\d]/g, '') || '0');
-                  return {
-                    url: url.trim(),
-                    width: widthNum
-                  };
-                });
+            let highestResUrl = img.src || img.getAttribute('src');
 
-                const highestResSrc = srcsetEntries.reduce((prev, current) => {
-                  return (current.width > prev.width) ? current : prev;
-                }, srcsetEntries[0]);
+            // 解析 srcset 提取最高分辨率 URL
+            const srcset = img.srcset || img.getAttribute('srcset');
+            if (srcset) {
+              const cleanSrcset = srcset.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+              const srcsetEntries = cleanSrcset.split(',').map(entry => {
+                const [url, width] = entry.trim().split(/\s+/);
+                const widthNum = parseInt(width?.replace(/[^\d]/g, '') || '0');
+                return { url: url ? url.trim() : '', width: widthNum };
+              }).filter(e => e.url);
 
-                if (highestResSrc && highestResSrc.url) {
-                  highestResUrl = highestResSrc.url;
-                }
+              const highestResSrc = srcsetEntries.reduce((prev, current) => {
+                return (current.width > prev.width) ? current : prev;
+              }, srcsetEntries[0]);
+
+              if (highestResSrc && highestResSrc.url) {
+                highestResUrl = highestResSrc.url;
               }
+            }
 
+            if (!highestResUrl) return;
+
+            // 针对 WSJ 图片 CDN 优化参数
+            let finalUrl = highestResUrl;
+            if (highestResUrl.includes('images.wsj.net') || highestResUrl.includes('asset.wsj.net')) {
               const baseUrl = highestResUrl.split('?')[0];
-              const finalUrl = `${baseUrl}?width=700&size=1.2610340479192939&pixel_ratio=2`;
+              finalUrl = `${baseUrl}?width=1280&pixel_ratio=2`;
+            }
 
-              if (!processedUrls.has(baseUrl)) {
-                processedUrls.add(baseUrl);
+            const checkKey = finalUrl.split('?')[0];
+            if (!processedUrls.has(checkKey)) {
+              processedUrls.add(checkKey);
 
-                let altText = '';
+              let altText = '';
 
-                // 【新增】优先从视差画廊的标题提取描述
-                const pgTextWrapper = img.closest('.pg-element')?.querySelector('.pg-media-text');
-                if (pgTextWrapper) {
-                  const pgTitle = pgTextWrapper.querySelector('h4.pg-title');
-                  const pgCaption = pgTextWrapper.querySelector('.pg-image-caption');
-                  if (pgTitle && pgTitle.textContent.trim()) {
-                    altText = pgTitle.textContent.trim();
-                  } else if (pgCaption && pgCaption.textContent.trim()) {
-                    altText = pgCaption.textContent.trim();
-                  }
-                }
-
-                // 如果视差画廊没有找到描述，使用原有逻辑
-                if (!altText) {
-                  const origamiCaption = img.closest('.origami-wrapper')?.querySelector('.origami-caption');
-                  const figureEl = img.closest('figure');
-                  let captionSpan;
-                  if (figureEl) {
-                    // 【修改】修正了对 figcaption 的查找逻辑，使其更健壮
-                    const figcaptionEl = figureEl.nextElementSibling?.tagName.toLowerCase() === 'figcaption'
-                      ? figureEl.nextElementSibling
-                      : figureEl.querySelector('figcaption');
-                    if (figcaptionEl) {
-                      captionSpan = figcaptionEl.querySelector('.css-426zcb-CaptionSpan');
-                    }
-                  }
-                  const creditSpan = img.closest('[data-type="image"]')?.querySelector('.css-7jz429-Credit');
-
-                  if (origamiCaption) {
-                    altText = origamiCaption.textContent;
-                  } else if (captionSpan) {
-                    altText = captionSpan.textContent;
-                  } else if (creditSpan) {
-                    altText = creditSpan.textContent;
-                  } else {
-                    altText = img.alt || 'wsj_image';
-                  }
-                }
-
-                // 为默认文件名添加时间戳
-                if (altText === 'wsj_image') {
-                  const seconds = new Date().getSeconds();
-                  altText = `wsj_image-${seconds}`;
-                }
-
-                const processFileName = (text) => {
-                  text = text.replace(/[/\\?%*:|"<>+]/g, '-')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                  if (text.length > 200) {
-                    text = text.substr(0, 196).split(' ').slice(0, -1).join(' ');
-                  }
-                  return `${text}.jpg`;
-                };
-
-                chrome.runtime.sendMessage({
-                  action: 'downloadImage',
-                  url: finalUrl,
-                  filename: processFileName(altText)
-                });
+              // 【关键修改 3】智能提取无文字说明图片的描述
+              // (1) 视差画廊文字
+              const pgTextWrapper = img.closest('.pg-element')?.querySelector('.pg-media-text');
+              if (pgTextWrapper) {
+                const pgTitle = pgTextWrapper.querySelector('h4.pg-title');
+                const pgCaption = pgTextWrapper.querySelector('.pg-image-caption');
+                altText = (pgTitle?.textContent || pgCaption?.textContent || '').trim();
               }
+
+              // (2) 常见 figcaption / credit
+              if (!altText) {
+                const figureEl = img.closest('figure');
+                const figcaptionEl = figureEl?.querySelector('figcaption') || figureEl?.nextElementSibling?.tagName.toLowerCase() === 'figcaption' ? figureEl.nextElementSibling : null;
+                const captionSpan = figcaptionEl?.querySelector('.css-426zcb-CaptionSpan') || figcaptionEl;
+                const creditSpan = img.closest('[data-type="image"]')?.querySelector('.css-7jz429-Credit');
+                const origamiCaption = img.closest('.origami-wrapper')?.querySelector('.origami-caption');
+
+                if (origamiCaption?.textContent.trim()) altText = origamiCaption.textContent.trim();
+                else if (captionSpan?.textContent.trim()) altText = captionSpan.textContent.trim();
+                else if (creditSpan?.textContent.trim()) altText = creditSpan.textContent.trim();
+              }
+
+              // (3) 针对专题页特殊图：寻找最近的上级/同级标题（如 section-header / h2 / h3）
+              if (!altText) {
+                const sectionHeader = img.closest('.ext-work-survival-section-header') ||
+                  img.closest('.image-container')?.parentElement?.querySelector('.section-title') ||
+                  img.closest('.header-container');
+
+                if (sectionHeader) {
+                  const titleEl = sectionHeader.querySelector('h1, h2, h3, .title');
+                  if (titleEl && titleEl.textContent.trim()) {
+                    altText = titleEl.textContent.trim();
+                  }
+                }
+              }
+
+              // (4) 过滤通用/无意义的 alt 标签（如 "Background Image" / "Foreground Image"）
+              const rawAlt = (img.alt || '').trim();
+              const isGenericAlt = /^(background\s*image|foreground\s*image|image|photo|wsj_image)$/i.test(rawAlt);
+
+              if (!altText && rawAlt && !isGenericAlt) {
+                altText = rawAlt;
+              }
+
+              // (5) 兜底命名：文章大标题 + 序号
+              if (!altText) {
+                altText = `${pageMainTitle}_img_${imgIndex + 1}`;
+              }
+
+              // 规范化文件名
+              const processFileName = (text) => {
+                text = text.replace(/[/\\?%*:|"<>+]/g, '-')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                if (text.length > 120) {
+                  text = text.substr(0, 115).split(' ').slice(0, -1).join(' ');
+                }
+                return `${text}.jpg`;
+              };
+
+              chrome.runtime.sendMessage({
+                action: 'downloadImage',
+                url: finalUrl,
+                filename: processFileName(altText)
+              });
             }
           });
         }
