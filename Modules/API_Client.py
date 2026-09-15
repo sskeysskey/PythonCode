@@ -89,7 +89,7 @@ DEFAULT_PROVIDERS = {
         "base_url": "https://api.deepseek.com",
         "api_key": "sk-e14a7491825942b9a8bea54fb3db8cae",
         "api_key_env": ["NEWS_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"],
-        "models": {"normal": "deepseek-v4-flash", "cheap": "deepseek-v4-flash"},
+        "models": {"normal": "deepseek-v4.1-flash", "cheap": "deepseek-v4.1-flash"},
         "api_style": "chat",
         "extra_body": {"enable_thinking": False},
         "temperature": None,

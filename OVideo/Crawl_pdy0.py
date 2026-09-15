@@ -187,6 +187,27 @@ FILTER_REGIONS = {"中国", "大陆", "内地", "中国大陆", "中国内地", 
 EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜"}
 QIANGXIAN_KEYWORDS = ['TC', 'TS', '抢先', 'HC']
 
+# ============ TC 锁定名单配置 ============
+# 针对在此名单内的视频：若原有渠道的 episode 名字包含 ['TC', 'TS', '抢先', 'HC']，
+# 即使新抓到的同名渠道为 HD 或非 TC 版本，也拒绝更新该渠道，直接锁定跳过。
+TC_LOCK_NAMES = {
+    "逃出绝命街",
+}
+
+def has_tc_keyword(text: str) -> bool:
+    """判断字符串是否包含 TC/TS/抢先/HC 关键字（忽略大小写）"""
+    if not text:
+        return False
+    upper = str(text).upper()
+    return any(kw.upper() in upper for kw in QIANGXIAN_KEYWORDS)
+
+def is_in_tc_lock_list(name: str) -> bool:
+    """判断视频名是否在 TC 锁定名单中（忽略空格与大小写）"""
+    if not name or not TC_LOCK_NAMES:
+        return False
+    clean_name = re.sub(r"\s+", "", str(name)).lower()
+    return any(re.sub(r"\s+", "", str(item)).lower() == clean_name for item in TC_LOCK_NAMES)
+
 ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 IMAGE_PROXY_TEMPLATES = [
     "https://images.weserv.nl/?url={host_and_path}",
@@ -852,22 +873,39 @@ def append_new_url_fields(old_entry: dict, ordered_detail: dict, new_url: str) -
 
 
 def format_date_str(date_str: str) -> str:
+    """
+    上映日期规范化解析器：
+    1. 在全文中定位首个符合标准的 YYYY-MM-DD (或 YYYY/M/D 等) 日期起始位置；
+    2. 首部强制规范化为严格的 XXXX-XX-XX 格式；
+    3. 保留该日期及其后的完整说明文本（包括多地公映、括号等信息）；
+    4. 清洗全角斜杠与多余空白；若无完整年月日，则返回清洗后的原始字符串。
+    """
     if not date_str:
-        return date_str
-    if '/' in date_str or '／' in date_str:
-        parts = re.split(r'[/／]', date_str)
-        date_str = parts[-1].strip()
-    try:
-        parts = re.findall(r'\d+', date_str)
-        if len(parts) >= 3:
-            return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-        elif len(parts) == 2:
-            return f"{parts[0]}-{parts[1].zfill(2)}"
-        elif len(parts) == 1:
-            return parts[0]
-    except Exception:
-        pass
-    return date_str
+        return ""
+    s = clean_ws(str(date_str))
+    # 移除前导说明文本及折叠标识
+    s = re.sub(r"^(?:上映|首映|上映日期|公映时间)[:：\s]+", "", s)
+    s = s.replace("[展开...]", "").replace("[展开]", "").strip()
+    # 寻找首个符合 年-月-日 完整日期位置
+    pattern = r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?"
+    match = re.search(pattern, s)
+    if match:
+        # 将首个日期规范化为 XXXX-XX-XX
+        year, month, day = match.group(1), match.group(2).zfill(2), match.group(3).zfill(2)
+        normalized_first_date = f"{year}-{month}-{day}"
+        # 提取首个日期之后跟随的全部内容（从 match 的 end 处往后）
+        tail_content = s[match.end():]
+        # 清洗 tail_content：全角斜杠规范化为半角并保持间距
+        tail_content = re.sub(r"\s*[／/]\s*", " / ", tail_content)
+        tail_content = clean_ws(tail_content)
+        full_result = (normalized_first_date + tail_content).strip()
+        return full_result
+    else:
+        # ✅ 没有匹配到完整年月日，直接返回清洗后的原始内容
+        # 依然统一斜杠格式
+        raw_fixed = re.sub(r"\s*[／/]\s*", " / ", s)
+        raw_fixed = clean_ws(raw_fixed)
+        return raw_fixed
 
 
 def get_url_path(url: str) -> str:
@@ -1483,7 +1521,7 @@ def parse_detail_page(html: str, name: str, url: str,
 
 
 def merge_and_sort_playlist(old_playlist: list[dict], new_playlist: list[dict],
-                            cat_name: str, info_text: str) -> tuple[list[dict], bool, list[str]]:
+                            cat_name: str, info_text: str, video_name: str = "") -> tuple[list[dict], bool, list[str]]:
     if not old_playlist:
         return new_playlist, True, ["初始化播放源列表"]
 
@@ -1502,8 +1540,7 @@ def merge_and_sort_playlist(old_playlist: list[dict], new_playlist: list[dict],
         new_eps = new_p.get("episodes", {})
         new_ep_count = len(new_eps)
 
-        has_ep_qiangxian = any(any(kw.upper() in ep_name.upper() for kw in QIANGXIAN_KEYWORDS)
-                               for ep_name in new_eps.keys())
+        has_ep_qiangxian = any(has_tc_keyword(ep_name) for ep_name in new_eps.keys())
 
         if name not in old_map:
             if cat_name == "Movie":
@@ -1524,6 +1561,16 @@ def merge_and_sort_playlist(old_playlist: list[dict], new_playlist: list[dict],
         else:
             old_p = old_map[name]
             old_eps = old_p.get("episodes", {})
+
+            # ======= TC 名单保护判断 =======
+            if is_in_tc_lock_list(video_name):
+                old_has_tc = any(has_tc_keyword(ep) for ep in old_eps.keys())
+                new_has_tc = any(has_tc_keyword(ep) for ep in new_eps.keys())
+                if old_has_tc and not new_has_tc:
+                    log(f"     🛡️ [TC锁定保护] 「{video_name}」在TC名单中且渠道 [{name}] 含有TC选集，新版为非TC(HD)，拒绝更新并跳过该渠道", force=True)
+                    # 保留原渠道选集，不标记为 updated_channel_names，直接跳过处理
+                    continue
+            # ===============================
 
             if cat_name != "Movie" and len(new_eps) < len(old_eps):
                 new_p["episodes"] = old_eps
@@ -1726,7 +1773,7 @@ def process_item(item: dict, cat_name: str,
             old_pl = old_entry.get("playlist", [])
             new_pl = detail.get("playlist", [])
             merged_playlist, pl_changed, pl_details = merge_and_sort_playlist(
-                old_pl, new_pl, cat_name, item["info"])
+                old_pl, new_pl, cat_name, item["info"], video_name=item["name"])
             detail["playlist"] = merged_playlist
             if pl_changed:
                 change_reasons.extend(pl_details)
@@ -1746,7 +1793,10 @@ def process_item(item: dict, cat_name: str,
                     if new_ep_has_qx:
                         break
 
-                if old_is_qx and (not new_info_is_qx) and (not new_ep_has_qx) and new_info_val:
+                # 增加判断：若在 TC 锁定名单，不允许抢先转正片
+                if is_in_tc_lock_list(item["name"]):
+                    detail["info"] = old_info_val
+                elif old_is_qx and (not new_info_is_qx) and (not new_ep_has_qx) and new_info_val:
                     detail["info"] = new_info_val
                     change_reasons.append(f"Info更新 (抢先转正片): '{old_info_val}' -> '{new_info_val}'")
                 else:

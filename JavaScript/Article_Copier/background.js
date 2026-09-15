@@ -3227,21 +3227,33 @@ function extractAndCopy() {
     // ① 先取最可能的文章容器，fallback 到 body
     const container = document.querySelector('article') || document.body;
 
-    // 1. 提取正文：增加对新版 data-testid 结构和 .article-content 类的支持
+    // 1. 提取正文：
+    // 【修改点】：补充了 blockquote、blockquote p、cite 以及可能作为段落/小标题的其他常见元素
     let paras = Array.from(container.querySelectorAll(
       'p[data-contentid], ' +
       'p[data-component="Text"], ' +
       'p[data-apitype="text"], ' +
       'p[data-testid="paragraph"], ' +
       'p.article-content, ' +
+      'blockquote p, ' +               // ★ 新增：抓取 blockquote 里的 p
+      'blockquote:not(:has(p)), ' +     // ★ 新增：如果 blockquote 内部没有嵌套 p，直接抓取 blockquote 本身
+      'cite, ' +                       // ★ 补充：引用的来源/人名（如果有）
       'h2[data-testid="article-header"], ' +
+      'h2, h3, ' +                     // ★ 补充：文章内的小标题
       'ul[data-testid="list"] li, ' +
-      'ol[data-apitype="list"] li'    // 新增：抓取你页面里的有序列表li
+      'ol[data-apitype="list"] li'
     ));
 
+    // 过滤并拼接文本
     textContent = paras
-      .map(p => p.textContent.trim())
+      .map(p => {
+        // 排除掉广告容器内可能带有的文字、版权声明等干扰
+        if (p.closest('[data-component="Ad"], .component-ad')) return '';
+        return p.textContent.trim();
+      })
       .filter(t => t && t.length > 1 && !/^[•@∞]/.test(t))
+      // 避免某些嵌套结构导致相同文字重复提取
+      .filter((t, idx, arr) => arr.indexOf(t) === idx)
       .join('\n\n');
 
     // 2. 提取并下载图片

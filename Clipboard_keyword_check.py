@@ -5,26 +5,31 @@ Clipboard_keyword_check.py
 命中 → 记录URL到 copy_failure.html，exit(1)
 未命中 → exit(0)
 """
+
 import sys
 import os
 import pyperclip
 from datetime import datetime
 
 # ============ 屏蔽关键词列表（可自由增删）============
+# 支持两种形式：
+# 1. 字符串：出现该词即拦截，如 "天安门"
+# 2. 元组/列表：必须同时出现这些词才拦截，如 ("异见人士", "中国")
 BLOCKED_KEYWORDS = [
     "天安门",
     "六四",
-    "民运",
+    ("民运", "中国"),
     "反共",
     "反送中",
     "反修例",
     "挺台",
     "入侵台湾",
     "中華民族",
-    "国安法",
-    "反修例",
+    ("国安法", "中国"),
+    ("坦克人", "中国"),
+    ("反修例", "中国"),
     "香港国家安全法",
-    "报复社会",         # 修复：补充了之前遗漏的逗号
+    ("报复社会", "中国"),
     "赖清德总统",
     "中华民国总统",
     "流亡藏人",
@@ -32,7 +37,7 @@ BLOCKED_KEYWORDS = [
     "达赖喇嘛",
     "伏特台风",
     "亚麻台风",
-    "再教育营",
+    ("再教育营", "中国"),
     "逃离中国",
     "新疆警察",
     "白纸运动",
@@ -45,7 +50,7 @@ BLOCKED_KEYWORDS = [
     "赵紫阳",
     "台独",
     "台湾独立",
-    "异见人士",
+    ("异见人士", "中国"),
     "刘晓波",
     "中国间谍"
 ]
@@ -65,13 +70,10 @@ IGNORE_PREFIXES = (
 
 # ============ 路径配置 ============
 USER_HOME = os.path.expanduser("~")
-# 修改为 .html 后缀
 FAILURE_FILE = os.path.join(USER_HOME, "Coding", "News", "copy_failure.html")
 
 def filter_paragraphs(text):
-    """
-    过滤掉以指定前缀开头的段落/行
-    """
+    """过滤掉以指定前缀开头的段落/行"""
     lines = text.splitlines()
     filtered_lines = [
         line for line in lines 
@@ -103,7 +105,6 @@ def ensure_html_file():
 
 def main():
     url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
-
     content = pyperclip.paste()
     if not content:
         sys.exit(0)
@@ -111,24 +112,36 @@ def main():
     # 1. 过滤指定开头的段落
     content = filter_paragraphs(content)
 
-    # 可选：如果希望剪贴板里的实际内容也同步删掉这些段落，取消下面这行的注释即可：
-    # pyperclip.copy(content)
-
     # 2. 对过滤后的内容进行敏感词检测
-    for keyword in BLOCKED_KEYWORDS:
-        if keyword in content:
+    for item in BLOCKED_KEYWORDS:
+        is_hit = False
+        matched_str = ""
+
+        # 情况 A: 组合词（用元组/列表表示）
+        if isinstance(item, (tuple, list)):
+            # 组合内所有词都必须在 content 中
+            if all(word in content for word in item):
+                is_hit = True
+                matched_str = " + ".join(item)
+        # 情况 B: 单一词（字符串）
+        else:
+            if item in content:
+                is_hit = True
+                matched_str = item
+
+        # 命中规则，写入日志并退出
+        if is_hit:
             ensure_html_file()
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # 构造 HTML 条目
+
             html_entry = f"""    <div class='entry'>
-        [{current_time}] - <span class='keyword'>[Blocked: {keyword}]</span> - 
+        [{current_time}] - <span class='keyword'>[Blocked: {matched_str}]</span> - 
         <a href='{url}' target='_blank'>{url}</a>
     </div>\n"""
-            
+
             with open(FAILURE_FILE, 'a', encoding='utf-8') as f:
                 f.write(html_entry)
-            
+
             sys.exit(1)
 
     sys.exit(0)

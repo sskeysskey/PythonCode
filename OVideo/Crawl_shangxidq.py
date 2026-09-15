@@ -169,7 +169,35 @@ BLACKLIST_NAMES = [
     "人生赢家", "判决", "判决墨西哥剧"
 ]
 BLACKLIST_URLS = []
-WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "骸骨骑士大人异世界冒险中Ⅱ"]
+WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "猫与龙",
+                   "骸骨骑士大人异世界冒险中Ⅱ", "炒翻天",
+                   "超超超超超喜欢你的100个女朋友 第三季",
+                   "虽然我不是完美恶女～雏宫蝶鼠替换传～",
+                   "暗芝居 第十七季", "鬼之花嫁", "成长秀～向日葵马戏团～"]
+
+QIANGXIAN_KEYWORDS = ['TC', 'TS', '抢先', 'HC']
+
+# ============ TC 锁定名单配置 ============
+# 针对在此名单内的视频：若原有渠道的 episode 名字包含 ['TC', 'TS', '抢先', 'HC']，
+# 即使新抓到的同名渠道为 HD 或非 TC 版本，也拒绝更新该渠道，直接锁定跳过。
+TC_LOCK_NAMES = {
+    "起义",
+    "猛攻",
+}
+
+def has_tc_keyword(text: str) -> bool:
+    """判断字符串是否包含 TC/TS/抢先/HC 关键字（忽略大小写）"""
+    if not text:
+        return False
+    upper = str(text).upper()
+    return any(kw.upper() in upper for kw in QIANGXIAN_KEYWORDS)
+
+def is_in_tc_lock_list(name: str) -> bool:
+    """判断视频名是否在 TC 锁定名单中（忽略空格与大小写）"""
+    if not name or not TC_LOCK_NAMES:
+        return False
+    clean_name = re.sub(r"\s+", "", str(name)).lower()
+    return any(re.sub(r"\s+", "", str(item)).lower() == clean_name for item in TC_LOCK_NAMES)
 
 SITE_PRIORITY = {
     "huxitech":  0,
@@ -1684,6 +1712,20 @@ def process_list_page(data, list_url, group, page_name):
                         continue
 
             if existing:
+                # ======= TC 名单保护前置拦截 =======
+                if is_in_tc_lock_list(real_name):
+                    site_pl = next((pl for pl in existing.get("playlist", []) if pl.get("name") == PLAYLIST_NAME), None)
+                    if site_pl:
+                        old_site_eps = site_pl.get("episodes", {})
+                        old_has_tc = any(has_tc_keyword(ep) for ep in old_site_eps.keys())
+                        new_has_tc = any(has_tc_keyword(ep) for ep in new_eps.keys())
+                        if old_has_tc and not new_has_tc:
+                            flush()
+                            print(f"    🛡️ [TC锁定跳过] 「{real_name}」命中TC名单，原有 [{PLAYLIST_NAME}] 渠道含TC选集，新抓到为非TC(HD等)，锁定跳过不更新")
+                            ok += 1
+                            time.sleep(SLEEP_BETWEEN)
+                            continue
+                        
                 old_max_episodes = 0
                 for pl in existing.get("playlist", []):
                     old_max_episodes = max(old_max_episodes, get_max_episode_number(pl.get("episodes", {})))
