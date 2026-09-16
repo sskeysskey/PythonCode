@@ -32,8 +32,7 @@ potential_folders = [
     os.path.join(USER_HOME, "Downloads", "backup", "TXT"),
     os.path.join(BASE_CODING_DIR, "Books"),
     os.path.join(BASE_CODING_DIR, "News", "done"),
-    os.path.join(BASE_CODING_DIR, "Xcode", "Indices", "Finance"),
-    os.path.join(BASE_CODING_DIR, "Xcode", "ONews", "ONews"),
+    os.path.join(BASE_CODING_DIR, "Xcode"),
     os.path.join(USER_HOME, ".hammerspoon"), # Mac 特有
     os.path.join(BASE_CODING_DIR, "sh"),
     os.path.join(BASE_CODING_DIR, "LocalServer")
