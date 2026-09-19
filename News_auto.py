@@ -15,6 +15,7 @@
     2  超时（TIMEOUT_DURATION 秒内没拿到合格内容）
     3  模板图片缺失 / provider 名称错误
     5  需要交接（AI 拒答 或 回答异常）
+    7  网页端「上传/发送失败」（本篇建议交由同品牌 API 兜底，下一篇仍回网页版）
 """
 
 import os
@@ -37,12 +38,19 @@ SCROLL_AMOUNT = -120        # 滚动幅度
 MAX_ATTEMPTS = 3            # 最多点击复制次数
 TIMEOUT_DURATION = 120      # 总超时（秒）
 
+# 上传失败判定成立时，保存一张整屏截图便于事后核查误报
+SAVE_DEBUG_SHOT = True
+DEBUG_SHOT_DIR = "/tmp"
+
 # ================= 退出码 =================
 EXIT_OK = 0
 EXIT_UNQUALIFIED = 1
 EXIT_TIMEOUT = 2
 EXIT_TEMPLATE_MISSING = 3
 EXIT_HANDOFF = 5
+EXIT_UPLOAD_FAIL = 7          # 新增：网页上传/发送失败
+
+UPLOAD_FAIL_KEY = "upload_fail"
 
 # ================= provider 差异配置 =================
 # templates: key -> (文件名, 匹配阈值, 是否必需)
@@ -50,28 +58,37 @@ PROVIDERS = {
     "qianwen": {
         "label": "千问",
         "templates": {
-            "copy":       ("qianwen_copy.png",       0.90, True),
-            "forbidden":  ("qianwen_forbidden.png",  0.90, True),
-            "forbidden2": ("qianwen_forbidden2.png", 0.90, True),
-            "retry":      ("qianwen_retry.png",      0.90, True),
-            "timeout":    ("qianwen_timeout.png",    0.90, True),
+            "copy":        ("qianwen_copy.png",         0.90, True),
+            "forbidden":   ("qianwen_forbidden.png",    0.90, True),
+            "forbidden2":  ("qianwen_forbidden2.png",   0.90, True),
+            "retry":       ("qianwen_retry.png",        0.90, True),
+            "timeout":     ("qianwen_timeout.png",      0.90, True),
+            # 可选模板：文件不存在时该检测自动关闭，不会影响主流程
+            "upload_fail": ("qianwen_upload_fail.png",  0.92, False),
         },
         "check_refusal_text": True,     # 剪贴板文本命中拒答话术 -> 交接
         "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后 Cmd+R
         "related_gate": False,          # 复制按钮出现后是否等待 related 图再重定位
         "cursor_before_scroll": (709, 749),  # 内容不合格重试前把鼠标移到这里再滚动
         "copy_offset": (0, 0),
+        # ---- 上传失败检测参数 ----
+        "upload_fail_confirm_delay": 0.8,   # 二次确认间隔；<=0 表示命中即判定
+        "upload_fail_transient_ok": True,   # 提示消失但始终没有 Copy -> 仍判定为失败
     },
     "deepseek": {
         "label": "DeepSeek",
         "templates": {
             "copy":       ("deepseek_copy.png",       0.90, True),
+            # 如需支持 DeepSeek 上传失败，放一张 deepseek_upload_fail.png 并解注下一行
+            # "upload_fail": ("deepseek_upload_fail.png", 0.92, False),
         },
         "check_refusal_text": True,
         "refresh_on_stall": True,
         "related_gate": False,
         "cursor_before_scroll": (709, 749),
         "copy_offset": (-35, 0),        # 靠左 35 像素点击
+        "upload_fail_confirm_delay": 0.8,
+        "upload_fail_transient_ok": True,
     },
     "doubao": {
         "label": "豆包",
@@ -79,12 +96,15 @@ PROVIDERS = {
             "copy":    ("doubao_copy.png",    0.90, True),
             "related": ("doubao_related.png", 0.80, True),
             "wrong":   ("doubao_wrong.png",   0.88, False),   # 可选：回答异常标识
+            # "upload_fail": ("doubao_upload_fail.png", 0.92, False),
         },
         "check_refusal_text": True,
         "refresh_on_stall": False,
         "related_gate": True,
         "cursor_before_scroll": None,
         "copy_offset": (0, 0),
+        "upload_fail_confirm_delay": 0.8,
+        "upload_fail_transient_ok": True,
     },
 }
 
@@ -151,6 +171,18 @@ def capture_screen():
         return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
 
+def save_debug_shot(tag: str):
+    if not SAVE_DEBUG_SHOT:
+        return
+    try:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(DEBUG_SHOT_DIR, f"news_auto_{tag}_{ts}.png")
+        cv2.imwrite(path, capture_screen())
+        print(f"已保存调试截图: {path}")
+    except Exception as e:
+        print(f"保存调试截图失败: {e}")
+
+
 def match_template(template, threshold, screen=None):
     """返回 (max_loc, shape) 或 (None, None)"""
     if template is None:
@@ -210,11 +242,11 @@ def perform_click(location, shape, offset=(0, 0)):
     phys_y = location[1] + shape[0] // 2
     lx = int(phys_x / SCALE_FACTOR)
     ly = int(phys_y / SCALE_FACTOR)
-    
+
     if offset:
         lx += offset[0]
         ly += offset[1]
-        
+
     pyautogui.click(lx, ly)
     return lx, ly
 
@@ -230,6 +262,64 @@ def scroll_down(cfg, move_cursor=False):
         pyautogui.moveTo(pos[0], pos[1])
     pyautogui.scroll(SCROLL_AMOUNT)
     sleep(1)
+
+
+# ================= 上传/发送失败检测 =================
+def check_upload_fail_confirmed(cfg, templates, screen=None):
+    """
+    返回 (confirmed, delayed)
+        confirmed : True 表示确认为「上传失败」
+        delayed   : True 表示本函数消耗了等待时间（当前 screen 已过期，调用方应重新取帧）
+
+    判定策略（对抗 toast 转瞬即逝 + 模板误报）：
+        1) 当前帧命中 upload_fail
+        2) 等 confirm_delay 后复查：若 Copy 已出现 -> 说明其实已经出答案，忽略
+        3) upload_fail 仍在 -> 确认失败
+        4) upload_fail 消失但 Copy 仍未出现 -> 再采一次；仍是这个状态时按 toast 处理，
+           若 upload_fail_transient_ok 为 True 则判定失败
+    """
+    if templates.get(UPLOAD_FAIL_KEY, (None, 0))[0] is None:
+        return False, False
+
+    loc, _ = find(templates, UPLOAD_FAIL_KEY, screen=screen)
+    if not loc:
+        return False, False
+
+    delay = float(cfg.get("upload_fail_confirm_delay", 0.8))
+    if delay <= 0:
+        print("命中 upload_fail 标识（未开启二次确认），判定为上传失败。")
+        return True, False
+
+    print(f"疑似检测到上传失败标识，{delay} 秒后二次确认...")
+    sleep(delay)
+
+    copy_loc, _ = find(templates, "copy")
+    if copy_loc:
+        print("二次确认时发现 Copy 按钮已出现，忽略 upload_fail 标识。")
+        return False, True
+
+    loc2, _ = find(templates, UPLOAD_FAIL_KEY)
+    if loc2:
+        print("二次确认成立：网页端上传/发送失败。")
+        return True, True
+
+    sleep(0.6)
+    copy_loc2, _ = find(templates, "copy")
+    if copy_loc2:
+        print("提示已消失且 Copy 已出现，忽略 upload_fail 标识。")
+        return False, True
+
+    loc3, _ = find(templates, UPLOAD_FAIL_KEY)
+    if loc3:
+        print("第三次采样命中：网页端上传/发送失败。")
+        return True, True
+
+    if cfg.get("upload_fail_transient_ok", True):
+        print("上传失败提示为瞬时 toast（已消失且始终无 Copy 按钮），判定为上传失败。")
+        return True, True
+
+    print("上传失败提示已消失，且未开启瞬时判定，继续正常流程。")
+    return False, True
 
 
 # ================= 豆包专用：回答异常二次确认 =================
@@ -297,7 +387,22 @@ def main():
 
         screen = capture_screen()
 
-        # ---- 1. 拒答图标（forbidden / forbidden2）优先 ----
+        # ---- 0. 同帧先看 Copy：已出答案时压制所有异常检测 ----
+        copy_loc, copy_shape = find(templates, "copy", screen=screen)
+
+        # ---- 1. 上传/发送失败（优先级最高，避免被 retry/timeout 拖进 15s+刷新）----
+        if not copy_loc:
+            up_confirmed, up_delayed = check_upload_fail_confirmed(cfg, templates, screen=screen)
+            if up_confirmed:
+                save_debug_shot("upload_fail")
+                print("检测到网页上传失败 -> 请求 API 兜底（退出码 7）。")
+                sys.exit(EXIT_UPLOAD_FAIL)
+            if up_delayed:
+                # 确认过程消耗了时间，当前帧已过期，重新取帧（不消耗 attempt）
+                sleep(0.3)
+                continue
+
+        # ---- 2. 拒答图标（forbidden / forbidden2）----
         forbidden_hit = None
         for key in ("forbidden", "forbidden2"):
             loc, _ = find(templates, key, screen=screen)
@@ -308,8 +413,8 @@ def main():
             print(f"检测到 {forbidden_hit} 图片，判定为拒答 -> 请求交接。")
             sys.exit(EXIT_HANDOFF)
 
-        # ---- 2. retry / timeout：等 15 秒后刷新页面 ----
-        if cfg["refresh_on_stall"]:
+        # ---- 3. retry / timeout：等 15 秒后刷新页面 ----
+        if cfg["refresh_on_stall"] and not copy_loc:
             stall_hit = None
             for key in ("retry", "timeout"):
                 loc, _ = find(templates, key, screen=screen)
@@ -323,8 +428,8 @@ def main():
                 sleep(5)
                 continue        # 刷新不消耗 attempt
 
-        # ---- 3. Copy 按钮 ----
-        location, shape = find(templates, "copy", screen=screen)
+        # ---- 4. Copy 按钮 ----
+        location, shape = copy_loc, copy_shape
 
         if not location:
             # 连复制按钮都没有 -> 检查回答异常（豆包）
@@ -333,7 +438,7 @@ def main():
             scroll_down(cfg)
             continue
 
-        # ---- 3.1 豆包：等 related 标识后重新定位 copy（布局会被挤压）----
+        # ---- 4.1 豆包：等 related 标识后重新定位 copy（布局会被挤压）----
         if cfg["related_gate"]:
             print("初次定位到 Copy 按钮，开始检测 Related 标识...")
             gate_start = time.time()
@@ -356,7 +461,7 @@ def main():
                 scroll_down(cfg)
                 continue        # 未实际点击，不消耗 attempt
 
-        # ---- 4. 点击复制并校验 ----
+        # ---- 5. 点击复制并校验 ----
         copy_offset = cfg.get("copy_offset", (0, 0))
         lx, ly = perform_click(location, shape, offset=copy_offset)
         print(f"第 {attempt} 次尝试 - 点击复制按钮: {lx}, {ly}")

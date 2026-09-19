@@ -330,6 +330,30 @@ def _content_len(v):
     return len(str(v).strip())
 
 
+def insert_key_after(d: dict, after_key: str, new_key: str, new_value):
+    """
+    在字典 d 中将 new_key 赋值为 new_value，并确保它的位置排在 after_key 紧邻的下方。
+    使用原地 clear + update，保持外部对象引用不变。
+    """
+    new_items = []
+    found_after = False
+
+    for k, v in d.items():
+        if k == new_key:
+            # 跳过原有的 new_key（如果已存在），以便重新按顺序排在 after_key 下方
+            continue
+        new_items.append((k, v))
+        if k == after_key:
+            new_items.append((new_key, new_value))
+            found_after = True
+
+    # 防御容错：如果字典里本身没有 after_key，直接追加到末尾
+    if not found_after:
+        new_items.append((new_key, new_value))
+
+    d.clear()
+    d.update(new_items)
+
 def _should_write(old, new):
     """
     写入规则：原字段为空，或新内容比原内容「更长」才写入。
@@ -363,8 +387,11 @@ def update_douban(item, scraped) -> bool:
         old_date = str(item.get('date', '')).strip()
         if old_date != date:
             item['date'] = date
+            # 同步在 date 下方增加或更新 date_re 为最新抓到的日期
+            insert_key_after(item, after_key='date', new_key='date_re', new_value=date)
             changed = True
-            print(f"  │ 日期 date : {old_date or '空'} -> {date}")
+            print(f"  │ 日期 date    : {old_date or '空'} -> {date}")
+            print(f"  │ 同步 date_re : {date}")
         else:
             print(f"  │ 日期 date : {date}（无变化）")
     else:

@@ -169,7 +169,8 @@ SITE_MARKERS = ("stui-", "vodshow", "vodplay", "stui-vodlist")
 
 BLACKLIST_NAMES = ["天堂之剑", "定海神针：九尾三世劫",
                    "机甲少女破时空战记", "无名传奇", "魔彩王国历险记",
-                   "阿松与阿暖", "红色珍珠", "飞越疯人院", "魔法光源股份有限公司第二季", "长夜将尽"]
+                   "阿松与阿暖", "红色珍珠", "飞越疯人院",
+                   "魔法光源股份有限公司第二季", "长夜将尽", "爱情的味道"]
 
 # URL 黑名单
 BLACKLIST_URLS = [
@@ -1462,6 +1463,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
         "类型":   fields["类型"],
         "地区":   fields["地区"],
         "date":   fields["date"],
+        "date_re": fields["date"],   # <-- 新增此行
         "alias":  "",
         "intro":  intro or "",
         "评分":   {"豆瓣": "", "IMDB": ""},

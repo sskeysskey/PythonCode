@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 xb6v.com 最新剧集、最新电影、小编推荐、首页 爬取脚本
-（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤）
+（升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤 + 独立图片轻量重试）
 """
 
 import os
@@ -65,6 +65,10 @@ BLACKLIST_URL_PATH = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/blackl
 PLAYLIST_NAME = "xb6v"
 REQUEST_TIMEOUT = (10, 25)
 SLEEP_BETWEEN  = 1.0
+
+# 图片专用下载配置（禁止死循循环，仅试2次，短超时）
+IMG_REQUEST_TIMEOUT = (5, 10)
+MAX_IMG_ATTEMPTS = 2
 
 # ============ 数据安全相关配置 ============
 BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
@@ -635,22 +639,49 @@ def parse_score(s):
         return ""
     return val
 
+# ============== 针对图片的轻量下载逻辑 ==============
 def download_and_localize_image(img_url):
+    """
+    图片下载专用函数：
+    1. 严格禁止替换镜像站域名；
+    2. 最多仅试 2 次（1 次初试 + 1 次重试）；
+    3. 失败直接返回空字符串 ""，绝不死循环，不阻塞主流程。
+    """
     if not img_url:
         return ""
     fn = safe_filename(img_url)
     local_path = os.path.join(IMG_DIR, fn)
-    if not os.path.exists(local_path):
+
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return fn
+
+    for attempt in range(1, MAX_IMG_ATTEMPTS + 1):
         try:
-            content = fetch(img_url, is_binary=True)
+            resp = SESSION_LOOSE.get(img_url, timeout=IMG_REQUEST_TIMEOUT, verify=False, allow_redirects=True)
+            resp.raise_for_status()
+            content = resp.content
+            if not content:
+                raise ValueError("下载的图片文件为空(0字节)")
+
             os.makedirs(IMG_DIR, exist_ok=True)
             with open(local_path, "wb") as f:
                 f.write(content)
             print(f"  [图片] 已下载 -> {fn}")
+            return fn
         except Exception as e:
-            print(f"  [图片下载失败] {img_url}: {e}")
-            return ""
-    return fn
+            if attempt < MAX_IMG_ATTEMPTS:
+                print(f"  ⚠️[图片下载] 第{attempt}次失败，准备第2次重试: {img_url} ({e})")
+                time.sleep(1.0)
+            else:
+                print(f"  ❌[图片下载放弃] 尝试{MAX_IMG_ATTEMPTS}次均失败，图片字段留空跳过: {img_url}")
+                # 清除可能遗留的空文件
+                if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
+                    try:
+                        os.remove(local_path)
+                    except Exception:
+                        pass
+                return ""
+    return ""
 
 # ============== 新格式解析 ==============
 JUNK_LINE_RE = re.compile(r"^[\s•·.。…\-—=\$~@®◎\u3000]*$")
@@ -672,7 +703,7 @@ def parse_people_line(value):
 def parse_new_format(lines, h1_name):
     result = {
         "info": "", "alias": "", "导演": "", "编剧": [], "主演": [],
-        "类型": [], "地区": "", "date": "", "intro": "", "评分": {"豆瓣": ""},
+        "类型": [], "地区": "", "date": "", "intro": "", "评分": {"豆瓣": "", "IMDB": ""},
     }
     youming = ""
     title_alias = ""
@@ -859,9 +890,10 @@ def parse_subpage(sub_url, default_name, default_info):
     if lei_bie:
         types = [t for t in re.split(r"[\s/、,，]+", lei_bie) if t]
 
-    rating = {"豆瓣": douban_score if douban_score else ""}
-    if imdb_score:
-        rating["IMDB"] = imdb_score
+    rating = {
+        "豆瓣": douban_score if douban_score else "",
+        "IMDB": imdb_score if imdb_score else "",
+    }
 
     old_is_empty = (not director and not writer_list and not actor_list
                     and not types and not chan_di)
@@ -908,6 +940,7 @@ def parse_subpage(sub_url, default_name, default_info):
         "类型":   types,
         "地区":   chan_di,
         "date":   shang_ying,
+        "date_re": shang_ying,
         "alias":  alias_str,
         "intro":  intro_text or "",
         "评分":   rating,
@@ -1283,7 +1316,7 @@ def _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
             if should_touch_update_on_episode_change(playlist, new_6vdy_count):
                 touch = True
                 print("      ✅[时间戳] 集数更新且 6vdy 集数大于其他所有渠道最大值 → 刷新 update")
-            
+
     if touch:
         existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("      ✅[字段更新] 已同步更新「update」时间戳")
@@ -1329,7 +1362,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
 
     has_6vdy_url = any("xb6v" in existing.get(k, "") or existing.get(k, "") == sub_url for k in url_keys)
     playlist = existing.setdefault("playlist", [])
-    
+
     old_max_episodes = 0
     for pl in playlist:
         eps = pl.get("episodes", {})
@@ -1345,7 +1378,7 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
                 old_6vdy_eps = pl.get("episodes", {})
                 old_6vdy_idx = idx
                 break
-        
+
         old_vdy_cnt = get_real_episode_count(old_6vdy_eps)
 
         if new_6vdy_episodes == old_6vdy_eps:

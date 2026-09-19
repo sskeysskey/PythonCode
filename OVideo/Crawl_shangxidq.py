@@ -1377,6 +1377,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
         "类型":   fields["类型"],
         "地区":   fields["地区"],
         "date":   fields["date"],
+        "date_re": fields["date"],   # <-- 新增此行
         "alias":  "",
         "intro":  intro or "",
         "评分":   {"豆瓣": "", "IMDB": ""},
