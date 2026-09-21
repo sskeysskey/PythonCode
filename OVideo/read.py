@@ -27,7 +27,7 @@ BLOCKED_CHANNEL_KEYWORDS = ()
 
 # ===== 渠道优先级配置 =====
 # ===== 比「云播线路」系列更高优先级的渠道 =====
-TOP_PRIORITY_CHANNELS = ['shangxidq', 'gdefud', 'huxitech', 'meiju8', 'cifppc', 'xb6v']
+TOP_PRIORITY_CHANNELS = ['shangxidq', 'gdefud', 'huxitech', 'meiju8', 'cifppc', 'xb6v', '暴风']
 
 # 「云播线路」系列(云播线路 / 云播线路1 / 云播线路2 ...)整体为第一优先级,
 # 组内不排序,按它们在 JSON playlist 里的原始顺序取。
@@ -41,7 +41,7 @@ CHANNEL_PRIORITY = ['chnland']
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime', 'Show'}
-EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', 'gdefud', 'huxitech', 'xb6v', '天堂', '光速', '红牛', '量子')
+EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', 'gdefud', 'huxitech', 'xb6v', '暴风', '天堂', '光速', '红牛', '量子')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
@@ -53,6 +53,17 @@ SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
 EPISODE_THRESHOLD = 20          # 集数阈值
 SERIES_REQUIRED_SHORT = 2       # 集数 <= 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
 SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
+
+# ===== 【新增】"更全渠道补抓"规则 =====
+# 场景：数量上已凑够 required_count 个完整渠道，但还存在集数更多的渠道。
+# 为保证资源"最新最全"，即便已达标也要把集数更多的渠道补抓进来。
+RICHER_CHANNEL_SCAN_ENABLED = True
+# 仅对剧集类生效（Movie 每个渠道恒为 1 集，比较无意义）
+RICHER_CHANNEL_SCAN_CATEGORIES = {'Drama', 'Show', 'Anime'}
+# 候选渠道集数需要比"基准线"至少多出多少集才触发（>=1；调大可降低噪音）
+RICHER_CHANNEL_MIN_ADVANTAGE = 1
+# 单个项目单轮最多额外补抓几个"更全渠道"（1 即只追最全的那个，已足够保证最全）
+RICHER_CHANNEL_MAX_EXTRA = 1
 
 # ===== Show 全量抓取白名单 =====
 SHOW_FULL_SCAN_WHITELIST = {
@@ -183,7 +194,7 @@ def is_channel_viable(scan_episodes, blacklist_url):
 
 def is_channel_completed(scan_episodes, url_mapping):
     """
-    【新增】判断该渠道的待扫集数是否已经在 url_mapping 中全部完成映射：
+    判断该渠道的待扫集数是否已经在 url_mapping 中全部完成映射：
     - 至少有 1 集
     - 每一集都在 url_mapping 中
     - 每一集对应的值都不是空字符串（已完成人工/解析映射）
@@ -281,18 +292,92 @@ def sort_playlists_by_priority(playlists, priority=None,
     return [pl for _, pl in indexed]
 
 
+# ===================== 【新增】更全渠道补抓工具 =====================
+def _describe_channel(rec):
+    """统一的渠道描述文本，便于日志输出。"""
+    return f"「{rec['name']}」({rec['total']}集)"
+
+
+def pick_richer_channels(completed_recs, selected_recs, ordered_pending_recs,
+                         category, item_label,
+                         enabled=None, categories=None,
+                         min_advantage=None, max_extra=None,
+                         verbose=True):
+    """
+    【新增】质量兜底：即便渠道"数量"已达标，只要还存在集数更多的可用渠道，
+    也把它补抓进来，保证资源最新最全。
+
+    判定基准（reference）：
+        已完成渠道 ∪ 本轮已选中渠道 中的【最大完整集数】
+    候选条件：
+        未被选中的可用渠道，其完整集数 - reference >= min_advantage
+
+    自收敛特性：
+        每追加一个候选，reference 就抬升到该候选的集数，
+        因此天然只会追到"最全的那一个"；max_extra 作为硬上限兜底。
+    并列打平：
+        集数相同时，沿用 ordered_pending_recs 已有的优先级顺序（TOP > 云播 > ...）。
+    """
+    enabled = RICHER_CHANNEL_SCAN_ENABLED if enabled is None else enabled
+    categories = RICHER_CHANNEL_SCAN_CATEGORIES if categories is None else categories
+    min_advantage = RICHER_CHANNEL_MIN_ADVANTAGE if min_advantage is None else min_advantage
+    max_extra = RICHER_CHANNEL_MAX_EXTRA if max_extra is None else max_extra
+
+    if not enabled or max_extra <= 0:
+        return []
+    if category not in categories:
+        return []
+
+    baseline_pool = list(completed_recs) + list(selected_recs)
+    if not baseline_pool:
+        return []
+
+    # 基准渠道 = 已完成/已选中里集数最多的那个
+    base_rec = max(baseline_pool, key=lambda r: r['total'])
+    reference = base_rec['total']
+    base_desc = _describe_channel(base_rec)
+
+    chosen_ids = {id(r['pl']) for r in baseline_pool}
+    candidates = [r for r in ordered_pending_recs if id(r['pl']) not in chosen_ids]
+
+    extras = []
+    while len(extras) < max_extra:
+        pool = [r for r in candidates if (r['total'] - reference) >= max(1, min_advantage)]
+        if not pool:
+            break
+        # candidates 已按优先级排序，max 返回首个最大值 -> 集数相同按优先级打平
+        best = max(pool, key=lambda r: r['total'])
+        extras.append(best)
+        candidates.remove(best)
+
+        if verbose:
+            print(f"  [更全补抓] {item_label} 数量已达标，但发现集数更多的渠道："
+                  f"{_describe_channel(best)} > 基准 {base_desc}，"
+                  f"为保证最新最全予以补抓")
+
+        # 抬升基准线，保证不会连锁追抓一堆渠道
+        reference = best['total']
+        base_desc = _describe_channel(best)
+
+    return extras
+# ====================================================================
+
+
 def pick_playlists_to_scan(playlists, blacklist_url, url_mapping,
                            required_count, item_label, category, show_last_n,
                            full_scan=False,
                            episode_priority_names=None):
     """
-    【升级】考虑 url_mapping 完成状态的渠道挑选器：
-    1. 统计已有多少个渠道已经完整映射好；
-    2. 若已完成数 >= required_count，返回空列表（代表无需新抓取）；
-    3. 若不足，仅挑选所需差额（needed）数量的未完成有效渠道返回进行补全。
+    渠道挑选器（数量 + 质量双重把关）：
+    1. 过滤黑名单渠道 / 含 blacklist_url 的渠道 / 空渠道；
+    2. 统计已在 url_mapping 中完整映射好的渠道数；
+    3. 数量不足 -> 按优先级补齐差额；
+    4. 【新增】无论数量是否达标，只要还存在"集数更多"的可用渠道，
+       就额外补抓（pick_richer_channels），保证资源最新最全；
+    5. 都不需要则返回空列表。
     """
-    # 1. 过滤掉包含黑名单链接或为空的非健康渠道，准备待分析列表
-    viable_channels = []
+    # ---------- 1. 收集健康可用渠道 ----------
+    viable_recs = []
     for pl in playlists:
         name = _normalize_channel_name(pl.get('name')) or '未命名渠道'
         if is_channel_blocked(name):
@@ -309,71 +394,87 @@ def pick_playlists_to_scan(playlists, blacklist_url, url_mapping,
         if not is_channel_viable(scan_episodes, blacklist_url):
             continue
 
-        viable_channels.append((pl, scan_episodes))
+        viable_recs.append({
+            'pl': pl,
+            'name': name,
+            'total': len(episodes_all),      # 完整集数：用于"谁更全"的比较
+            'scan': scan_episodes,           # 本轮实际要扫的 url（Show 可能被裁剪）
+            'truncated': (not full_scan) and category == 'Show' and len(episodes_all) > 10,
+        })
 
-    # 2. 识别出哪些渠道已经在 url_mapping 中全部完成映射
-    completed_channels = []
-    pending_channels = []
-
-    for pl, scan_eps in viable_channels:
-        name = _normalize_channel_name(pl.get('name')) or '未命名渠道'
-        if is_channel_completed(scan_eps, url_mapping):
-            completed_channels.append((pl, scan_eps))
-        else:
-            pending_channels.append(pl)
-
-    completed_count = len(completed_channels)
-
-    # 3. 如果已有完整渠道数量已达到指标要求，直接跳过抓取
-    if completed_count >= required_count:
-        done_names = [
-            f"「{_normalize_channel_name(p.get('name'))}」({len(eps)}集)"
-            for p, eps in completed_channels
-        ]
-        print(f"  [已达标跳过] {item_label} 已有 {completed_count}/{required_count} 个完整已映射渠道："
-              f"{', '.join(done_names)}，无需抓取新渠道")
+    if not viable_recs:
         return []
 
-    needed = required_count - completed_count
-    if completed_count > 0:
-        done_names = [
-            f"「{_normalize_channel_name(p.get('name'))}」"
-            for p, _ in completed_channels
-        ]
-        print(f"  [部分已满足] {item_label} 已有 {completed_count} 个完成渠道（{', '.join(done_names)}），"
-              f"还需补齐 {needed} 个完整渠道")
+    # ---------- 2. 区分"已完整映射"与"待处理" ----------
+    completed_recs, pending_recs = [], []
+    for rec in viable_recs:
+        if is_channel_completed(rec['scan'], url_mapping):
+            completed_recs.append(rec)
+        else:
+            pending_recs.append(rec)
 
-    # 4. 对尚未完成的可用渠道按优先级排序，择优挑选 needed 个
-    ordered_pending = sort_playlists_by_priority(
-        pending_channels, episode_priority_names=episode_priority_names
+    completed_count = len(completed_recs)
+
+    # 待处理渠道按既有优先级排序（保持与原逻辑一致）
+    rec_by_id = {id(r['pl']): r for r in pending_recs}
+    ordered_pending_pls = sort_playlists_by_priority(
+        [r['pl'] for r in pending_recs],
+        episode_priority_names=episode_priority_names
+    )
+    ordered_pending_recs = [rec_by_id[id(pl)] for pl in ordered_pending_pls]
+
+    # ---------- 3. 数量补齐 ----------
+    selected_recs = []
+    needed = max(0, required_count - completed_count)
+
+    if needed > 0:
+        if completed_count > 0:
+            done_names = ', '.join(f"「{r['name']}」" for r in completed_recs)
+            print(f"  [部分已满足] {item_label} 已有 {completed_count} 个完成渠道（{done_names}），"
+                  f"还需补齐 {needed} 个完整渠道")
+
+        for rec in ordered_pending_recs:
+            if len(selected_recs) >= needed:
+                break
+            selected_recs.append(rec)
+            slot_idx = completed_count + len(selected_recs)
+
+            if rec['truncated']:
+                print(f"  [采用 {slot_idx}/{required_count}] {item_label} 待抓渠道「{rec['name']}」"
+                      f"(Show 末尾 {len(rec['scan'])} 条，原共 {rec['total']} 集)")
+            else:
+                print(f"  [采用 {slot_idx}/{required_count}] {item_label} 待抓渠道「{rec['name']}」"
+                      f"(共 {len(rec['scan'])} 集)")
+
+        if (completed_count + len(selected_recs)) < required_count:
+            print(f"  [提示] {item_label} 仅能凑齐 {completed_count + len(selected_recs)}/{required_count} 个渠道"
+                  f"（已无更多可用渠道）")
+
+    # ---------- 4. 质量兜底：补抓集数更多的渠道 ----------
+    extra_recs = pick_richer_channels(
+        completed_recs, selected_recs, ordered_pending_recs,
+        category, item_label
     )
 
-    to_scan = []
-    for pl in ordered_pending:
-        if len(to_scan) >= needed:
-            break
-
-        name = _normalize_channel_name(pl.get('name')) or '未命名渠道'
-        episodes_all = pl.get('episodes', {}) or {}
-        scan_episodes = get_scan_episodes(
-            episodes_all, category, show_last_n, full_scan=full_scan
-        )
-
-        to_scan.append((pl, scan_episodes))
-        slot_idx = completed_count + len(to_scan)
-
-        if category == 'Show' and len(episodes_all) > 10 and not full_scan:
-            print(f"  [采用 {slot_idx}/{required_count}] {item_label} 待抓渠道「{name}」"
-                  f"(Show 末尾 {len(scan_episodes)} 条，原共 {len(episodes_all)} 集)")
+    for rec in extra_recs:
+        if rec['truncated']:
+            print(f"  [采用 额外] {item_label} 待抓渠道「{rec['name']}」"
+                  f"(Show 末尾 {len(rec['scan'])} 条，原共 {rec['total']} 集)")
         else:
-            print(f"  [采用 {slot_idx}/{required_count}] {item_label} 待抓渠道「{name}」"
-                  f"(共 {len(scan_episodes)} 集)")
+            print(f"  [采用 额外] {item_label} 待抓渠道「{rec['name']}」"
+                  f"(共 {len(rec['scan'])} 集)")
 
-    if (completed_count + len(to_scan)) < required_count:
-        print(f"  [提示] {item_label} 仅能凑齐 {completed_count + len(to_scan)}/{required_count} 个渠道"
-              f"（已无更多可用渠道）")
+    final_recs = selected_recs + extra_recs
 
-    return to_scan
+    # ---------- 5. 真正无事可做 ----------
+    if not final_recs:
+        if completed_count >= required_count:
+            done_names = ', '.join(_describe_channel(r) for r in completed_recs)
+            print(f"  [已达标跳过] {item_label} 已有 {completed_count}/{required_count} 个完整已映射渠道："
+                  f"{done_names}，且无更全渠道可补，无需抓取")
+        return []
+
+    return [(r['pl'], r['scan']) for r in final_recs]
 
 
 def should_skip_by_region(item, category,
@@ -418,6 +519,7 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
 def main():
     global MOVIE_REQUIRED_CHANNELS, SERIES_REQUIRED_SHORT, SERIES_REQUIRED_LONG
     global BLOCKED_CHANNEL_NAMES, BLOCKED_CHANNEL_KEYWORDS
+    global RICHER_CHANNEL_SCAN_ENABLED, RICHER_CHANNEL_MIN_ADVANTAGE, RICHER_CHANNEL_MAX_EXTRA
 
     parser = argparse.ArgumentParser(
         description='扫描 OVideos.json 中的视频链接，按渠道优先级与数量要求处理黑名单与 url_mapping。'
@@ -467,6 +569,24 @@ def main():
         action='store_true',
         help='临时清空渠道黑名单（调试用）'
     )
+    # ===== 【新增】更全渠道补抓相关开关 =====
+    parser.add_argument(
+        '--no-richer-scan',
+        action='store_true',
+        help='关闭"集数更多则补抓"规则（只按数量达标判断，回退到旧行为）'
+    )
+    parser.add_argument(
+        '--richer-min-advantage',
+        type=int,
+        default=RICHER_CHANNEL_MIN_ADVANTAGE,
+        help=f'候选渠道需比基准渠道多出多少集才补抓（默认 {RICHER_CHANNEL_MIN_ADVANTAGE}）'
+    )
+    parser.add_argument(
+        '--richer-max-extra',
+        type=int,
+        default=RICHER_CHANNEL_MAX_EXTRA,
+        help=f'每个项目单轮最多额外补抓几个更全渠道（默认 {RICHER_CHANNEL_MAX_EXTRA}）'
+    )
     args = parser.parse_args()
 
     SHOW_LAST_N = args.show_last_n
@@ -475,6 +595,10 @@ def main():
     MOVIE_REQUIRED_CHANNELS = args.movie_channels
     SERIES_REQUIRED_SHORT = args.series_short_channels
     SERIES_REQUIRED_LONG = args.series_long_channels
+
+    RICHER_CHANNEL_SCAN_ENABLED = (not args.no_richer_scan) and RICHER_CHANNEL_SCAN_ENABLED
+    RICHER_CHANNEL_MIN_ADVANTAGE = max(1, args.richer_min_advantage)
+    RICHER_CHANNEL_MAX_EXTRA = max(0, args.richer_max_extra)
 
     if args.no_skip_channels:
         BLOCKED_CHANNEL_NAMES = set()
@@ -535,6 +659,12 @@ def main():
     print(f"[Movie 要求] 至少 {MOVIE_REQUIRED_CHANNELS} 个完整渠道")
     print(f"[剧集要求] 集数<= {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_SHORT} 个完整渠道 | "
           f"集数> {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_LONG} 个完整渠道")
+    if RICHER_CHANNEL_SCAN_ENABLED and RICHER_CHANNEL_MAX_EXTRA > 0:
+        print(f"[更全补抓] 已开启（生效分类：{', '.join(sorted(RICHER_CHANNEL_SCAN_CATEGORIES))}；"
+              f"集数需多出 >= {RICHER_CHANNEL_MIN_ADVANTAGE} 集；"
+              f"单项目最多额外 {RICHER_CHANNEL_MAX_EXTRA} 个渠道）")
+    else:
+        print("[更全补抓] 已关闭（仅按渠道数量达标判断）")
     print(f"[Show 裁剪] 每个渠道只扫末尾 {SHOW_LAST_N} 条"
           if SHOW_LAST_N > 0 else "[Show 裁剪] 默认（>10 集时取末尾 5 条）")
 
@@ -580,7 +710,7 @@ def main():
 
             ep_priority_names = get_episode_count_priority_names(playlists, category)
 
-            # ====== 智能挑选需要抓取的渠道（自动感知已有完整渠道） ======
+            # ====== 智能挑选需要抓取的渠道（数量达标 + 更全补抓 双重判断） ======
             playlists_to_scan = pick_playlists_to_scan(
                 playlists, blacklist_url, url_mapping,
                 required_count, item_label, category, SHOW_LAST_N,
@@ -589,7 +719,7 @@ def main():
             )
 
             if not playlists_to_scan:
-                # 包含两种情况：已达标跳过 / 无任何可用健康渠道跳过，直接处理下一个条目
+                # 包含：已达标且无更全渠道 / 无任何可用健康渠道，直接处理下一个条目
                 continue
 
             # ====== 逐个待抓渠道、逐条 url 扫描 ======

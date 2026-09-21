@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 # ===================== 配置 =====================
 VERBOSE_LOG = False
 PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
-EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜", "暴风"}
+EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜"}
 
 # ========= 新增：指定抓取的渠道白名单 =========
 # 为空集合 set() 时：保持默认行为（抓取所有非排除渠道）
