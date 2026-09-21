@@ -14,7 +14,14 @@ from urllib.parse import urljoin, urlparse
 # ===================== 配置 =====================
 VERBOSE_LOG = False
 PROTECTED_SOURCES = {"xb6v", "6vdy", "chnland"}
-EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun"}
+EXCLUDED_SOURCES = {"非凡", "牛牛", "无尽", "奇异", "猫眼", "ikun", "西瓜", "暴风"}
+
+# ========= 新增：指定抓取的渠道白名单 =========
+# 为空集合 set() 时：保持默认行为（抓取所有非排除渠道）
+# 指定渠道示例：ALLOWED_SOURCES = {"暴风"} 或 ALLOWED_SOURCES = {"暴风", "量子"}
+# ALLOWED_SOURCES = {"如意"}
+ALLOWED_SOURCES = set()  # 不限制时请写为: set()
+
 DETAIL_BASE_URL = "https://www.pys2.com"
 OUTPUT_FILE = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 COVER_IMAGE_DIR = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
@@ -291,11 +298,23 @@ def parse_playlist(soup):
                     eps[t] = urljoin(DETAIL_BASE_URL, h)
         if eps:
             item = {"name": name, "episodes": eps}
-            if name in EXCLUDED_SOURCES:
-                excluded.append(item)
+            
+            # ---------- 核心改动点 ----------
+            if ALLOWED_SOURCES:
+                # 启用了指定渠道白名单时：只抓取名单内的渠道
+                if name in ALLOWED_SOURCES:
+                    allowed.append(item)
             else:
-                allowed.append(item)
-    return allowed if allowed else excluded
+                # 未指定白名单时：保持原逻辑（按 EXCLUDED_SOURCES 过滤）
+                if name in EXCLUDED_SOURCES:
+                    excluded.append(item)
+                else:
+                    allowed.append(item)
+
+    if ALLOWED_SOURCES and not allowed:
+        print(f"  ⚠️ [提示] 页面中未找到指定的播放源: {ALLOWED_SOURCES}")
+
+    return allowed if allowed else (excluded if not ALLOWED_SOURCES else [])
 
 # ===================== 详情页解析 =====================
 def _split_by_slash(span):

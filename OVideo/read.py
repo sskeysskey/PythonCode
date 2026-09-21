@@ -18,6 +18,13 @@ REGION_BLOCK_KEYWORDS = ('测试',)
 RATING_THRESHOLD = 3.0
 RATING_FIELDS = ('豆瓣', 'IMDB')
 
+# ===== 【新增】渠道黑名单（全分类生效：不扫描、不抓取、不计入集数与优先级） =====
+# 1) 精确匹配：忽略首尾空格与大小写。例如 'shangxidq' 也能拦住 ' ShangxiDQ '
+BLOCKED_CHANNEL_NAMES = set()
+# 2) 模糊匹配：渠道名中包含任一关键字即跳过（风格参考 REGION_BLOCK_KEYWORDS）
+#    例：想干掉整个「云播线路」系列 -> BLOCKED_CHANNEL_KEYWORDS = ('云播线路',)
+BLOCKED_CHANNEL_KEYWORDS = ()
+
 # ===== 渠道优先级配置 =====
 # ===== 比「云播线路」系列更高优先级的渠道 =====
 # 组内越靠前优先级越高。将来若有：
@@ -38,7 +45,7 @@ CHANNEL_PRIORITY = ['chnland']
 # 这些命中的渠道整体升到"第 0 档"(在 mcm 等 TOP_PRIORITY 之上),
 # 组内按【集数从多到少】排序;集数相同时,再按 TOP_PRIORITY_CHANNELS 的顺序决定先后。
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime', 'Show'}
-EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', 'gdefud', 'huxitech', 'xb6v')
+EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', 'gdefud', 'huxitech', 'xb6v', '天堂', '光速', '红牛', '量子')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====
@@ -48,7 +55,7 @@ MOVIE_REQUIRED_CHANNELS = 2
 # 剧集类分类
 SERIES_CATEGORIES = {'Drama', 'Show', 'Anime'}
 EPISODE_THRESHOLD = 20          # 集数阈值
-SERIES_REQUIRED_SHORT = 1       # 集数 <= 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
+SERIES_REQUIRED_SHORT = 2       # 集数 <= 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
 SERIES_REQUIRED_LONG = 1        # 集数 > 阈值时，需要的完整渠道数（可改 / 可被命令行覆盖）
 
 # ===== Show 全量抓取白名单 =====
@@ -61,6 +68,93 @@ SHOW_FULL_SCAN_WHITELIST = {
 
 # 其它未明确归类的分类，默认需要的完整渠道数
 DEFAULT_REQUIRED_CHANNELS = 1
+
+
+# ===================== 【新增】渠道黑名单相关工具 =====================
+# 预计算的小写集合缓存（避免每个渠道都重复做 lower/strip）
+_BLOCKED_NAMES_LOWER = set()
+_BLOCKED_KEYWORDS_LOWER = tuple()
+
+
+def _normalize_channel_name(name):
+    """统一渠道名：None -> ''，去首尾空白。"""
+    return str(name or '').strip()
+
+
+def rebuild_blocked_channel_cache():
+    """根据 BLOCKED_CHANNEL_NAMES / BLOCKED_CHANNEL_KEYWORDS 重建匹配缓存。"""
+    global _BLOCKED_NAMES_LOWER, _BLOCKED_KEYWORDS_LOWER
+    _BLOCKED_NAMES_LOWER = {
+        _normalize_channel_name(n).lower()
+        for n in BLOCKED_CHANNEL_NAMES
+        if _normalize_channel_name(n)
+    }
+    _BLOCKED_KEYWORDS_LOWER = tuple(
+        _normalize_channel_name(k).lower()
+        for k in BLOCKED_CHANNEL_KEYWORDS
+        if _normalize_channel_name(k)
+    )
+
+
+def is_channel_blocked(name):
+    """判断某个渠道名是否被拉黑（精确 + 模糊，均忽略大小写/首尾空格）。"""
+    n = _normalize_channel_name(name).lower()
+    if not n:
+        return False
+    if n in _BLOCKED_NAMES_LOWER:
+        return True
+    return any(kw in n for kw in _BLOCKED_KEYWORDS_LOWER)
+
+
+def filter_blocked_playlists(playlists, item_label=None, verbose=True):
+    """
+    剔除黑名单渠道。必须在"计算集数 / 判定优先级 / 排序 / 扫描"之前调用，
+    保证被拉黑的渠道完全不参与后续任何决策。
+    """
+    kept, dropped = [], []
+    for pl in playlists:
+        name = _normalize_channel_name(pl.get('name')) or '未命名渠道'
+        if is_channel_blocked(name):
+            dropped.append(name)
+        else:
+            kept.append(pl)
+
+    if verbose and dropped:
+        label = item_label or '[未知项目]'
+        print(f"  [渠道黑名单] {label} 跳过 {len(dropped)} 个渠道：{', '.join(dropped)}")
+
+    return kept
+
+
+def sanitize_priority_configs(verbose=True):
+    """
+    自动净化优先级配置：把已被拉黑的渠道从 TOP_PRIORITY_CHANNELS /
+    CHANNEL_PRIORITY / EPISODE_COUNT_PRIORITY_GROUP 中移除，避免配置自相矛盾
+    （例如 shangxidq 既在黑名单里、又在最高优先级列表里）。
+    """
+    global TOP_PRIORITY_CHANNELS, CHANNEL_PRIORITY, EPISODE_COUNT_PRIORITY_GROUP
+
+    conflicts = []
+
+    new_top = [c for c in TOP_PRIORITY_CHANNELS if not is_channel_blocked(c)]
+    conflicts += [f"TOP_PRIORITY_CHANNELS:{c}"
+                  for c in TOP_PRIORITY_CHANNELS if is_channel_blocked(c)]
+    TOP_PRIORITY_CHANNELS = new_top
+
+    new_prio = [c for c in CHANNEL_PRIORITY if not is_channel_blocked(c)]
+    conflicts += [f"CHANNEL_PRIORITY:{c}"
+                  for c in CHANNEL_PRIORITY if is_channel_blocked(c)]
+    CHANNEL_PRIORITY = new_prio
+
+    new_group = tuple(c for c in EPISODE_COUNT_PRIORITY_GROUP if not is_channel_blocked(c))
+    conflicts += [f"EPISODE_COUNT_PRIORITY_GROUP:{c}"
+                  for c in EPISODE_COUNT_PRIORITY_GROUP if is_channel_blocked(c)]
+    EPISODE_COUNT_PRIORITY_GROUP = new_group
+
+    if verbose and conflicts:
+        print(f"[配置冲突] 以下渠道已在黑名单中，自动从优先级配置移除："
+              f"{', '.join(conflicts)}")
+# ====================================================================
 
 
 def get_scan_episodes(episodes, category, show_last_n, full_scan=False):
@@ -105,6 +199,7 @@ def get_item_episode_count(playlists):
     """
     取该项目代表性的集数：所有渠道里最大的集数。
     （同一部剧不同渠道集数通常一致，用 max 兜底更稳妥。）
+    注意：传入的 playlists 应已剔除黑名单渠道。
     """
     counts = []
     for pl in playlists:
@@ -128,21 +223,27 @@ def get_required_channel_count(category, episode_count):
 
     return DEFAULT_REQUIRED_CHANNELS
 
+
 def get_episode_count_priority_names(playlists, category,
                                      categories=EPISODE_COUNT_PRIORITY_CATEGORIES,
-                                     group=EPISODE_COUNT_PRIORITY_GROUP,
+                                     group=None,
                                      min_hit=EPISODE_COUNT_PRIORITY_MIN_HIT):
     """
     判断该项目是否触发"按集数排序"的特殊规则。
     返回:命中的渠道名集合(set);未触发则返回空 set。
-    注意:episodes 为空的渠道不算命中。
+    注意:episodes 为空的渠道不算命中；黑名单渠道也不算（调用前已被过滤）。
     """
     if category not in categories:
         return set()
 
+    # 延迟取值：sanitize_priority_configs 可能已修改该全局元组
+    group = EPISODE_COUNT_PRIORITY_GROUP if group is None else group
+
     hit = set()
     for pl in playlists:
-        name = pl.get('name') or ''
+        name = _normalize_channel_name(pl.get('name'))
+        if is_channel_blocked(name):
+            continue
         if name in group and (pl.get('episodes') or {}):
             hit.add(name)
 
@@ -150,19 +251,24 @@ def get_episode_count_priority_names(playlists, category,
         return hit
     return set()
 
-def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
+
+def sort_playlists_by_priority(playlists, priority=None,
                                cloud_prefix=CLOUD_SERIES_PREFIX,
-                               top_priority=TOP_PRIORITY_CHANNELS,
+                               top_priority=None,
                                episode_priority_names=None):
     """
     按优先级排序渠道:
-    - 第 0 档: 触发"按集数排序"规则的渠道(shangxidq/huxitech/chnland/gdefud 中命中的那些),
-               集数多的在前;集数相同则按 top_priority 顺序
+    - 第 0 档: 触发"按集数排序"规则的渠道, 集数多的在前;集数相同则按 top_priority 顺序
     - 第 1 档: TOP_PRIORITY_CHANNELS,组内按列表顺序
     - 第 2 档: 「云播线路」系列,组内按原始 JSON 顺序
     - 第 3 档: priority 列表里的渠道
     - 第 4 档: 未列出的渠道,保持原始顺序
+    （黑名单渠道不应出现在这里；若出现则被排到最末尾作为兜底）
     """
+    # 延迟取值，确保用到的是 sanitize 之后的配置
+    priority = CHANNEL_PRIORITY if priority is None else priority
+    top_priority = TOP_PRIORITY_CHANNELS if top_priority is None else top_priority
+
     episode_priority_names = episode_priority_names or set()
     indexed = list(enumerate(playlists))
 
@@ -172,7 +278,11 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
 
     def sort_key(pair):
         original_idx, pl = pair
-        name = pl.get('name') or ''
+        name = _normalize_channel_name(pl.get('name'))
+
+        # 兜底：万一黑名单渠道漏进来，一律沉到最底
+        if is_channel_blocked(name):
+            return (9, 0, 0, original_idx)
 
         # 第 0 档:按集数从多到少(负号实现降序),集数相同回落到固定优先级顺序
         if name in episode_priority_names:
@@ -201,12 +311,12 @@ def sort_playlists_by_priority(playlists, priority=CHANNEL_PRIORITY,
 def pick_playlists_to_scan(playlists, blacklist_url, required_count,
                            item_label, category, show_last_n,
                            full_scan=False,
-                           episode_priority_names=None):     # 【新增】
+                           episode_priority_names=None):
     """
     按优先级顺序收集"完整无黑名单"的渠道……
     """
     ordered = sort_playlists_by_priority(
-        playlists, episode_priority_names=episode_priority_names   # 【新增】
+        playlists, episode_priority_names=episode_priority_names
     )
 
     viable = []
@@ -214,7 +324,13 @@ def pick_playlists_to_scan(playlists, blacklist_url, required_count,
         if len(viable) >= required_count:
             break
 
-        name = pl.get('name') or '未命名渠道'
+        name = _normalize_channel_name(pl.get('name')) or '未命名渠道'
+
+        # 【新增】防御性兜底：渠道黑名单
+        if is_channel_blocked(name):
+            print(f"  [跳过] {item_label} 渠道「{name}」在渠道黑名单中，不扫描")
+            continue
+
         episodes_all = pl.get('episodes', {}) or {}
         scan_episodes = get_scan_episodes(
             episodes_all, category, show_last_n, full_scan=full_scan
@@ -284,8 +400,10 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
 
 
 def main():
-    # 【修改】把 SERIES_REQUIRED_LONG 也纳入可被命令行覆盖的全局变量
+    # 把 SERIES_REQUIRED_LONG 也纳入可被命令行覆盖的全局变量
     global MOVIE_REQUIRED_CHANNELS, SERIES_REQUIRED_SHORT, SERIES_REQUIRED_LONG
+    # 【新增】渠道黑名单也支持命令行覆盖
+    global BLOCKED_CHANNEL_NAMES, BLOCKED_CHANNEL_KEYWORDS
 
     # ============ 解析命令行参数 ============
     parser = argparse.ArgumentParser(
@@ -315,12 +433,27 @@ def main():
         default=SERIES_REQUIRED_SHORT,
         help=f'剧集类(<= {EPISODE_THRESHOLD} 集)至少需要的完整渠道数（默认 {SERIES_REQUIRED_SHORT}）'
     )
-    # 【新增】剧集类长剧（> 阈值）所需完整渠道数，可被命令行覆盖
     parser.add_argument(
         '--series-long-channels',
         type=int,
         default=SERIES_REQUIRED_LONG,
         help=f'剧集类(> {EPISODE_THRESHOLD} 集)至少需要的完整渠道数（默认 {SERIES_REQUIRED_LONG}）'
+    )
+    # 【新增】渠道黑名单相关参数
+    parser.add_argument(
+        '--skip-channels',
+        default='',
+        help='额外要跳过的渠道名（精确匹配），逗号分隔，例：--skip-channels "暴风,光速"'
+    )
+    parser.add_argument(
+        '--skip-channel-keywords',
+        default='',
+        help='额外要跳过的渠道名关键字（模糊匹配），逗号分隔，例：--skip-channel-keywords "云播线路"'
+    )
+    parser.add_argument(
+        '--no-skip-channels',
+        action='store_true',
+        help='临时清空渠道黑名单（调试用）'
     )
     args = parser.parse_args()
 
@@ -331,6 +464,19 @@ def main():
     MOVIE_REQUIRED_CHANNELS = args.movie_channels
     SERIES_REQUIRED_SHORT = args.series_short_channels
     SERIES_REQUIRED_LONG = args.series_long_channels
+
+    # ====== 【新增】组装渠道黑名单并初始化缓存 ======
+    if args.no_skip_channels:
+        BLOCKED_CHANNEL_NAMES = set()
+        BLOCKED_CHANNEL_KEYWORDS = tuple()
+    else:
+        extra_names = {s.strip() for s in args.skip_channels.split(',') if s.strip()}
+        extra_kws = tuple(s.strip() for s in args.skip_channel_keywords.split(',') if s.strip())
+        BLOCKED_CHANNEL_NAMES = set(BLOCKED_CHANNEL_NAMES) | extra_names
+        BLOCKED_CHANNEL_KEYWORDS = tuple(BLOCKED_CHANNEL_KEYWORDS) + extra_kws
+
+    rebuild_blocked_channel_cache()
+    sanitize_priority_configs()   # 自动剔除优先级配置里与黑名单冲突的渠道
 
     # 定义文件路径
     ovideos_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
@@ -370,8 +516,17 @@ def main():
         print(f"错误: {blacklist_path} 不是有效的JSON格式")
         return
 
+    # 【新增】黑名单横幅
+    if BLOCKED_CHANNEL_NAMES or BLOCKED_CHANNEL_KEYWORDS:
+        print(f"[渠道黑名单] 精确: {sorted(BLOCKED_CHANNEL_NAMES) or '无'} | "
+              f"关键字: {list(BLOCKED_CHANNEL_KEYWORDS) or '无'}（直接跳过，不扫描/不抓取）")
+    else:
+        print("[渠道黑名单] 未启用")
+
     print(f"[渠道优先级] {' > '.join(TOP_PRIORITY_CHANNELS)} > 云播线路系列 > "
           f"{' > '.join(CHANNEL_PRIORITY)} > 其它(原顺序)")
+    print(f"[集数优先组] {' , '.join(EPISODE_COUNT_PRIORITY_GROUP) or '无'}"
+          f"（至少命中 {EPISODE_COUNT_PRIORITY_MIN_HIT} 个才触发）")
     print(f"[Movie 要求] 至少 {MOVIE_REQUIRED_CHANNELS} 个完整渠道")
     print(f"[剧集要求] 集数<= {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_SHORT} 个完整渠道 | "
           f"集数> {EPISODE_THRESHOLD}: 至少 {SERIES_REQUIRED_LONG} 个完整渠道")
@@ -420,6 +575,13 @@ def main():
                 print(f"  [放弃项目] {item_label} 没有任何渠道")
                 continue
 
+            # ====== 【新增】渠道黑名单过滤（必须在集数/优先级计算之前） ======
+            total_channels = len(playlists)
+            playlists = filter_blocked_playlists(playlists, item_label)
+            if not playlists:
+                print(f"  [放弃项目] {item_label} 全部 {total_channels} 个渠道均在渠道黑名单中，跳过该项目")
+                continue
+
             # ====== 计算集数 & 需要的完整渠道数 ======
             episode_count = get_item_episode_count(playlists)
             required_count = get_required_channel_count(category, episode_count)
@@ -429,14 +591,14 @@ def main():
             is_full_scan = (category == 'Show'
                             and item_name in SHOW_FULL_SCAN_WHITELIST)
 
-            # ====== 【新增】Drama/Anime:按集数抢占最高优先级 ======
+            # ====== Drama/Anime/Show:按集数抢占最高优先级 ======
             ep_priority_names = get_episode_count_priority_names(playlists, category)
             if ep_priority_names:
                 detail = ', '.join(
                     f"{pl.get('name')}({len(pl.get('episodes', {}) or {})}集)"
                     for pl in sort_playlists_by_priority(
                         playlists, episode_priority_names=ep_priority_names)
-                    if (pl.get('name') or '') in ep_priority_names
+                    if _normalize_channel_name(pl.get('name')) in ep_priority_names
                 )
                 print(f"  [集数优先] {item_label} 命中 {len(ep_priority_names)} 个渠道,"
                       f"改按集数排序:{detail}")
@@ -453,7 +615,7 @@ def main():
                 playlists, blacklist_url, required_count,
                 item_label, category, SHOW_LAST_N,
                 full_scan=is_full_scan,
-                episode_priority_names=ep_priority_names   # 【新增】
+                episode_priority_names=ep_priority_names
             )
 
             if not playlists_to_scan:
@@ -481,6 +643,9 @@ def main():
 
     print("所有视频链接都已处理完毕，没有发现新的或未填写的链接。")
 
+
+# 模块导入时也先初始化一次缓存，保证单独调用某个函数时行为一致
+rebuild_blocked_channel_cache()
 
 if __name__ == "__main__":
     main()
