@@ -1,5 +1,8 @@
 {
     "python.analysis.extraPaths": [
         "./Modules"
-    ]
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python.defaultInterpreterPath": "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+    "python.terminal.activateEnvironment": true
 }

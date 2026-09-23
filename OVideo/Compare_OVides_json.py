@@ -45,10 +45,10 @@ def compare_json(obj1, obj2, path=""):
     return diffs
 
 def main():
-    file1_path = '/Users/yanzhang/Downloads/OVideos.json'
+    file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/ONews/onews_260921.json'
     # file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping.json'
     # file1_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos_backup.json'
-    file2_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
+    file2_path = '/Users/yanzhang/Coding/LocalServer/Resources/ONews/onews_260922.json≤'
     # file2_path = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/url_mapping copy.json'
 
     # 检查文件是否存在
