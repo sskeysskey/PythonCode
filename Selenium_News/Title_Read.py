@@ -144,6 +144,8 @@ if num_parts_eng > 0:
     lines_per_file = ceil(len(titles_lines) / num_parts_eng)
 else:
     lines_per_file = len(titles_lines)
+lines_per_file = max(1, lines_per_file)
+num_parts_eng = ceil(len(titles_lines) / lines_per_file)   # 按实际行数重算段数，避免生成空分段
 
 for i in range(num_parts_eng):
     start_line = i * lines_per_file

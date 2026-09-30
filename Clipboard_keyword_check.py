@@ -4,10 +4,14 @@ Clipboard_keyword_check.py
 检查剪贴板内容是否包含屏蔽关键词。
 命中 → 记录URL到 copy_failure.html，exit(1)
 未命中 → exit(0)
+
+注意：行前缀过滤功能已迁移到 Clipboard_removal.py，
+建议先运行 Clipboard_removal.py，再运行本脚本，这样检测的是清理后的最终内容。
 """
 
 import sys
 import os
+import html
 import pyperclip
 from datetime import datetime
 
@@ -45,7 +49,7 @@ BLOCKED_KEYWORDS = [
     "黎智英",
     "苹果日报",
     "胡耀邦",
-    "文化大革命",
+    ("文化大革命", "中国"),
     "赵紫阳",
     "台独",
     "台湾独立",
@@ -54,33 +58,10 @@ BLOCKED_KEYWORDS = [
     "中国间谍"
 ]
 
-# ============ 过滤前缀列表 ============
-IGNORE_PREFIXES = (
-    "此文包含Instagram提供的内容",
-    "此文包含Google YouTue提供的内容",
-    "結尾 Instagram 帖子",
-    "結尾 YouTube 帖子",
-    "我們使用了人工智慧",
-    "按此了解我們如何",
-    "本文部分原以英文撰寫",
-    "此文包含Google YouTue提供的内容",
-    "結尾 YouTube 帖子",
-    "補充報導：",
-    "圖表製作："
-)
-
 # ============ 路径配置 ============
 USER_HOME = os.path.expanduser("~")
 FAILURE_FILE = os.path.join(USER_HOME, "Coding", "News", "copy_failure.html")
 
-def filter_paragraphs(text):
-    """过滤掉以指定前缀开头的段落/行"""
-    lines = text.splitlines()
-    filtered_lines = [
-        line for line in lines 
-        if not line.strip().startswith(IGNORE_PREFIXES)
-    ]
-    return "\n".join(filtered_lines)
 
 def ensure_html_file():
     """确保 HTML 文件存在且包含基础结构"""
@@ -104,48 +85,48 @@ def ensure_html_file():
         with open(FAILURE_FILE, 'w', encoding='utf-8') as f:
             f.write(header)
 
-def main():
-    url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
-    content = pyperclip.paste()
-    if not content:
-        sys.exit(0)
 
-    # 1. 过滤指定开头的段落
-    content = filter_paragraphs(content)
-
-    # 2. 对过滤后的内容进行敏感词检测
+def find_blocked_keyword(content):
+    """返回命中的规则描述字符串；未命中返回 None"""
     for item in BLOCKED_KEYWORDS:
-        is_hit = False
-        matched_str = ""
-
-        # 情况 A: 组合词（用元组/列表表示）
+        # 情况 A: 组合词（元组/列表），所有词都必须出现
         if isinstance(item, (tuple, list)):
-            # 组合内所有词都必须在 content 中
-            if all(word in content for word in item):
-                is_hit = True
-                matched_str = " + ".join(item)
-        # 情况 B: 单一词（字符串）
-        else:
-            if item in content:
-                is_hit = True
-                matched_str = item
+            if item and all(word in content for word in item):
+                return " + ".join(item)
+        # 情况 B: 单一词
+        elif item and item in content:
+            return item
+    return None
 
-        # 命中规则，写入日志并退出
-        if is_hit:
-            ensure_html_file()
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            html_entry = f"""    <div class='entry'>
-        [{current_time}] - <span class='keyword'>[Blocked: {matched_str}]</span> - 
-        <a href='{url}' target='_blank'>{url}</a>
+def log_failure(url, matched_str):
+    ensure_html_file()
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    safe_url = html.escape(url, quote=True)
+    safe_kw = html.escape(matched_str, quote=True)
+
+    html_entry = f"""    <div class='entry'>
+        [{current_time}] - <span class='keyword'>[Blocked: {safe_kw}]</span> - 
+        <a href='{safe_url}' target='_blank'>{safe_url}</a>
     </div>\n"""
 
-            with open(FAILURE_FILE, 'a', encoding='utf-8') as f:
-                f.write(html_entry)
+    with open(FAILURE_FILE, 'a', encoding='utf-8') as f:
+        f.write(html_entry)
 
-            sys.exit(1)
+
+def main():
+    url = sys.argv[1] if len(sys.argv) > 1 else "No URL provided"
+    content = pyperclip.paste() or ""
+    if not content.strip():
+        sys.exit(0)
+
+    matched_str = find_blocked_keyword(content)
+    if matched_str:
+        log_failure(url, matched_str)
+        sys.exit(1)
 
     sys.exit(0)
+
 
 if __name__ == '__main__':
     main()

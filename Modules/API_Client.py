@@ -74,7 +74,7 @@ DEFAULT_PROVIDERS = {
     "qianwen": {
         "label": "千问API",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "api_key": "sk-ws-H.PMYPYIH.lgsp.MEUCIFkboYDEKJnI53g7JWmqvaprHCLwhdhvwnWgiin78T3SAiEAkVnR4osNY5jKAK8K14uiP2G0mKmlBPXJKxH9Qib2o-E",
+        "api_key": "",
         "api_key_env": ["NEWS_QIANWEN_API_KEY", "DASHSCOPE_API_KEY"],
         "models": {"normal": "qwen3.6-flash", "cheap": "qwen3.6-flash"},
         "api_style": "chat",
@@ -658,7 +658,8 @@ def main():
 
     if status == "abort":
         print(ERROR_MARKER + " ABORT")
-        sys.exit(EXIT_ABORT)
+        sys.stdout.flush()
+        os._exit(EXIT_ABORT)   # 跳过解释器清理，避免仍在运行的 QThread 触发崩溃
     if status == "refusal":
         log_line("[%s/%s] 拒答/内容安全：%s" % (name, model, res.get("message", "")))
         print(ERROR_MARKER + " REFUSAL: %s" % res.get("message", ""))

@@ -1337,15 +1337,18 @@ def parse_playlist(soup, base_url: str = DETAIL_BASE_URL) -> list[dict]:
                 collected_sources[channel_name] = {"name": channel_name, "episodes": episodes}
 
     allowed_playlist = []
-    excluded_playlist = []
-
     for item in collected_sources.values():
-        if item["name"] in EXCLUDED_SOURCES:
-            excluded_playlist.append(item)
-        else:
+        channel_name = item.get("name", "")
+        # 改为关键词匹配：只要包含 EXCLUDED_SOURCES 里的任意关键词，就拦截
+        is_excluded = any(kw in channel_name for kw in EXCLUDED_SOURCES)
+        
+        if not is_excluded:
             allowed_playlist.append(item)
+        else:
+            log(f"     [过滤渠道] 命中黑名单，排除渠道: {channel_name}")
 
-    return allowed_playlist if allowed_playlist else excluded_playlist
+    # 严格返回过滤后的列表，绝不降级兜底返回黑名单渠道
+    return allowed_playlist
 
 
 def parse_detail_page(html: str, name: str, url: str,

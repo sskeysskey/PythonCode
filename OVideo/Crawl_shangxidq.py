@@ -167,7 +167,7 @@ SITE_MARKERS = ("ewave-", "stui-", "vodshow", "vodplay", "ewave-vodlist")
 BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记", "永恒和一日",
     "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1",
-    "人生赢家", "判决", "判决墨西哥剧"
+    "人生赢家", "判决", "判决墨西哥剧", "后门"
 ]
 BLACKLIST_URLS = []
 WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "猫与龙",
@@ -426,7 +426,7 @@ class BrowserFetcher:
                 print(cdp_launch_command())
                 raise FetchError("CDP 端口不可用")
 
-            print(f">>> [浏览器] 正在附着到已运行的 Chrome：{CDP_ENDPOINT}")
+            print(f">>> [CDP] 正在附着到已运行的 Chrome：{CDP_ENDPOINT}")
             self._browser = self._pw.chromium.connect_over_cdp(CDP_ENDPOINT)
             self._ctx = (self._browser.contexts[0]
                          if self._browser.contexts else self._browser.new_context())
@@ -844,14 +844,48 @@ def is_garbled(value):
         return True
     return False
 
-def normalize_info_text(info_str):
+def get_episode_unit(group="", episodes=None, info_text=""):
+    """
+    智能判定集数单位（期 / 话 / 集）：
+    1. 优先根据 episodes 选集名称中的单位判断；
+    2. 其次根据 info_text 原有 info 中的字样判断；
+    3. 再次根据分类 (Show 判定为期，Anime 可为话) 判断；
+    4. 兜底为 '集'。
+    """
+    if episodes:
+        names_str = " ".join(str(k) for k in episodes.keys())
+        if "期" in names_str:
+            return "期"
+        if "话" in names_str or "話" in names_str:
+            return "话"
+        if "集" in names_str:
+            return "集"
+
+    if info_text:
+        if "期" in info_text:
+            return "期"
+        if "话" in info_text or "話" in info_text:
+            return "话"
+        if "集" in info_text:
+            return "集"
+
+    if group == "Show":
+        return "期"
+    return "集"
+
+def make_episode_info(num, unit="集"):
+    """格式化集数 info"""
+    return f"更新至第{num}{unit}"
+
+def normalize_info_text(info_str, group=""):
     if not info_str:
         return ""
+    unit = get_episode_unit(group, info_text=info_str)
     num_match = re.search(r"(\d+)", info_str)
     if not num_match:
         return normalize_text(info_str)
     num = int(num_match.group(1))
-    return f"更新至第{num}集"
+    return make_episode_info(num, unit)
 
 def normalize_text(s):
     if not s:
@@ -976,7 +1010,7 @@ def get_max_episode_number(episodes):
         max_ep_in_latest_season = max(e for s, e in se_pairs if s == max_season)
         return max_ep_in_latest_season
 
-    # 2. 匹配 第X季...第Y集 格式
+    # 2. 匹配 第X季...第Y集/期/话 格式
     season_ep_pairs = []
     for name in episodes.keys():
         m = re.search(r'第\s*(\d+)\s*季.*?第\s*(\d+)\s*[集期话話]', str(name))
@@ -1004,7 +1038,7 @@ def get_effective_episode_count(episodes, group=""):
     """
     计算渠道的有效集数：
     - 若为 Movie 或没有剧集关键词：取选集总数 len(episodes)
-    - 若为 Drama/Anime/Show：提取最大集数，若提取数值大于500且无明确'集/话'词缀（防1080P等误判）则退化为 len(episodes)
+    - 若为 Drama/Anime/Show：提取最大集数，若提取数值大于500且无明确'集/话/期'词缀则退化为 len(episodes)
     """
     if not episodes:
         return 0
@@ -1041,7 +1075,6 @@ def resolve_insert_position_with_gdefud(playlist, new_episodes, default_insert_p
         cnt_site = get_effective_episode_count(new_episodes, group=group)
 
         if cnt_site >= cnt_gdefud:
-            # 大于或等于，必须排在 gdefud 之前
             if target_pos > gdefud_idx:
                 log(f"      🛡️ [渠道优先级仲裁] 检测到已有 {TARGET_COMPARE_CHANNEL}(集数/选集:{cnt_gdefud})，{SITE_KEY}(集数/选集:{cnt_site}) >= {TARGET_COMPARE_CHANNEL}，将插入位置由第 {target_pos + 1} 位提前至第 {gdefud_idx + 1} 位 (排在 {TARGET_COMPARE_CHANNEL} 之前)")
                 target_pos = gdefud_idx
@@ -1146,7 +1179,9 @@ def filter_episodes(eps):
 def detect_group_by_episodes(episodes):
     names = list(episodes.keys())
     count = len(names)
-    has_ji = any("集" in n or re.search(r"S\d+E\d+", n, re.I) for n in names)
+    has_ji = any(("集" in n) or ("期" in n) or ("话" in n) or re.search(r"S\d+E\d+", n, re.I) for n in names)
+    if any("期" in n for n in names):
+        return "Show"
     if has_ji and count > 2:
         return "Drama"
     return "Movie"
@@ -1604,7 +1639,8 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
     fields_updated = merge_missing_fields(existing, rec, log)
 
     def update_time_if_needed():
-        if matched_group in ("Drama", "Anime"):
+        # 连载分类（含 Show）仅在有新集数/新期数增长时刷新 update，避免无变化时刷新时间戳
+        if matched_group in ("Drama", "Anime", "Show"):
             new_max = get_max_episode_number(new_episodes)
             if new_max > old_max_episodes:
                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1632,13 +1668,19 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
         other_max = max(other_max, get_max_episode_number(pl.get("episodes", {})))
 
     info_updated = False
-    if matched_group in ("Drama", "Anime", "Show") and site_max > other_max and site_max > 0:
-        candidate_info = f"更新至第{site_max}集"
-        if existing.get("info") != candidate_info:
-            old_info = existing.get("info", "")
+    old_info = existing.get("info", "")
+    unit = get_episode_unit(matched_group, new_episodes, old_info)
+
+    # 关键修复：只有抓取的最大集数切实大于历史全库已知最大集数，或者原有 info 为空时，才更新 info
+    # 彻底解决单渠道下因为比对 other_max(0) 导致未增集却强行改 info 并误触发更新的重大 Bug
+    should_update_info = (site_max > old_max_episodes and site_max > 0) or (not old_info and site_max > 0)
+
+    if matched_group in ("Drama", "Anime", "Show") and should_update_info:
+        candidate_info = make_episode_info(site_max, unit)
+        if old_info != candidate_info:
             existing["info"] = candidate_info
             info_updated = True
-            log(f"      ✅[info更新] 抓取最大集数 {site_max} > 其他渠道最大集数 {other_max}，info: 「{old_info}」 -> 「{candidate_info}」")
+            log(f"      ✅[info更新] 抓取最大集数 {site_max} > 历史最大集数 {old_max_episodes}，info: 「{old_info}」 -> 「{candidate_info}」")
 
     if has_site_url:
         old_eps = {}
@@ -1854,8 +1896,10 @@ def process_list_page(data, list_url, group, page_name):
                         action = "in_place"
 
                     info_changed = False
-                    if new_max > global_max and new_max > 0:
-                        candidate_info = f"更新至第{new_max}集"
+                    # 仅在抓取集数确实大于全库历史最大集数时更新
+                    if new_max > old_max_episodes and new_max > 0:
+                        unit = get_episode_unit(matched_group, new_eps, existing.get("info", ""))
+                        candidate_info = make_episode_info(new_max, unit)
                         if existing.get("info") != candidate_info:
                             old_info = existing.get("info", "")
                             existing["info"] = candidate_info
@@ -1944,16 +1988,16 @@ def process_list_page(data, list_url, group, page_name):
                             buf.append(f"    [Drama] 本次抓取集数{episode_total} > 其它渠道最大集数{other_channels_max_eps}，允许追加{SITE_KEY}新渠道")
 
                     if can_add:
-                        # 【核心扩展】：这里是“项目已有，新增加 shangxidq 渠道”的核心分支，智能融入 gdefud 规则
                         new_url_key, final_pos = append_site_channel(
                             existing, new_eps, url, group=matched_group, log=buf.append
                         )
                         merge_missing_fields(existing, rec, buf.append)
                         
                         if matched_group in ("Drama", "Anime", "Show") and new_max > other_channels_max_eps and new_max > 0:
-                            existing["info"] = f"更新至第{new_max}集"
+                            unit = get_episode_unit(matched_group, new_eps, existing.get("info", ""))
+                            existing["info"] = make_episode_info(new_max, unit)
 
-                        if matched_group in ("Drama", "Anime"):
+                        if matched_group in ("Drama", "Anime", "Show"):
                             if new_max > old_max_episodes:
                                 existing["update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         else:
@@ -1971,11 +2015,12 @@ def process_list_page(data, list_url, group, page_name):
                 rec["image"] = download_and_localize_image(rec.get("image", ""))
                 
                 ep_cnt = get_max_episode_number(new_eps)
-                if current_group in ("Drama", "Anime") and ep_cnt > 0:
-                    rec["info"] = f"更新至第{ep_cnt}集"
+                if current_group in ("Drama", "Anime", "Show") and ep_cnt > 0:
+                    unit = get_episode_unit(current_group, new_eps, rec.get("info", ""))
+                    rec["info"] = make_episode_info(ep_cnt, unit)
 
                 data.setdefault(current_group, []).append(rec)
-                print(f"    ✅ 新增 -> {current_group} (共 {len(new_eps)} 集) [真实名称: {real_name}] [URL: {rec['url']}]")
+                print(f"    ✅ 新增 -> {current_group} (共 {len(new_eps)} 项) [真实名称: {real_name}] [URL: {rec['url']}]")
                 save_json(data)
                 ok += 1
 

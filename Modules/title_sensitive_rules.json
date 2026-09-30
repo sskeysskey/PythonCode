@@ -1,0 +1,55 @@
+{
+  "_readme": [
+    "规则从上到下依次执行：更长 / 更具体的规则放前面。",
+    "type=word    英文整词：自动加边界（左右不能是字母数字），词间空格自动兼容多个空白；可配 exclude_after 排除特定后缀（如 Xi'an）",
+    "type=literal 纯文本子串替换，适合中文 / 日文",
+    "type=regex   Python 正则；JSON 里反斜杠要写成双反斜杠",
+    "enabled=false 临时停用；ignore_case=true 忽略大小写（默认区分大小写）",
+    "改完立即生效；自测：python3 Title_Sanitizer.py --test \"你的句子\""
+  ],
+  "rules": [
+    {
+      "name": "Xi（含 China's/Chinese + President/leader 前缀、Jinping 后缀，排除 Xi'an）",
+      "enabled": true,
+      "type": "regex",
+      "find": "(?<![A-Za-z0-9])(?:(?:China['’]s\\s+|Chinese\\s+)?(?:President|president|Leader|leader)\\s+)?Xi(?:\\s+Jinping)?(?![A-Za-z0-9])(?!['’]an\\b)",
+      "replace": "China's President"
+    },
+    {
+      "name": "習近平（日文，含 国家主席/主席/氏 后缀）",
+      "enabled": true,
+      "type": "regex",
+      "find": "習近平(?:国家主席|主席|氏)?",
+      "replace": "中国国家主席"
+    },
+    {
+      "name": "習主席 / 習氏（日文简称）",
+      "enabled": true,
+      "type": "regex",
+      "find": "習(?:主席|氏)",
+      "replace": "中国国家主席"
+    },
+    {
+      "name": "习近平（简体中文）",
+      "enabled": true,
+      "type": "regex",
+      "find": "习近平(?:主席)?",
+      "replace": "中国国家主席"
+    },
+    {
+      "name": "示例：英文整词（默认停用，按需复制修改）",
+      "enabled": false,
+      "type": "word",
+      "find": "Winnie the Pooh",
+      "replace": "the cartoon bear",
+      "exclude_after": []
+    },
+    {
+      "name": "示例：中日文字面替换（默认停用）",
+      "enabled": false,
+      "type": "literal",
+      "find": "某敏感词",
+      "replace": "替代词"
+    }
+  ]
+}

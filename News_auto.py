@@ -14,8 +14,9 @@
     1  连续 3 次点击复制，内容均不合格
     2  超时（TIMEOUT_DURATION 秒内没拿到合格内容）
     3  模板图片缺失 / provider 名称错误
-    5  需要交接（AI 拒答 或 回答异常）
+    5  需要交接（AI 拒答 或 回答异常 或 额度用完且无法切换模型）
     7  网页端「上传/发送失败」（本篇建议交由同品牌 API 兜底，下一篇仍回网页版）
+    8  当前模型免费额度用完，已在网页上切换到备用模型 -> 请用同一 provider 重跑本篇
 """
 
 import os
@@ -38,7 +39,10 @@ SCROLL_AMOUNT = -120        # 滚动幅度
 MAX_ATTEMPTS = 3            # 最多点击复制次数
 TIMEOUT_DURATION = 120      # 总超时（秒）
 
-# 上传失败判定成立时，保存一张整屏截图便于事后核查误报
+# 点击复制后等待剪贴板被写入的最长时间（秒）
+CLIPBOARD_WAIT = 2.0
+
+# 上传失败 / 切换模型失败时，保存一张整屏截图便于事后核查
 SAVE_DEBUG_SHOT = True
 DEBUG_SHOT_DIR = "/tmp"
 
@@ -48,7 +52,8 @@ EXIT_UNQUALIFIED = 1
 EXIT_TIMEOUT = 2
 EXIT_TEMPLATE_MISSING = 3
 EXIT_HANDOFF = 5
-EXIT_UPLOAD_FAIL = 7          # 新增：网页上传/发送失败
+EXIT_UPLOAD_FAIL = 7          # 网页上传/发送失败
+EXIT_MODEL_SWITCHED = 8       # 新增：额度用完，已切换模型，请重跑本篇
 
 UPLOAD_FAIL_KEY = "upload_fail"
 
@@ -65,6 +70,10 @@ PROVIDERS = {
             "timeout":     ("qianwen_timeout.png",      0.90, True),
             # 可选模板：文件不存在时该检测自动关闭，不会影响主流程
             "upload_fail": ("qianwen_upload_fail.png",  0.92, False),
+            # ---- 额度用完时切换模型所需模板（可选；缺任何一张 -> 退回旧的拒答交接逻辑）----
+            "switch_open":    ("qianwen_current36.png", 0.90, False),
+            "switch_hover":   ("qianwen_select37.png", 0.90, False),
+            "switch_confirm": ("qianwen_default.png",   0.90, False),
         },
         "check_refusal_text": True,     # 剪贴板文本命中拒答话术 -> 交接
         "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后 Cmd+R
@@ -74,6 +83,14 @@ PROVIDERS = {
         # ---- 上传失败检测参数 ----
         "upload_fail_confirm_delay": 0.8,   # 二次确认间隔；<=0 表示命中即判定
         "upload_fail_transient_ok": True,   # 提示消失但始终没有 Copy -> 仍判定为失败
+        # ---- 额度用完 -> 切换模型 ----
+        "model_switch_enabled": True,
+        "model_switch_steps": [
+            ("click", "switch_open"),      # 1) 点击当前模型(3.6)，展开模型菜单
+            ("hover", "switch_hover"),     # 2) 鼠标悬停到 3.7 上，展开子菜单
+            ("click", "switch_confirm"),   # 3) 点击 default
+        ],
+        "model_switch_step_timeout": 6.0,  # 每一步等待模板出现的最长秒数
     },
     "deepseek": {
         "label": "DeepSeek",
@@ -89,6 +106,7 @@ PROVIDERS = {
         "copy_offset": (-35, 0),        # 靠左 35 像素点击
         "upload_fail_confirm_delay": 0.8,
         "upload_fail_transient_ok": True,
+        "model_switch_enabled": False,
     },
     "doubao": {
         "label": "豆包",
@@ -105,12 +123,11 @@ PROVIDERS = {
         "copy_offset": (0, 0),
         "upload_fail_confirm_delay": 0.8,
         "upload_fail_transient_ok": True,
+        "model_switch_enabled": False,
     },
 }
 
 # ================= provider 名称归一化 =================
-# News_Engine 现在传的是 qianwen_ui / deepseek_ui / doubao_ui，
-# 这里统一剥掉通道后缀，_api 结尾的直接报错（应该走 Modules/API_Client.py）
 PROVIDER_ALIASES = {
     "qianwen": "qianwen", "qianwen_ui": "qianwen", "qianwen-ui": "qianwen",
     "qwen": "qianwen", "qwen_ui": "qianwen", "tongyi": "qianwen", "tongyi_ui": "qianwen",
@@ -127,7 +144,14 @@ def normalize_provider(raw: str) -> str:
         sys.exit(EXIT_TEMPLATE_MISSING)
     return PROVIDER_ALIASES.get(p, p)
 
-# 拒答话术（三家共用）
+
+# 「额度用完」话术：全文匹配（通常附在半截翻译的末尾）
+QUOTA_PATTERNS = [
+    re.compile(r"当前模型今日\d*次?免费额度已用完"),
+    re.compile(r"今日免费额度已用完"),
+]
+
+# 拒答话术（三家共用）；注意：额度用完已移到 QUOTA_PATTERNS 单独处理
 REFUSAL_PHRASES = [
     "抱歉，我无法回答这个问题，我们聊聊别的吧",
     "抱歉，我无法回答这个问题",
@@ -144,10 +168,13 @@ REFUSAL_PHRASES = [
     "让我们换个话题再聊聊吧",
     "该内容涉嫌违反",
     "若有误判，请长按本条消息",
-    "当前模型今日50次免费额度已用完",
     "当前访问人数过多",
-    "针对这个问题我无法为你提供相应解答"
+    "针对这个问题我无法为你提供相应解答",
 ]
+
+# 拒答检测窗口：短文本全文匹配；长文本只看首尾，避免新闻正文引用到类似句子被误判
+REFUSAL_FULLTEXT_MAX = 400
+REFUSAL_EDGE_WINDOW = 200
 
 
 # ================= 基础工具 =================
@@ -219,6 +246,10 @@ def load_templates(cfg):
     return loaded
 
 
+def template_available(templates, key) -> bool:
+    return key in templates and templates[key][0] is not None
+
+
 def find(templates, key, screen=None):
     if key not in templates:
         return None, None
@@ -226,11 +257,38 @@ def find(templates, key, screen=None):
     return match_template(img, threshold, screen=screen)
 
 
-def is_refusal_response(text: str) -> bool:
-    if not text:
+def wait_for(templates, key, timeout, interval=0.4):
+    """在 timeout 秒内轮询模板，返回 (loc, shape) 或 (None, None)"""
+    deadline = time.time() + timeout
+    while True:
+        loc, shape = find(templates, key)
+        if loc:
+            return loc, shape
+        if time.time() >= deadline:
+            return None, None
+        sleep(interval)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r'\s+', '', text or "")
+
+
+def is_quota_exhausted(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
         return False
-    normalized = re.sub(r'\s+', '', text)
-    return any(p in normalized for p in REFUSAL_PHRASES)
+    return any(p.search(normalized) for p in QUOTA_PATTERNS)
+
+
+def is_refusal_response(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if len(normalized) <= REFUSAL_FULLTEXT_MAX:
+        scope = normalized
+    else:
+        scope = normalized[:REFUSAL_EDGE_WINDOW] + "\n" + normalized[-REFUSAL_EDGE_WINDOW:]
+    return any(p in scope for p in REFUSAL_PHRASES)
 
 
 def is_content_qualified(text, min_chinese=50) -> bool:
@@ -239,18 +297,44 @@ def is_content_qualified(text, min_chinese=50) -> bool:
     return len(re.findall(r'[\u4e00-\u9fff]', text)) > min_chinese
 
 
-def perform_click(location, shape, offset=(0, 0)):
+def to_logical_center(location, shape, offset=(0, 0)):
     phys_x = location[0] + shape[1] // 2
     phys_y = location[1] + shape[0] // 2
     lx = int(phys_x / SCALE_FACTOR)
     ly = int(phys_y / SCALE_FACTOR)
-
     if offset:
         lx += offset[0]
         ly += offset[1]
+    return lx, ly
 
+
+def perform_click(location, shape, offset=(0, 0)):
+    lx, ly = to_logical_center(location, shape, offset)
     pyautogui.click(lx, ly)
     return lx, ly
+
+
+def clear_clipboard():
+    try:
+        pyperclip.copy("")
+    except Exception as e:
+        print(f"清空剪贴板失败（忽略）: {e}")
+
+
+def read_clipboard_after_copy(timeout=CLIPBOARD_WAIT) -> str:
+    """点击复制后轮询剪贴板，直到出现非空内容或超时"""
+    deadline = time.time() + timeout
+    content = ""
+    while True:
+        try:
+            content = pyperclip.paste() or ""
+        except Exception:
+            content = ""
+        if content.strip():
+            return content
+        if time.time() >= deadline:
+            return ""
+        sleep(0.2)
 
 
 def refresh_page_mac():
@@ -266,21 +350,69 @@ def scroll_down(cfg, move_cursor=False):
     sleep(1)
 
 
+# ================= 额度用完 -> 切换模型 =================
+def try_switch_model(cfg, templates) -> bool:
+    """
+    按 cfg["model_switch_steps"] 依次执行：
+        click : 找到模板并点击（瞬移点击，避免划过其它菜单项导致子菜单收起）
+        hover : 找到模板并平滑移动鼠标到其中心（让网页收到 hover 事件）
+    任一步失败：按 Esc 收起菜单、保存截图、返回 False。
+    """
+    if not cfg.get("model_switch_enabled"):
+        print("该 provider 未启用模型切换。")
+        return False
+
+    steps = cfg.get("model_switch_steps") or []
+    if not steps:
+        return False
+
+    missing = [key for _, key in steps if not template_available(templates, key)]
+    if missing:
+        print(f"模型切换所需模板缺失：{missing}，放弃切换。")
+        return False
+
+    step_timeout = float(cfg.get("model_switch_step_timeout", 6.0))
+
+    for i, (action, key) in enumerate(steps, start=1):
+        loc, shape = wait_for(templates, key, step_timeout)
+        if not loc:
+            print(f"模型切换第 {i} 步失败：{step_timeout}s 内未找到 {key}。")
+            save_debug_shot(f"model_switch_step{i}_fail")
+            try:
+                pyautogui.press("esc")
+            except Exception:
+                pass
+            return False
+
+        x, y = to_logical_center(loc, shape)
+        if action == "click":
+            print(f"模型切换第 {i} 步：点击 {key} @ ({x}, {y})")
+            pyautogui.click(x, y)
+            sleep(0.8)
+        elif action == "hover":
+            print(f"模型切换第 {i} 步：悬停到 {key} @ ({x}, {y})")
+            pyautogui.moveTo(x, y, duration=0.3)
+            sleep(0.2)
+            # 轻微抖动一下，确保触发 mouseenter / mousemove
+            pyautogui.moveRel(2, 0, duration=0.1)
+            sleep(0.8)
+        else:
+            print(f"未知切换动作：{action}")
+            return False
+
+    sleep(1.0)
+    print("模型切换流程执行完毕。")
+    return True
+
+
 # ================= 上传/发送失败检测 =================
 def check_upload_fail_confirmed(cfg, templates, screen=None):
     """
     返回 (confirmed, delayed)
         confirmed : True 表示确认为「上传失败」
         delayed   : True 表示本函数消耗了等待时间（当前 screen 已过期，调用方应重新取帧）
-
-    判定策略（对抗 toast 转瞬即逝 + 模板误报）：
-        1) 当前帧命中 upload_fail
-        2) 等 confirm_delay 后复查：若 Copy 已出现 -> 说明其实已经出答案，忽略
-        3) upload_fail 仍在 -> 确认失败
-        4) upload_fail 消失但 Copy 仍未出现 -> 再采一次；仍是这个状态时按 toast 处理，
-           若 upload_fail_transient_ok 为 True 则判定失败
     """
-    if templates.get(UPLOAD_FAIL_KEY, (None, 0))[0] is None:
+    if not template_available(templates, UPLOAD_FAIL_KEY):
         return False, False
 
     loc, _ = find(templates, UPLOAD_FAIL_KEY, screen=screen)
@@ -326,12 +458,7 @@ def check_upload_fail_confirmed(cfg, templates, screen=None):
 
 # ================= 豆包专用：回答异常二次确认 =================
 def check_wrong_confirmed(templates):
-    """
-    1) 命中 wrong 后等 1.5s
-    2) 复查时优先看 copy（复制按钮出现则以 copy 为准）
-    3) copy 仍无、wrong 仍在 -> 确认异常
-    """
-    if templates.get("wrong", (None, 0))[0] is None:
+    if not template_available(templates, "wrong"):
         return False
 
     loc, _ = find(templates, "wrong")
@@ -392,7 +519,7 @@ def main():
         # ---- 0. 同帧先看 Copy：已出答案时压制所有异常检测 ----
         copy_loc, copy_shape = find(templates, "copy", screen=screen)
 
-        # ---- 1. 上传/发送失败（优先级最高，避免被 retry/timeout 拖进 15s+刷新）----
+        # ---- 1. 上传/发送失败 ----
         if not copy_loc:
             up_confirmed, up_delayed = check_upload_fail_confirmed(cfg, templates, screen=screen)
             if up_confirmed:
@@ -400,7 +527,6 @@ def main():
                 print("检测到网页上传失败 -> 请求 API 兜底（退出码 7）。")
                 sys.exit(EXIT_UPLOAD_FAIL)
             if up_delayed:
-                # 确认过程消耗了时间，当前帧已过期，重新取帧（不消耗 attempt）
                 sleep(0.3)
                 continue
 
@@ -428,19 +554,18 @@ def main():
                 sleep(15)
                 refresh_page_mac()
                 sleep(5)
-                continue        # 刷新不消耗 attempt
+                continue
 
         # ---- 4. Copy 按钮 ----
         location, shape = copy_loc, copy_shape
 
         if not location:
-            # 连复制按钮都没有 -> 检查回答异常（豆包）
             if check_wrong_confirmed(templates):
                 sys.exit(EXIT_HANDOFF)
             scroll_down(cfg)
             continue
 
-        # ---- 4.1 豆包：等 related 标识后重新定位 copy（布局会被挤压）----
+        # ---- 4.1 豆包：等 related 标识后重新定位 copy ----
         if cfg["related_gate"]:
             print("初次定位到 Copy 按钮，开始检测 Related 标识...")
             gate_start = time.time()
@@ -461,26 +586,42 @@ def main():
                 if check_wrong_confirmed(templates):
                     sys.exit(EXIT_HANDOFF)
                 scroll_down(cfg)
-                continue        # 未实际点击，不消耗 attempt
+                continue
 
         # ---- 5. 点击复制并校验 ----
+        # 先清空剪贴板：否则复制未生效时会读到 Engine 放进去的「文章+Prompt」，
+        # 其中 Prompt 自带 50+ 汉字，会被误判为合格
+        clear_clipboard()
         copy_offset = cfg.get("copy_offset", (0, 0))
         lx, ly = perform_click(location, shape, offset=copy_offset)
         print(f"第 {attempt} 次尝试 - 点击复制按钮: {lx}, {ly}")
-        sleep(0.5)
-        content = pyperclip.paste()
+        sleep(0.3)
+        content = read_clipboard_after_copy()
 
-        if cfg["check_refusal_text"] and is_refusal_response(content):
-            print("剪贴板命中拒答话术 -> 请求交接。")
-            sys.exit(EXIT_HANDOFF)
+        if not content:
+            print(f"第 {attempt} 次尝试：剪贴板为空（复制未生效）。")
+        else:
+            # 5.1 额度用完：优先于拒答 / 合格校验（半截翻译可能已经超过汉字阈值）
+            if is_quota_exhausted(content):
+                print("剪贴板命中「免费额度已用完」-> 本篇翻译未完成，尝试切换模型...")
+                if try_switch_model(cfg, templates):
+                    print("模型已切换 -> 请求 Engine 用同一 provider 重跑本篇（退出码 8）。")
+                    sys.exit(EXIT_MODEL_SWITCHED)
+                print("无法切换模型 -> 按拒答交接（退出码 5）。")
+                sys.exit(EXIT_HANDOFF)
 
-        if is_content_qualified(content, min_chinese=target_threshold):
-            print(f"第 {attempt} 次尝试成功：内容校验通过。")
-            sys.exit(EXIT_OK)
+            # 5.2 拒答话术
+            if cfg["check_refusal_text"] and is_refusal_response(content):
+                print("剪贴板命中拒答话术 -> 请求交接。")
+                sys.exit(EXIT_HANDOFF)
 
-        print(f"第 {attempt} 次尝试失败：内容不合格。")
+            # 5.3 合格校验
+            if is_content_qualified(content, min_chinese=target_threshold):
+                print(f"第 {attempt} 次尝试成功：内容校验通过。")
+                sys.exit(EXIT_OK)
 
-        # 内容不合格时顺手检查回答异常（豆包）
+            print(f"第 {attempt} 次尝试失败：内容不合格。")
+
         if check_wrong_confirmed(templates):
             sys.exit(EXIT_HANDOFF)
 
