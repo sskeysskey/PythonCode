@@ -270,8 +270,9 @@ def clean_qianwen(lines):
 
         ai_ask_keywords = [
             "需要我", "是否需要", "你是否需要", "我可以", "要不要我", "如果你需要",
-            "你觉得", "您觉得", "或者需要", "希望我", "如果需要", "以上就是",
-            "需要吗", "以上总结", "这份总结", "符合你的预期", "符合您的预期", "想继续了解"
+            "你觉得", "您觉得", "或者需要", "希望我", "如果需要", "以上就是", "哪个方向想",
+            "需要吗", "以上总结", "这份总结", "符合你的预期", "符合您的预期", "想继续了解",
+            "要不要展开说说"
         ]
         ai_statement_keywords = [
             "以上内容基于", "未添加任何主观", "基于所提供新闻", "本总结仅供参考"
@@ -408,8 +409,8 @@ def clean_doubao(lines):
         if any(kw in last_line for kw in ai_disclaimer_keywords):
             deleted.append(lines.pop(-1)); changed = True; continue
 
-        ai_ask_keywords = ["需要我", "是否需要", "你是否", "我可以", "要不要我",
-                           "如果你需要", "你觉得", "或者需要", "希望我"]
+        ai_ask_keywords = ["需要我", "是否需要", "你是否", "我可以", "要不要我", "要不要说说", "想继续了解",
+                           "如果你需要", "你觉得", "或者需要", "希望我", "每个工作日早晨", "哪个方向想"]
         if last_line.startswith(tuple(ai_ask_keywords)):
             deleted.append(lines.pop(-1)); changed = True; continue
         if any(kw in last_line for kw in ai_ask_keywords) and ("？" in last_line or "?" in last_line):
