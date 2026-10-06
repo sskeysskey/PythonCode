@@ -2,6 +2,12 @@ import json
 import argparse
 import pyperclip
 import re
+import os
+import sys
+import tempfile
+
+# 【新增】本轮正在处理的 URL，供 write.py 精确定位要写入的 mapping key
+CURRENT_URL_FILE = '/tmp/downie_current_url.txt'
 
 # SKIP_CATEGORIES = {'Drama', 'Movie'}
 SKIP_CATEGORIES = set()
@@ -558,6 +564,39 @@ def should_skip_by_rating(item, threshold=RATING_THRESHOLD,
     return False
 
 
+def atomic_write_json(path, data):
+    """原子写入，并保留原文件权限（防止中途中断导致 mapping 损坏）"""
+    dir_name = os.path.dirname(path) or '.'
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=dir_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def emit_current_url(url):
+    """复制到剪贴板（Downie 流程需要）+ 写状态文件 + 输出标记行（AppleScript 解析）"""
+    pyperclip.copy(url)
+    try:
+        with open(CURRENT_URL_FILE, 'w', encoding='utf-8') as f:
+            f.write(url)
+    except OSError as e:
+        print(f"[警告] 当前 URL 状态文件写入失败：{e}", file=sys.stderr)
+    print(f"CURRENT_URL:{url}")
+
 def main():
     global MOVIE_REQUIRED_CHANNELS, SERIES_REQUIRED_SHORT, SERIES_REQUIRED_LONG
     global BLOCKED_CHANNEL_NAMES, BLOCKED_CHANNEL_KEYWORDS
@@ -668,31 +707,31 @@ def main():
         with open(mapping_path, 'r', encoding='utf-8') as f:
             url_mapping = json.load(f)
     except FileNotFoundError:
-        print(f"错误: 找不到文件 {mapping_path}")
-        return
+        print(f"错误: 找不到文件 {mapping_path}", file=sys.stderr)
+        sys.exit(2)
     except json.JSONDecodeError:
-        print(f"错误: {mapping_path} 不是有效的JSON格式")
-        return
+        print(f"错误: {mapping_path} 不是有效的JSON格式", file=sys.stderr)
+        sys.exit(2)
 
     try:
         with open(ovideos_path, 'r', encoding='utf-8') as f:
             ovideos = json.load(f)
     except FileNotFoundError:
-        print(f"错误: 找不到文件 {ovideos_path}")
-        return
+        print(f"错误: 找不到文件 {ovideos_path}", file=sys.stderr)
+        sys.exit(2)
     except json.JSONDecodeError:
-        print(f"错误: {ovideos_path} 不是有效的JSON格式")
-        return
+        print(f"错误: {ovideos_path} 不是有效的JSON格式", file=sys.stderr)
+        sys.exit(2)
 
     try:
         with open(blacklist_path, 'r', encoding='utf-8') as f:
             blacklist_url = json.load(f)
     except FileNotFoundError:
-        print(f"错误: 找不到文件 {blacklist_path}")
-        return
+        print(f"错误: 找不到文件 {blacklist_path}", file=sys.stderr)
+        sys.exit(2)
     except json.JSONDecodeError:
-        print(f"错误: {blacklist_path} 不是有效的JSON格式")
-        return
+        print(f"错误: {blacklist_path} 不是有效的JSON格式", file=sys.stderr)
+        sys.exit(2)
 
     if BLOCKED_CHANNEL_NAMES or BLOCKED_CHANNEL_KEYWORDS:
         print(f"[渠道黑名单] 精确: {sorted(BLOCKED_CHANNEL_NAMES) or '无'} | "
@@ -779,17 +818,16 @@ def main():
                 for episode_url in scan_episodes:
                     if episode_url in url_mapping:
                         if url_mapping[episode_url] == "":
-                            pyperclip.copy(episode_url)
                             print(f"找到已存在但未填写映射的链接，已复制到剪贴板:\n{episode_url}")
+                            emit_current_url(episode_url)
                             return
                         else:
                             continue
                     else:
                         url_mapping[episode_url] = ""
-                        pyperclip.copy(episode_url)
-                        with open(mapping_path, 'w', encoding='utf-8') as f:
-                            json.dump(url_mapping, f, indent=4, ensure_ascii=False)
+                        atomic_write_json(mapping_path, url_mapping)
                         print(f"发现新链接，已添加到 mapping 文件并复制到剪贴板:\n{episode_url}")
+                        emit_current_url(episode_url)
                         return
 
     print("所有视频链接都已处理完毕，没有发现新的或未填写的链接。")

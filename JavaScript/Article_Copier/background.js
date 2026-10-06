@@ -74,28 +74,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
         console.error(`Download failed for ${request.url}: ${chrome.runtime.lastError.message}`);
-        // 可以在这里通知用户下载失败，但避免干扰已有的通知逻辑
-        // 如果需要，可以向 content script 发送消息显示特定错误
-        if (tabId !== null && DownloadsPending[tabId]) {
-          // 尝试从队列中移除，即使没有 downloadId (不太可能发生)
-          // 主要目的是为了在所有其他图片下载完成后能正确触发“全部完成”
-          // 但这里没有 downloadId，所以无法精确移除
-        }
         return;
       }
       if (downloadId && tabId !== null && DownloadsPending[tabId]) {
         // 将下载任务ID加入跟踪队列中
         DownloadsPending[tabId].downloads.push(downloadId);
-      } else if (!downloadId && tabId !== null && DownloadsPending[tabId]) {
-        // 如果下载启动失败 (没有 downloadId)，也应该处理队列
-        // 这种情况比较少见，但为了健壮性可以考虑
-        // 例如，如果URL无效，downloadId可能是undefined
-        // 为了简单起见，我们主要依赖 onChanged 的 complete 状态
-        // 但如果一个下载从未开始，它也不会完成。
-        // 这种情况下，如果 DownloadsPending[tabId].downloads 最终为空，
-        // 且 hasStartedImageProcess 为 true，但没有图片实际下载，
-        // “所有图片下载完成”的通知可能不准确。
-        // 一个更复杂的处理是记录预期下载数量。
       }
     });
   } else if (request.action === 'noImages') {
@@ -207,15 +190,14 @@ chrome.downloads.onChanged.addListener((delta) => {
 });
 
 function showNotification(message) {
-  // 如果未添加通知相关的样式，则创建一次
   if (!document.getElementById('notification-style')) {
     const style = document.createElement('style');
     style.id = 'notification-style';
     style.textContent = `
       #notification-container {
-    position: fixed;
-    top: 20px;
-      left: 50%;
+        position: fixed;
+        top: 20px;
+        left: 50%;
         transform: translateX(-50%);
         z-index: 2147483647;
         display: flex;
@@ -225,11 +207,11 @@ function showNotification(message) {
       }
       .copy-notification {
         background-color: #4CAF50;
-    color: white;
-    padding: 12px 24px;
-    border-radius: 4px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-    font-size: 14px;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 4px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        font-size: 14px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         opacity: 0;
         transform: translateY(-20px);
@@ -238,8 +220,8 @@ function showNotification(message) {
       .copy-notification.show {
         opacity: 1;
         transform: translateY(0);
-    }
-  `;
+      }
+    `;
     document.head.appendChild(style);
   }
 
@@ -281,78 +263,106 @@ function showNotification(message) {
 
 function extractAndCopy() {
   let textContent = '';
-  let imagesFoundForDownload = false; // 用于跟踪是否至少尝试下载了一张图片
+  let imagesFoundForDownload = false;
 
   if (window.location.hostname.includes("ft.com")) {
-    const siteContent = document.getElementById('site-content');
-    // 先尝试最常见的新版结构，再 fallback 到旧版
-    const articleBody =
-      document.getElementById('article-body') ||
-      siteContent?.querySelector('#article-body');
+    // ================= FT.com（兼容新版 / 旧版结构） =================
 
-    if (articleBody) {
-      // 1. 文本提取：兼容 <p> 和最外层 <div> 两种容器
-      let paras = Array.from(articleBody.querySelectorAll('p'));
-      // 加回新版里文字被 <div> 包裹的情况
-      const divParas = Array.from(articleBody.children)
-        .filter(el => el.tagName === 'DIV');
-      paras = [...new Set([...paras, ...divParas])];
-
-      // 原有的 FT.com 段落过滤逻辑
-      const kept = paras.filter(p => {
-        const text = p.textContent.trim();
-        if (!text || text.length <= 1) return false;
-        if (text === '@' || text === '•' || text === '».') return false;
-        if (text.includes('is the author of') ||
-          text.toLowerCase().includes('follow ft weekend')) return false;
-        if (text.toLowerCase().includes('change has been made') ||
-          text.toLowerCase().includes('story was originally published'))
-          return false;
-        if (text.toLowerCase().includes('subscribe') ||
-          text.toLowerCase().includes('newsletter'))
-          return false;
-        if (text.toLowerCase().includes('follow') &&
-          (text.includes('instagram') || text.includes('twitter')))
-          return false;
-        // 排除主要由 <em> 组成的段落
-        const emTags = p.getElementsByTagName('em');
-        if (emTags.length > 0 && emTags[0].textContent.length > text.length / 2)
-          return false;
-        // 排除大量链接
-        const links = p.getElementsByTagName('a');
-        if (links.length > 2) return false;
-        return true;
-      });
-      const textContent = kept
-        .map(p => p.textContent.trim())
-        .join('\n\n');
-
-      // 2. 图片下载：先按老逻辑抓特定类名的 <figure>，再 fallback 到 siteContent 下所有 <figure>
-      let imageFigures = Array.from(
-        document.querySelectorAll(
-          'figure.n-content-image, figure.n-content-picture, ' +
-          'figure.o-topper_visual, .main-image'
-        )
-      );
-      if (imageFigures.length === 0 && siteContent) {
-        imageFigures = Array.from(siteContent.querySelectorAll('figure'));
+    // 清洗图片说明：合并所有 <span>，剔除以 • 或 © 开头的来源/版权署名
+    const getCleanCaption = (fc) => {
+      if (!fc) return '';
+      let cap = '';
+      const spans = Array.from(fc.querySelectorAll('span'));
+      if (spans.length > 0) {
+        cap = spans
+          .map(s => s.textContent.trim())
+          .filter(t => t && !/^[•©]/.test(t))
+          .join(' ');
       }
-      // 同一元素去重
+      if (!cap) cap = fc.textContent.trim();
+      // 再兜底去掉结尾的 ©… 或 •… 署名
+      return cap.replace(/©.*$/g, '').replace(/\s*•[^•]*$/g, '').trim();
+    };
+
+    // 段落过滤（沿用原 FT 规则）
+    const keepParagraph = (p) => {
+      const text = p.textContent.trim();
+      if (!text || text.length <= 1) return false;
+      if (text === '@' || text === '•' || text === '».') return false;
+      if (text.includes('is the author of') ||
+        text.toLowerCase().includes('follow ft weekend')) return false;
+      if (text.toLowerCase().includes('change has been made') ||
+        text.toLowerCase().includes('story was originally published')) return false;
+      if (text.toLowerCase().includes('subscribe') ||
+        text.toLowerCase().includes('newsletter')) return false;
+      if (text.toLowerCase().includes('follow') &&
+        (text.includes('instagram') || text.includes('twitter'))) return false;
+      const emTags = p.getElementsByTagName('em');
+      if (emTags.length > 0 && emTags[0].textContent.length > text.length / 2) return false;
+      const links = p.getElementsByTagName('a');
+      if (links.length > 2) return false;
+      return true;
+    };
+
+    // 正文容器：新版 <article class="n-content-body">，回退到旧版 #article-body
+    const articleBody =
+      document.querySelector('article.n-content-body') ||
+      document.getElementById('article-body') ||
+      document.querySelector('#site-content #article-body');
+
+    // 内容/图片外壳：新版 .article-content，回退到旧版 #site-content 等
+    const contentScope =
+      document.querySelector('.article-content') ||
+      document.querySelector('article.article-grid-row') ||
+      document.getElementById('site-content') ||
+      document.querySelector('.article-grid');
+
+    if (articleBody || contentScope) {
+      // ---------- 1. 文本提取（按文档顺序，<p> 与图片说明一起收） ----------
+      const textScope = contentScope || articleBody;
+      const flowEls = Array.from(textScope.querySelectorAll('p, figcaption'));
+      const pieces = [];
+      const seenText = new Set();
+      flowEls.forEach(el => {
+        let piece = '';
+        if (el.tagName === 'P') {
+          if (keepParagraph(el)) piece = el.textContent.trim();
+        } else if (el.tagName === 'FIGCAPTION') {
+          piece = getCleanCaption(el);
+        }
+        if (piece && !seenText.has(piece)) {
+          seenText.add(piece);
+          pieces.push(piece);
+        }
+      });
+      textContent = pieces.join('\n\n'); // 复用外层变量（修复原 const 遮蔽 bug）
+
+      // ---------- 2. 图片下载 ----------
+      const imgScope = contentScope || document.body;
+      let imageFigures = Array.from(imgScope.querySelectorAll(
+        'figure[data-component="topper-main-image"], ' +
+        'figure.n-content-image, figure.n-content-picture, ' +
+        'figure.o-topper_visual, .main-image'
+      ));
+      if (imageFigures.length === 0) {
+        imageFigures = Array.from(imgScope.querySelectorAll('figure'));
+      }
       imageFigures = [...new Set(imageFigures)];
 
       if (imageFigures.length === 0) {
         chrome.runtime.sendMessage({ action: 'noImages' });
       } else {
-        let seenUrls = new Set();
-        let seenNames = new Set();
+        const seenUrls = new Set();
+        const seenNames = new Set();
+        let sentAny = false;
+
         imageFigures.forEach((fig, idx) => {
-          // 取 <picture><img> 或 fig.querySelector('img')
           const pic = fig.querySelector('picture');
           const img = pic ? pic.querySelector('img') : fig.querySelector('img');
           if (!img) return;
 
-          // 最高分辨率
-          let url = img.src;
+          // 取最高分辨率
+          let url = img.src || '';
           if (img.srcset) {
             const candidates = img.srcset
               .split(',')
@@ -364,31 +374,29 @@ function extractAndCopy() {
               .sort((a, b) => b.width - a.width);
             if (candidates[0]) url = candidates[0].url;
           }
-          url = url.trim();
+          url = (url || '').trim();
           if (!/^https?:\/\//.test(url) || seenUrls.has(url)) return;
-          seenUrls.add(url);
 
-          // 描述：合并所有 span 并去掉版权 ©…
-          let caption = '';
-          const fc = fig.querySelector('figcaption');
-          if (fc) {
-            caption = Array.from(fc.querySelectorAll('span'))
-              .map(sp => sp.textContent.trim())
-              .join(' ')
-              .replace(/©.*$/g, '')
-              .trim();
+          // FT 图片 API：提升输出分辨率（width=1440 -> 2048）
+          if (/images\.ft\.com/.test(url)) {
+            url = url.replace(/([?&]width=)\d+/i, '$12048');
           }
-          if (!caption) caption = img.alt.trim();
+          seenUrls.add(url);
+          imagesFoundForDownload = true;
+
+          // 文件名：优先用图片说明，其次 alt，最后兜底
+          let caption = getCleanCaption(fig.querySelector('figcaption'));
+          if (!caption) caption = (img.alt || '').trim();
           if (!caption) caption = `ft-image-${Date.now()}-${idx}`;
 
-          // ★★★ 修改点 ★★★
-          // 2. 修改正则表达式，增加对'+'的过滤
-          // 清洗成合法文件名，防重名
+          // 清洗成合法文件名（过滤非法字符及 +），防重名
           let base = caption
-            .replace(/[/\\?%*:|"<>+]/g, '') // 过滤掉非法字符以及+和-号
+            .replace(/[/\\?%*:|"<>+]/g, '')
             .replace(/\s+/g, ' ')
             .substring(0, 200)
             .trim();
+          if (!base) base = `ft-image-${Date.now()}-${idx}`;
+
           let filename = `${base}.jpg`;
           let counter = 1;
           while (seenNames.has(filename)) {
@@ -396,15 +404,16 @@ function extractAndCopy() {
           }
           seenNames.add(filename);
 
-          chrome.runtime.sendMessage({
-            action: 'downloadImage',
-            url,
-            filename
-          });
+          chrome.runtime.sendMessage({ action: 'downloadImage', url, filename });
+          sentAny = true;
         });
+
+        if (!sentAny) {
+          chrome.runtime.sendMessage({ action: 'noImages' });
+        }
       }
 
-      // 3. 复制并返回 true
+      // ---------- 3. 复制并返回 ----------
       if (textContent) {
         const ta = document.createElement('textarea');
         ta.style.position = 'fixed';
@@ -412,15 +421,20 @@ function extractAndCopy() {
         ta.value = textContent;
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand('copy');
+        try {
+          document.execCommand('copy');
+        } catch (e) {
+          console.error('复制失败:', e);
+        }
         document.body.removeChild(ta);
         return true;
       }
+      return false;
     } else {
-      // 没找到 #article-body
+      // 两种容器都没找到
       chrome.runtime.sendMessage({ action: 'noImages' });
+      return false;
     }
-    return false;
   }
 
   // ==========================================
@@ -3768,7 +3782,6 @@ function extractAndCopy() {
     // 1. 新规则：如果包含“Read more of our stories...”，删除该段及之后所有内容
     const stopPhrase = "Read more of our stories about Philadelphia";
     const stopIndex = textContent.indexOf(stopPhrase);
-
     if (stopIndex !== -1) {
       // 截取从开头到该短语出现位置的文本
       textContent = textContent.substring(0, stopIndex);
@@ -3801,7 +3814,7 @@ function extractAndCopy() {
     textarea.value = textContent;
     document.body.appendChild(textarea);
     textarea.select();
-    textarea.setSelectionRange(0, textarea.value.length); // For better compatibility
+    textarea.setSelectionRange(0, textarea.value.length);
 
     try {
       document.execCommand('copy');
@@ -3814,26 +3827,8 @@ function extractAndCopy() {
       document.body.removeChild(textarea);
     }
   } else if (imagesFoundForDownload) {
-    // 如果没有文本内容，但尝试了图片下载（例如 Reuters Pictures 页面）
-    // 这种情况下，我们不应该返回 false 导致“复制失败”的通知。
-    // 而是让 background script 的图片下载通知来主导。
-    // 返回一个特殊值或true，表示操作已启动（图片下载）。
-    // 或者，如果 extractAndCopy 的返回值仅用于判断文本复制是否成功，
-    // 那么这里可以返回 false，但需要确保 'noImages' 或 '所有图片下载完成' 的通知能正确显示。
-    // 为了简化，如果主要目的是复制文本，且文本为空，即使有图片，也可能视为“内容未找到（用于复制）”。
-    // 保持返回 false，让上层逻辑判断。
-    // 如果 extractAndCopy 的返回值 true/false 严格对应文本复制，那么这里返回 false 是对的。
-    // 图片下载状态由 `DownloadsPending` 和 `onChanged` 处理。
-    return false; // 没有文本可复制
+    return false;
   }
 
-  // 如果既没有文本内容，也没有尝试下载图片（例如，所有网站的解析都失败了）
-  if (!textContent && !imagesFoundForDownload) {
-    // 确保在没有任何操作发生时，也发送一个 noImages，
-    // 以便 background script 可以清理 DownloadsPending（如果之前错误地设置了 hasStartedImageProcess）
-    // 但这通常由每个站点处理器内部的 noImages 调用来处理。
-    // 此处返回 false 即可。
-  }
-
-  return false; // 默认返回 false，表示没有文本内容被复制
+  return false;
 }

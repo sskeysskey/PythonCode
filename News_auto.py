@@ -66,6 +66,7 @@ PROVIDERS = {
             "copy":        ("qianwen_copy.png",         0.90, True),
             "forbidden":   ("qianwen_forbidden.png",    0.90, True),
             "forbidden2":  ("qianwen_forbidden2.png",   0.90, True),
+            "forbidden3":  ("qianwen_forbidden3.png",   0.90, True),
             "retry":       ("qianwen_retry.png",        0.90, True),
             "timeout":     ("qianwen_timeout.png",      0.90, True),
             # 可选模板：文件不存在时该检测自动关闭，不会影响主流程
@@ -530,9 +531,9 @@ def main():
                 sleep(0.3)
                 continue
 
-        # ---- 2. 拒答图标（forbidden / forbidden2）----
+        # ---- 2. 拒答图标----
         forbidden_hit = None
-        for key in ("forbidden", "forbidden2"):
+        for key in ("forbidden", "forbidden2", "forbidden3"):
             loc, _ = find(templates, key, screen=screen)
             if loc:
                 forbidden_hit = key
