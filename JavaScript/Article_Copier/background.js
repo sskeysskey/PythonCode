@@ -375,12 +375,15 @@ function extractAndCopy() {
             if (candidates[0]) url = candidates[0].url;
           }
           url = (url || '').trim();
-          if (!/^https?:\/\//.test(url) || seenUrls.has(url)) return;
+          if (!/^https?:\/\//.test(url)) return;
 
-          // FT 图片 API：提升输出分辨率（width=1440 -> 2048）
-          if (/images\.ft\.com/.test(url)) {
-            url = url.replace(/([?&]width=)\d+/i, '$12048');
+          // 先统一改造 URL（FT 图片提到 2048 宽）
+          if (/images.ft.com/.test(url)) {
+            url = url.replace(/([?&]width=)\d+/i, (m, p1) => p1 + '2048');
           }
+
+          // 再用最终 URL 去重
+          if (seenUrls.has(url)) return;
           seenUrls.add(url);
           imagesFoundForDownload = true;
 

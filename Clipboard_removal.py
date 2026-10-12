@@ -20,9 +20,13 @@ import pyperclip
 # 所以这里按网页上看到的样子写即可，不用操心全角冒号、多余空格等问题。
 IGNORE_PREFIXES = (
     "此文包含Instagram提供的内容",
+    "此文包含X提供的内容",
+    "此文包含Facebook提供的内容",
     "此文包含Google YouTube提供的内容",
     "此文包含Google YouTue提供的内容",   # 保留原列表中的写法，两种都能匹配
     "結尾 Instagram 帖子",
+    "結尾 X 帖子",
+    "結尾 Facebook 帖子",
     "結尾 YouTube 帖子",
     "我們使用了人工智慧協助翻譯",
     "按此了解我們如何使用人工智慧",

@@ -8,7 +8,8 @@
             "article": "这篇文章主要讲述了美国抓捕委内瑞拉独裁者马杜罗后：\n背景与动机",
             "article_eng": "Here's a detailed summary of the article:\nThe article discusses the U.S. capture of Venezuelan",
             "images": [],
-            "hot": 0
+            "hot": 0,
+            "timestamp": "2026-10-12 03:32:50"
         },
         {
             "source_id": "economist",
@@ -18,7 +19,8 @@
             "article": "这篇文章主要讲述了2024年1月3日美国特种部队在委内瑞拉首都加拉加斯突袭并逮捕前总统尼古拉斯·马杜罗的事件及其后续影响",
             "article_eng": "This article describes a significant event where former Venezuelan President Nicolás Maduro was captured by U.S. ",
             "images": [],
-            "hot": 0
+            "hot": 0,
+            "timestamp": "2026-10-12 04:39:21"
         }
     ],
     "纽约时报": [
@@ -32,7 +34,8 @@
             "images": [
                 "Secretary of State Marco Rubio at a news conference with President Trump at Mar-a-Lago, the president’s private estate and club in Palm Beach, Fla., on Saturday morning..jpg"
             ],
-            "hot": 0
+            "hot": 0,
+            "timestamp": "2026-10-12 07:58:26"
         }
     ]
 }

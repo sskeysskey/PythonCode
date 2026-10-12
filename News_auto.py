@@ -17,6 +17,7 @@
     5  需要交接（AI 拒答 或 回答异常 或 额度用完且无法切换模型）
     7  网页端「上传/发送失败」（本篇建议交由同品牌 API 兜底，下一篇仍回网页版）
     8  当前模型免费额度用完，已在网页上切换到备用模型 -> 请用同一 provider 重跑本篇
+    9  AI 没有执行总结(反问/菜单式回复) -> 请用同一 provider 重跑本篇
 """
 
 import os
@@ -54,6 +55,7 @@ EXIT_TEMPLATE_MISSING = 3
 EXIT_HANDOFF = 5
 EXIT_UPLOAD_FAIL = 7          # 网页上传/发送失败
 EXIT_MODEL_SWITCHED = 8       # 新增：额度用完，已切换模型，请重跑本篇
+EXIT_OFFTASK = 9              # 新增:AI 未执行总结(反问/给选项),请同 provider 重跑本篇
 
 UPLOAD_FAIL_KEY = "upload_fail"
 
@@ -77,6 +79,7 @@ PROVIDERS = {
             "switch_confirm": ("qianwen_default.png",   0.90, False),
         },
         "check_refusal_text": True,     # 剪贴板文本命中拒答话术 -> 交接
+        "check_offtask_text": True,     # 新增:剪贴板是"反问/给选项"而非总结 -> 重跑
         "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后 Cmd+R
         "related_gate": False,          # 复制按钮出现后是否等待 related 图再重定位
         "cursor_before_scroll": (709, 749),  # 内容不合格重试前把鼠标移到这里再滚动
@@ -101,6 +104,7 @@ PROVIDERS = {
             # "upload_fail": ("deepseek_upload_fail.png", 0.92, False),
         },
         "check_refusal_text": True,
+        "check_offtask_text": False,
         "refresh_on_stall": True,
         "related_gate": False,
         "cursor_before_scroll": (709, 749),
@@ -118,6 +122,7 @@ PROVIDERS = {
             # "upload_fail": ("doubao_upload_fail.png", 0.92, False),
         },
         "check_refusal_text": True,
+        "check_offtask_text": False,
         "refresh_on_stall": False,
         "related_gate": True,
         "cursor_before_scroll": None,
@@ -290,6 +295,54 @@ def is_refusal_response(text: str) -> bool:
     else:
         scope = normalized[:REFUSAL_EDGE_WINDOW] + "\n" + normalized[-REFUSAL_EDGE_WINDOW:]
     return any(p in scope for p in REFUSAL_PHRASES)
+
+# 「AI 没做总结,反过来问用户想要什么」的话术(只在短文本全文 / 长文本尾部匹配)
+OFFTASK_PHRASES = [
+    "你希望执行哪一种",
+    "您希望执行哪一种",
+    "你希望我执行哪",
+    "告诉我后我马上处理",
+    "告诉我后我马上",
+    "请告诉我你希望",
+    "请告诉我您希望",
+    "你想让我做什么",
+    "您想让我做什么",
+    "你希望我如何处理",
+    "您希望我如何处理",
+    "你需要我做什么",
+    "您需要我做什么",
+    "你具体希望我",
+    "您具体希望我",
+    "请问你希望我",
+    "请问您希望我",
+]
+
+OFFTASK_FULLTEXT_MAX = 800     # 归一化后不超过此长度:全文匹配;超过:只看尾部
+OFFTASK_TAIL_WINDOW = 200
+# 菜单项特征:「翻译成中文 —— 将这篇……」「1. 改写 / 润色 —— ……」
+OFFTASK_MENU_LINE = re.compile(r'^\s*(?:[-*•·]|\d+[.、)])?\s*[^\s—–\-]{2,20}[^\n—–]{0,20}\s*(?:——|—|–|--)\s*\S')
+
+
+def is_offtask_response(text: str) -> bool:
+    """判断剪贴板内容是否为「AI 没有总结,而是反问用户/列出可选操作」"""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+
+    if len(normalized) <= OFFTASK_FULLTEXT_MAX:
+        scope = normalized
+    else:
+        scope = normalized[-OFFTASK_TAIL_WINDOW:]
+    if any(p in scope for p in OFFTASK_PHRASES):
+        return True
+
+    # 结构特征兜底:短文本 + 至少 3 行「选项 —— 说明」 + 结尾带询问/等待指示的语气
+    if len(normalized) <= OFFTASK_FULLTEXT_MAX:
+        menu_lines = [ln for ln in text.splitlines() if OFFTASK_MENU_LINE.match(ln)]
+        tail = normalized[-OFFTASK_TAIL_WINDOW:]
+        if len(menu_lines) >= 3 and re.search(r'[?？]|告诉我|希望|需要|选择', tail):
+            return True
+    return False
 
 
 def is_content_qualified(text, min_chinese=50) -> bool:
@@ -615,6 +668,13 @@ def main():
             if cfg["check_refusal_text"] and is_refusal_response(content):
                 print("剪贴板命中拒答话术 -> 请求交接。")
                 sys.exit(EXIT_HANDOFF)
+
+            # 5.2b 反问/给选项而没有总结(汉字数可能很多,必须在合格校验之前拦截)
+            if cfg.get("check_offtask_text") and is_offtask_response(content):
+                print("剪贴板内容是反问/选项菜单而非总结 -> 请求同 provider 重跑本篇(退出码 9)。")
+                print("内容预览:", content[:80].replace("\n", " | "))
+                save_debug_shot("offtask")
+                sys.exit(EXIT_OFFTASK)
 
             # 5.3 合格校验
             if is_content_qualified(content, min_chinese=target_threshold):

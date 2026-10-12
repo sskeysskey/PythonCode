@@ -29,6 +29,22 @@ import socket
 import platform
 import subprocess
 import atexit
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+_LOCK_FH = None
+def acquire_run_lock():
+    global _LOCK_FH
+    if fcntl is None:
+        return
+    _LOCK_FH = open(JSON_PATH + ".lock", "a+")
+    try:
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(">>> [锁] ⏳ 另一个爬虫正在写入 OVideos.json，等待其结束 ...")
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX)
+    print(">>> [锁] 已获得数据文件独占锁 🔒")
 from urllib.parse import urljoin
 from urllib.request import urlopen
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -167,7 +183,8 @@ SITE_MARKERS = ("ewave-", "stui-", "vodshow", "vodplay", "ewave-vodlist")
 BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记", "永恒和一日",
     "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1",
-    "人生赢家", "判决", "判决墨西哥剧", "后门", "校规101", "校规", "无人区"
+    "人生赢家", "判决", "判决墨西哥剧", "后门", "校规101", "校规", "无人区",
+    "第二盘",
 ]
 BLACKLIST_URLS = []
 WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "猫与龙",
@@ -1404,7 +1421,8 @@ def parse_real_name(soup, default_name):
         if any(("score" in c) or ("raty" in c) for c in classes):
             sp.extract()
     t = normalize_text(h1.get_text(strip=True))
-    t = re.sub(r"\s*\d+(\.\d+)?\s*$", "", t).strip() or t
+    # t = re.sub(r"\s*\d+(\.\d+)?\s*$", "", t).strip() or t
+    t = re.sub(r"\s+\d\.\d\s*$", "", t).strip() or t
     if not t:
         return default_name
     name, _ = split_name_info(t)
@@ -2124,6 +2142,7 @@ def main():
     setup_logging()
     is_backfill = parse_cli()
     start_caffeinate()
+    acquire_run_lock()
     os.makedirs(IMG_DIR, exist_ok=True)
 
     print("=" * 60)

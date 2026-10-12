@@ -2,6 +2,11 @@
 """
 xb6v.com 最新剧集、最新电影、小编推荐、首页 爬取脚本
 （升级版 + 防休眠 + 国产/泰国地区过滤(仅分集剧集) + 新格式兼容 + 补全模式 + 6vdy首页抓取 + 评分过滤 + 独立图片轻量重试）
+
+【更新规则】ONLY_UPDATE_OWN_CHANNEL=True 时：
+    JSON 中不存在的作品 → 新增
+    JSON 中已存在、且 playlist 已有 xb6v 渠道 → 正常更新
+    JSON 中已存在、但没有 xb6v 渠道 → 跳过，不做任何修改
 """
 
 import os
@@ -19,17 +24,18 @@ import subprocess
 import atexit
 from urllib.parse import urljoin, urlparse, urlunparse
 from requests.adapters import HTTPAdapter
-
-try:
-    from urllib3.util.retry import Retry
-except ImportError:
-    from urllib3.util.retry import Retry
+from urllib3.util.retry import Retry
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from bs4 import BeautifulSoup
 from datetime import datetime
+
+try:
+    import fcntl
+except ImportError:          # Windows 无 fcntl，锁功能自动失效
+    fcntl = None
 
 # ================= 防止系统休眠控制 =================
 _caffeinate_proc = None
@@ -53,6 +59,7 @@ def stop_caffeinate():
             print(">>> [系统] 已关闭防休眠模式")
         except Exception as e:
             print(f">>> [系统] 关闭 caffeinate 时出错: {e}")
+        _caffeinate_proc = None
 
 atexit.register(stop_caffeinate)
 
@@ -66,7 +73,12 @@ PLAYLIST_NAME = "xb6v"
 REQUEST_TIMEOUT = (10, 25)
 SLEEP_BETWEEN  = 1.0
 
-# 图片专用下载配置（禁止死循循环，仅试2次，短超时）
+# —— 更新规则 ——
+# True：已存在于 JSON 的作品，只有其 playlist 里已有 xb6v 渠道时才更新；否则跳过（只新增 JSON 里没有的新作品）
+# False：恢复旧行为（已存在作品也会把 xb6v 作为新渠道追加）
+ONLY_UPDATE_OWN_CHANNEL = True
+
+# 图片专用下载配置（禁止死循环，仅试2次，短超时）
 IMG_REQUEST_TIMEOUT = (5, 10)
 MAX_IMG_ATTEMPTS = 2
 
@@ -74,13 +86,16 @@ MAX_IMG_ATTEMPTS = 2
 BACKUP_DIR = os.path.join(os.path.dirname(JSON_PATH), "backup")
 BAK_FILE = JSON_PATH + ".bak"
 REJECTED_FILE = JSON_PATH + ".rejected.json"
-MAX_BACKUPS = 20                 # backup/ 目录里最多保留多少份启动快照
+LOCK_FILE = JSON_PATH + ".lock"  # 与 sxkljc 等脚本共用同一把锁，防止并发写互相覆盖
+MAX_BACKUPS = 20                 # （保留配置，当前快照策略为「只保留今日备份」）
 ALLOW_SHRINK_RATIO = 0.90        # 新数据条目数不得低于基线的 90%，否则拒绝写盘
 SHRINK_GUARD_MIN_ITEMS = 20      # 基线条目少于这个数时不启用缩水保护
 ALLOW_FRESH_START = False        # 只有确实想从零开始建库时才改 True
 
 _BASELINE_TOTAL = 0              # 启动时加载到的条目总数（缩水保护基线）
 _LOAD_OK = False                 # 是否成功加载了初始数据（未成功则禁止任何写盘）
+_LAST_SIG = None                 # 上次读/写后主文件的 (mtime_ns, size)，用于检测外部并发修改
+_LOCK_FH = None
 
 BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版"]
 WHITELIST_NAMES = [
@@ -117,6 +132,12 @@ HEADERS = {
     "Connection": "keep-alive",
     "Referer": BASE_URL,
 }
+
+
+class ConcurrentWriteError(Exception):
+    """检测到 JSON 被其他进程修改，必须中止，避免覆盖别人的数据"""
+    pass
+
 
 # ============== TLS / Session 构建 ==============
 class TLSAdapter(HTTPAdapter):
@@ -162,6 +183,28 @@ def _build_ssl_context(loose=False):
         ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
+
+# ============== 数据安全：锁 / 备份 ==============
+def acquire_run_lock():
+    global _LOCK_FH
+    if fcntl is None:
+        return
+    os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+    _LOCK_FH = open(LOCK_FILE, "a+")
+    try:
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(">>> [锁] ⏳ 另一个爬虫正在写入 OVideos.json，等待其结束 ...")
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX)
+    print(">>> [锁] 已获得数据文件独占锁 🔒")
+
+def _file_sig(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        return None
+
 def count_items(data: dict) -> int:
     if not isinstance(data, dict):
         return 0
@@ -178,7 +221,7 @@ def _read_json_strict(path: str) -> dict:
         raise ValueError(f"顶层结构不是 dict，而是 {type(data).__name__}")
     return data
 
-def _backup_candidates() -> list[str]:
+def _backup_candidates() -> list:
     cands = [BAK_FILE]
     try:
         snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")), reverse=True)
@@ -188,44 +231,31 @@ def _backup_candidates() -> list[str]:
     return cands
 
 def snapshot_backup(path: str):
-    """每次启动把当前有效文件另存一份时间戳快照，先清理非今日的旧备份，只保留今日备份"""
+    """每次启动把当前有效文件另存一份时间戳快照；快照成功后再清理非今日的旧备份（只保留今日备份）"""
     try:
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             return
         os.makedirs(BACKUP_DIR, exist_ok=True)
-        # 获取今日日期 YYYYMMDD
         today_ts = time.strftime("%Y%m%d")
         ts = time.strftime("%Y%m%d_%H%M%S")
         dst = os.path.join(BACKUP_DIR, f"OVideos_{ts}.json")
 
-        # --------新增逻辑：删除所有不是今天日期的备份文件--------
-        snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")))
-        for fpath in snaps:
-            fname = os.path.basename(fpath)
-            # 匹配 OVideos_20260827_101451.json
-            m = re.match(r"OVideos_(\d{8})_\d{6}\.json", fname)
-            if m:
-                file_date = m.group(1)
-                if file_date != today_ts:
-                    try:
-                        os.remove(fpath)
-                        print(f">>> [备份清理] 删除过期备份: {fname}")
-                    except Exception as e:
-                        print(f">>> [备份清理] 删除失败 {fname}: {e}")
-
+        # 【修复】先确保新快照写成功，再删旧备份；否则复制失败时会出现「一份备份都没有」
         shutil.copy2(path, dst)
+        _read_json_strict(dst)
         print(f">>> [备份] 启动快照已保存: {dst}")
 
-        # 原来的 MAX_BACKUPS 数量轮转逻辑不再需要，直接注释掉
-        # snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json")))
-        # if len(snaps) > MAX_BACKUPS:
-        #     for old in snaps[:len(snaps) - MAX_BACKUPS]:
-        #         try:
-        #             os.remove(old)
-        #         except Exception:
-        #             pass
+        for fpath in sorted(glob.glob(os.path.join(BACKUP_DIR, "OVideos_*.json"))):
+            fname = os.path.basename(fpath)
+            m = re.match(r"OVideos_(\d{8})_\d{6}\.json", fname)
+            if m and m.group(1) != today_ts:
+                try:
+                    os.remove(fpath)
+                    print(f">>> [备份清理] 删除过期备份: {fname}")
+                except Exception as e:
+                    print(f">>> [备份清理] 删除失败 {fname}: {e}")
     except Exception as e:
-        print(f">>> [备份] 创建启动快照失败: {e}")
+        print(f">>> [备份] 创建启动快照失败（未清理任何旧备份）: {e}")
 
 
 def _build_session(loose_tls=False):
@@ -496,15 +526,24 @@ def split_name_info(raw_title):
 def safe_filename(url):
     return os.path.basename(url.split("?")[0])
 
+def extract_year(*candidates):
+    for c in candidates:
+        if not c:
+            continue
+        m = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", str(c))
+        if m:
+            return m.group(0)
+    return ""
+
 def should_update_date(old_date, new_date):
     """
     判断是否应该用 new_date 替换 old_date：
     1. new_date 为空，绝不更新。
     2. 原 old_date 为空，直接填入。
     3. 分别提取两者的「最前面4位年份」：
-       - 新年份 > 旧年份：允许更新（如 2022 -> 2026）
-       - 新年份 < 旧年份：拒绝更新（如 2026 -> 2022，即便新字串更长也拒绝）
-       - 新年份 == 旧年份：仅在新字串长度严格大于旧字串时更新（如补充了月日或括号备注），否则不更新
+       - 新年份 > 旧年份：允许更新
+       - 新年份 < 旧年份：拒绝更新
+       - 新年份 == 旧年份：仅在新字串长度严格大于旧字串时更新
     4. 若无法提取有效年份，保守处理：已有旧数据则不覆盖。
     """
     if not new_date:
@@ -515,26 +554,18 @@ def should_update_date(old_date, new_date):
     old_str = str(old_date).strip()
     new_str = str(new_date).strip()
 
-    # 提取字符串中【最前面】出现的 4 位有效年份（优先匹配 19xx / 20xx，兜底匹配连续4位数字）
     old_m = re.search(r'((?:19|20)\d{2})', old_str) or re.search(r'(\d{4})', old_str)
     new_m = re.search(r'((?:19|20)\d{2})', new_str) or re.search(r'(\d{4})', new_str)
 
     if old_m and new_m:
         old_year = int(old_m.group(1))
         new_year = int(new_m.group(1))
-
-        # 规则 1：年份更新（2022 -> 2026） -> 允许更新
         if new_year > old_year:
             return True
-
-        # 规则 2：年份倒退（2026 -> 2022） -> 拒绝更新（无论新字串有多长）
         if new_year < old_year:
             return False
-
-        # 规则 3：年份相同（如均为 2026） -> 只有更长（信息更详细）才更新
         return len(new_str) > len(old_str)
 
-    # 无法对比有效年份时的保守兜底：不覆盖已有数据
     return False
 
 # ============== 播放列表提取 ==============
@@ -640,16 +671,28 @@ def parse_score(s):
     return val
 
 # ============== 针对图片的轻量下载逻辑 ==============
+def _looks_like_image(b: bytes) -> bool:
+    if not b or len(b) < 512:
+        return False
+    return (b[:3] == b"\xff\xd8\xff" or b[:8] == b"\x89PNG\r\n\x1a\n"
+            or (b[:4] == b"RIFF" and b[8:12] == b"WEBP")
+            or b[:6] in (b"GIF87a", b"GIF89a")
+            or b[:2] == b"BM"
+            or b[4:12] in (b"ftypavif", b"ftypheic", b"ftypmif1"))
+
 def download_and_localize_image(img_url):
     """
     图片下载专用函数：
     1. 严格禁止替换镜像站域名；
     2. 最多仅试 2 次（1 次初试 + 1 次重试）；
-    3. 失败直接返回空字符串 ""，绝不死循环，不阻塞主流程。
+    3. 失败直接返回空字符串 ""，绝不死循环，不阻塞主流程；
+    4. 【修复】校验内容确为图片（防盗链 HTML 页不会被当成 .jpg 永久缓存），原子写入。
     """
     if not img_url:
         return ""
     fn = safe_filename(img_url)
+    if not fn:
+        return ""
     local_path = os.path.join(IMG_DIR, fn)
 
     if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
@@ -662,10 +705,14 @@ def download_and_localize_image(img_url):
             content = resp.content
             if not content:
                 raise ValueError("下载的图片文件为空(0字节)")
+            if not _looks_like_image(content):
+                raise ValueError(f"返回内容不是有效图片（{len(content)} 字节，可能是防盗链/错误页）")
 
             os.makedirs(IMG_DIR, exist_ok=True)
-            with open(local_path, "wb") as f:
+            tmp = local_path + ".part"
+            with open(tmp, "wb") as f:
                 f.write(content)
+            os.replace(tmp, local_path)
             print(f"  [图片] 已下载 -> {fn}")
             return fn
         except Exception as e:
@@ -674,12 +721,12 @@ def download_and_localize_image(img_url):
                 time.sleep(1.0)
             else:
                 print(f"  ❌[图片下载放弃] 尝试{MAX_IMG_ATTEMPTS}次均失败，图片字段留空跳过: {img_url}")
-                # 清除可能遗留的空文件
-                if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
-                    try:
-                        os.remove(local_path)
-                    except Exception:
-                        pass
+                for p in (local_path + ".part",):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
                 return ""
     return ""
 
@@ -948,8 +995,11 @@ def parse_subpage(sub_url, default_name, default_info):
     }
 
 # ============== JSON 读写与核心逻辑 ==============
+def _empty_db():
+    return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
+
 def load_existing(path: str) -> dict:
-    global _BASELINE_TOTAL, _LOAD_OK
+    global _BASELINE_TOTAL, _LOAD_OK, _LAST_SIG
     main_exists = os.path.exists(path)
     main_size = os.path.getsize(path) if main_exists else -1
 
@@ -958,6 +1008,7 @@ def load_existing(path: str) -> dict:
             data = _read_json_strict(path)
             _BASELINE_TOTAL = count_items(data)
             _LOAD_OK = True
+            _LAST_SIG = _file_sig(path)
             print(f">>> [读取] 主文件正常: {path} ({main_size/1024:.1f} KB, {_BASELINE_TOTAL} 条)")
             return data
         except Exception as e:
@@ -965,20 +1016,27 @@ def load_existing(path: str) -> dict:
     elif main_exists:
         print(f"\n❌ [严重] 主数据文件为 0 字节: {path}")
 
-    # 尝试从备份恢复
     if main_exists:
         for cand in _backup_candidates():
             if not os.path.exists(cand) or os.path.getsize(cand) == 0:
                 continue
             try:
                 data = _read_json_strict(cand)
-            except Exception as e:
+            except Exception:
                 continue
             n = count_items(data)
             _BASELINE_TOTAL = n
             _LOAD_OK = True
             print(f"✅ [恢复] 已从备份恢复数据: {cand} ({n} 条)")
-            save_json(data, force=True, quiet=False)
+            # 【修复】坏主文件另存留档；恢复写盘时不得把坏主文件复制到 .bak（会顶掉好备份）
+            try:
+                if main_size > 0:
+                    corrupt = f"{path}.corrupt_{time.strftime('%Y%m%d_%H%M%S')}"
+                    shutil.copy2(path, corrupt)
+                    print(f"   [留档] 损坏的主文件已另存为: {corrupt}")
+            except Exception:
+                pass
+            save_json(data, force=True, quiet=False, backup_main=False)
             return data
 
         if not ALLOW_FRESH_START:
@@ -987,21 +1045,40 @@ def load_existing(path: str) -> dict:
             print("请从备份恢复可用的 JSON 后再重试。")
             print("!" * 70 + "\n")
             sys.exit(1)
-        _BASELINE_TOTAL = 0
-        _LOAD_OK = True
-        return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
+    else:
+        # 【修复】主文件不存在但有备份：多半是路径错误/误删，不能从空库开始写
+        has_backup = any(os.path.exists(c) and os.path.getsize(c) > 0 for c in _backup_candidates())
+        if has_backup and not ALLOW_FRESH_START:
+            print("\n" + "!" * 70)
+            print(f"主数据文件不存在：{path}")
+            print("但检测到备份文件存在，可能是路径错误或文件被误删。脚本已终止。")
+            print(f"请从 {BAK_FILE} 或 {BACKUP_DIR} 手动恢复，或将 ALLOW_FRESH_START 改为 True。")
+            print("!" * 70 + "\n")
+            sys.exit(1)
 
     _BASELINE_TOTAL = 0
     _LOAD_OK = True
-    return {"Movie": [], "Drama": [], "Show": [], "Anime": []}
+    _LAST_SIG = _file_sig(path)
+    return _empty_db()
 
-def save_json(data: dict, force: bool = False, quiet: bool = True) -> bool:
-    global _BASELINE_TOTAL
+def save_json(data: dict, force: bool = False, quiet: bool = True, backup_main: bool = True) -> bool:
+    global _BASELINE_TOTAL, _LAST_SIG
     if not _LOAD_OK:
         print("  [拒绝保存] 初始数据未成功加载，禁止写盘")
         return False
     if not isinstance(data, dict):
         return False
+
+    # 【修复】检测外部并发修改，防止覆盖其他爬虫写入的数据
+    if not force and _file_sig(JSON_PATH) != _LAST_SIG:
+        try:
+            with open(REJECTED_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
+        raise ConcurrentWriteError(
+            f"检测到 {JSON_PATH} 在本脚本运行期间被其他进程修改（可能有其他爬虫同时在跑）。"
+            f"为避免覆盖对方数据，已中止。本次内存数据已另存到 {REJECTED_FILE}")
 
     total = count_items(data)
     if (not force) and _BASELINE_TOTAL >= SHRINK_GUARD_MIN_ITEMS and total < _BASELINE_TOTAL * ALLOW_SHRINK_RATIO:
@@ -1026,7 +1103,7 @@ def save_json(data: dict, force: bool = False, quiet: bool = True) -> bool:
     tmp_file = JSON_PATH + ".tmp"
     try:
         os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
-        if os.path.exists(JSON_PATH) and os.path.getsize(JSON_PATH) > 0:
+        if backup_main and os.path.exists(JSON_PATH) and os.path.getsize(JSON_PATH) > 0:
             try:
                 shutil.copy2(JSON_PATH, BAK_FILE)
             except Exception:
@@ -1039,6 +1116,7 @@ def save_json(data: dict, force: bool = False, quiet: bool = True) -> bool:
 
         _read_json_strict(tmp_file)
         os.replace(tmp_file, JSON_PATH)
+        _LAST_SIG = _file_sig(JSON_PATH)
         _BASELINE_TOTAL = max(_BASELINE_TOTAL, total)
         if not quiet:
             print(f"  [已保存] 共 {total} 条")
@@ -1070,12 +1148,36 @@ def _is_mirror(url):
         return False
     return any(d in host for d in MIRROR_DOMAINS)
 
-def find_existing_global(data, name, sub_url):
+def has_own_channel(item):
+    """该作品的 playlist 中是否已存在名为 xb6v 的渠道"""
+    for pl in item.get("playlist") or []:
+        if isinstance(pl, dict) and (pl.get("name") or "").strip().lower() == PLAYLIST_NAME.lower():
+            return True
+    return False
+
+def _normalize_name(s):
+    if not s:
+        return ""
+    s = s.translate(str.maketrans("：！？，（）【】", ":!?,()[]"))
+    return re.sub(r"\s+", "", s).strip().lower()
+
+def clean_season_one(s):
+    return re.sub(r"(?:第[一1]季)$", "", s or "").strip()
+
+def _year_conflict(item, year, group):
+    """电影同名但年份相差 >1 年，视为翻拍/不同作品"""
+    if not year or group != "Movie":
+        return False
+    old_year = extract_year(item.get("date", ""), item.get("date_re", ""))
+    return bool(old_year) and abs(int(old_year) - int(year)) > 1
+
+def find_existing_global(data, name, sub_url, year=""):
+    groups_all = ["Movie", "Drama", "Show", "Anime"]
     if sub_url:
         sub_path = _url_path(sub_url)
         sub_is_mirror = _is_mirror(sub_url)
 
-        for group in ["Movie", "Drama", "Show", "Anime"]:
+        for group in groups_all:
             for item in data.get(group, []):
                 existing_urls = {
                     item.get(k) for k in item.keys()
@@ -1085,17 +1187,29 @@ def find_existing_global(data, name, sub_url):
                     return group, item
 
         if sub_is_mirror and sub_path:
-            for group in ["Movie", "Drama", "Show", "Anime"]:
+            for group in groups_all:
                 for item in data.get(group, []):
                     for k in item.keys():
                         if k == "url" or re.match(r"^url\d+$", k):
-                            u = item.get(k, "")
+                            u = item.get(k, "") or ""
                             if _is_mirror(u) and _url_path(u) == sub_path:
                                 return group, item
 
-    for group in ["Movie", "Drama", "Show", "Anime"]:
+    # 名称匹配：忽略空格/全半角标点/大小写，并把「第一季」视同无季号
+    norm = _normalize_name(name)
+    base = clean_season_one(norm)
+    if not norm:
+        return None, None
+    for group in groups_all:
         for item in data.get(group, []):
-            if item.get("name") == name:
+            en = _normalize_name(item.get("name", ""))
+            eb = clean_season_one(en)
+            if en == norm or (base and eb and base == eb):
+                if _year_conflict(item, year, group):
+                    print(f"      [年份冲突] 同名「{item.get('name')}」年份 {item.get('date')} ≠ {year}，视为不同作品")
+                    continue
+                if item.get("name") != name:
+                    print(f"      [名称去重] 已有「{item.get('name')}」({group}) ↔ 抓取「{name}」")
                 return group, item
 
     return None, None
@@ -1116,7 +1230,6 @@ def get_real_episode_count(episodes):
     if not episodes:
         return 0
 
-    # 1. 匹配 SxxExx
     se_pairs = []
     for k in episodes.keys():
         m = re.search(r'S(\d+)E(\d+)', str(k), re.IGNORECASE)
@@ -1127,7 +1240,6 @@ def get_real_episode_count(episodes):
         max_ep = max(e for s, e in se_pairs if s == max_season)
         return max_ep
 
-    # 2. 匹配 第X季第Y集
     season_ep_pairs = []
     for k in episodes.keys():
         m = re.search(r'第\s*(\d+)\s*季.*?第\s*(\d+)\s*[集期话話]', str(k))
@@ -1138,7 +1250,6 @@ def get_real_episode_count(episodes):
         max_ep = max(e for s, e in season_ep_pairs if s == max_season)
         return max_ep
 
-    # 3. 常规提取
     max_num = 0
     for k in episodes.keys():
         m = re.search(r'(\d+)\s*[集期话話]', str(k))
@@ -1211,9 +1322,7 @@ def update_info_field_if_needed(existing, new_playlist, old_vdy_cnt):
 
     Y = get_real_episode_count(eps)
     old_info = existing.get("info", "")
-    X = extract_max_episodes_from_info(old_info)
 
-    # 统计其他渠道最大集数
     max_other = 0
     max_other_name = ""
     for pl in new_playlist:
@@ -1225,7 +1334,6 @@ def update_info_field_if_needed(existing, new_playlist, old_vdy_cnt):
             max_other = cnt
             max_other_name = pl.get("name", "")
 
-    # 单渠道场景
     if len(new_playlist) == 1:
         if Y > 0:
             new_info = f"更新至第{Y}集"
@@ -1235,13 +1343,13 @@ def update_info_field_if_needed(existing, new_playlist, old_vdy_cnt):
                 return True
         return False
 
-    # 多渠道场景：抓到的最大集数严格大于其他所有渠道的最大集数
     if Y > max_other and Y > 0:
         new_info = f"更新至第{Y}集"
         if existing.get("info") != new_info:
             existing["info"] = new_info
             print(f"      ✅[info字段更新] 6vdy 新集数 {Y} > 其他渠道最大集数 {max_other}（渠道「{max_other_name}」），info: 「{old_info}」 -> 「{new_info}」")
             return True
+        return False
     else:
         print(f"      [info字段跳过] 6vdy 新集数 {Y} 未大于其他渠道最大集数 {max_other}，保持原 info「{old_info}」")
         return False
@@ -1341,7 +1449,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
         fields_updated = True
         print(f"      ✅[字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
 
-    old_rating = existing.setdefault("评分", {})
+    old_rating = existing.get("评分")
+    if not isinstance(old_rating, dict):
+        old_rating = existing["评分"] = {"豆瓣": "", "IMDB": ""}
     new_rating = rec.get("评分", {})
     if isinstance(new_rating, dict):
         for rate_key in ["豆瓣", "IMDB"]:
@@ -1352,6 +1462,14 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
                 fields_updated = True
                 print(f"      ✅[字段更新] 补充评分「{rate_key}」: {new_rate_val}")
 
+    # 【新增】已有记录缺封面时补下载
+    if not existing.get("image") and rec.get("image"):
+        local = download_and_localize_image(rec["image"])
+        if local:
+            existing["image"] = local
+            fields_updated = True
+            print(f"      ✅[字段更新] 补充封面: {local}")
+
     if not new_6vdy_episodes:
         return "updated" if fields_updated else "no_new"
 
@@ -1360,7 +1478,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
         key=lambda x: (0, 0) if x == "url" else (1, int(re.search(r"\d+", x).group()))
     )
 
-    has_6vdy_url = any("xb6v" in existing.get(k, "") or existing.get(k, "") == sub_url for k in url_keys)
+    has_6vdy_url = any("xb6v" in (existing.get(k) or "") or (existing.get(k) or "") == sub_url
+                       for k in url_keys)
     playlist = existing.setdefault("playlist", [])
 
     old_max_episodes = 0
@@ -1394,24 +1513,20 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
             return "meta_updated" if fields_updated else "no_change"
 
         if len(new_6vdy_episodes) < len(old_6vdy_eps):
-            return "updated" if fields_updated else "decreased"
+            return "meta_updated" if fields_updated else "decreased"
 
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         if old_6vdy_idx != -1:
             del playlist[old_6vdy_idx]
-            insert_6vdy_playlist(playlist, new_pl, existing)
-        else:
-            insert_6vdy_playlist(playlist, new_pl, existing)
+        insert_6vdy_playlist(playlist, new_pl, existing)
 
         info_updated = update_info_field_if_needed(existing, playlist, old_vdy_cnt)
         movie_info_updated = False
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
-        if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                                    info_updated, movie_info_updated, matched_group, old_max_episodes):
-            fields_updated = True
-
+        _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
+                                 info_updated, movie_info_updated, matched_group, old_max_episodes)
         return "updated"
 
     else:
@@ -1439,6 +1554,9 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
         existing.clear()
         existing.update(new_ordered_dict)
 
+        # 【修复】若 playlist 已有 xb6v 渠道（只是缺 url 键），先移除旧的，避免出现两条 xb6v 渠道
+        playlist[:] = [pl for pl in playlist if pl.get("name") != PLAYLIST_NAME]
+
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_6vdy_episodes}
         insert_6vdy_playlist(playlist, new_pl, existing)
 
@@ -1449,10 +1567,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
         if not info_updated:
             movie_info_updated = update_movie_quality_info_if_needed(existing, new_6vdy_episodes)
 
-        if _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
-                                    info_updated, movie_info_updated, matched_group, old_max_episodes):
-            fields_updated = True
-
+        _decide_and_touch_update(existing, playlist, new_6vdy_episodes,
+                                 info_updated, movie_info_updated, matched_group, old_max_episodes)
         return "channel_added"
 
 def detect_group(episodes, actors, types):
@@ -1528,6 +1644,35 @@ def get_homepage_list_6vdy():
         items.append((name, info, full_url))
     return items
 
+def fill_fields_only(existing, rec):
+    """只补缺失元数据 + 封面，不碰 playlist / url / info / update"""
+    changed = False
+    for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
+        if not existing.get(field) and rec.get(field):
+            existing[field] = rec[field]
+            changed = True
+            print(f"      ✅[字段更新] 补充缺失字段「{field}」: {rec[field]}")
+
+    if should_update_date(existing.get("date", ""), rec.get("date", "")):
+        existing["date"] = rec["date"]
+        changed = True
+
+    old_rating = existing.get("评分")
+    if not isinstance(old_rating, dict):
+        old_rating = existing["评分"] = {"豆瓣": "", "IMDB": ""}
+    for k in ("豆瓣", "IMDB"):
+        v = (rec.get("评分") or {}).get(k, "")
+        if not old_rating.get(k) and v:
+            old_rating[k] = v
+            changed = True
+
+    if not existing.get("image") and rec.get("image"):
+        local = download_and_localize_image(rec["image"])
+        if local:
+            existing["image"] = local
+            changed = True
+    return changed
+
 def process_items(data, items, tab_name):
     total = len(items)
     ok, fail = 0, 0
@@ -1542,6 +1687,11 @@ def process_items(data, items, tab_name):
             rec = parse_subpage(url, name, info)
             real_name = rec["name"]
 
+            if real_name != name and real_name in BLACKLIST_NAMES:
+                print(f"    - 跳过：真实名称「{real_name}」在黑名单中")
+                time.sleep(SLEEP_BETWEEN)
+                continue
+
             new_6vdy_eps = {}
             for pl in rec.get("playlist", []):
                 if pl.get("name") == PLAYLIST_NAME:
@@ -1549,16 +1699,29 @@ def process_items(data, items, tab_name):
                     break
 
             if not new_6vdy_eps:
+                print("    ! 未找到在线播放地址，跳过")
                 fail += 1
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
-            matched_group, existing = find_existing_global(data, real_name, url)
+            rec_year = extract_year(rec.get("date"), rec.get("info"))
+            matched_group, existing = find_existing_global(data, real_name, url, year=rec_year)
+
+            if existing is not None and ONLY_UPDATE_OWN_CHANNEL and not has_own_channel(existing):
+                if fill_fields_only(existing, rec):
+                    save_json(data)
+                    print(f"    ✓ 「{existing.get('name')}」({matched_group}) 无 {PLAYLIST_NAME} 渠道："
+                          f"playlist 不动，仅补全了缺失字段")
+                else:
+                    print(f"    - 跳过：已存在于「{matched_group}」，无 {PLAYLIST_NAME} 渠道，且无可补字段")
+                ok += 1
+                time.sleep(SLEEP_BETWEEN)
+                continue
 
             if real_name in WHITELIST_NAMES:
                 print(f"    ✅ 白名单放行：{real_name}，跳过地区屏蔽校验")
             elif existing is not None:
-                print(f"    ✓ 已存在记录放行（{matched_group}）：跳过地区屏蔽，持续更新")
+                print(f"    ✓ 已存在记录且含 {PLAYLIST_NAME} 渠道（{matched_group}）：跳过地区屏蔽，持续更新")
             else:
                 group_guess = detect_group(
                     new_6vdy_eps, rec.get("主演", []), rec.get("类型", [])
@@ -1640,6 +1803,8 @@ def process_items(data, items, tab_name):
                 save_json(data)
                 ok += 1
 
+        except ConcurrentWriteError:
+            raise
         except Exception as e:
             print(f"    ✗ 抓取失败: {e}")
             fail += 1
@@ -1695,7 +1860,9 @@ def fill_empty_fields(item, nf, img_url=""):
     if not item.get("info") and nf.get("info"):
         item["info"] = nf["info"]; changed = True
 
-    old_rating = item.setdefault("评分", {})
+    old_rating = item.get("评分")
+    if not isinstance(old_rating, dict):
+        old_rating = item["评分"] = {"豆瓣": "", "IMDB": ""}
     nf_rating = nf.get("评分", {})
     for rk in ["豆瓣", "IMDB"]:
         if not old_rating.get(rk) and nf_rating.get(rk):
@@ -1709,18 +1876,22 @@ def fill_empty_fields(item, nf, img_url=""):
     return changed
 
 def backfill_existing(data):
-    print("\n[补全模式] 扫描已有 6vdy 记录中字段缺失的资源 ...")
+    print(f"\n[补全模式] 扫描含 {PLAYLIST_NAME} 渠道、字段缺失的资源 ...")
     total, updated = 0, 0
     for group in ["Movie", "Drama", "Show", "Anime"]:
         for item in data.get(group, []):
             url_keys = [k for k in item.keys() if k == "url" or re.match(r"^url\d+$", k)]
-            target_url = next((item.get(k, "") for k in url_keys if item.get(k, "") and "xb6v" in item.get(k, "")), None)
+            target_url = next((item.get(k) for k in url_keys
+                   if _is_mirror(item.get(k) or "")), None)
             if not target_url:
                 continue
+            # if ONLY_UPDATE_OWN_CHANNEL and not has_own_channel(item):
+            #     continue
 
             need = (not item.get("导演") and not item.get("编剧")
                     and not item.get("主演") and not item.get("类型")
                     and not item.get("地区") and not item.get("intro"))
+            need = need or not item.get("image")
             if not need:
                 continue
 
@@ -1738,6 +1909,8 @@ def backfill_existing(data):
                     print(f"    ✓ 已补全 (导演:「{item.get('导演')}」 类型:{item.get('类型')} 地区:「{item.get('地区')}」)")
                 else:
                     print("    - 未发现可补全内容")
+            except ConcurrentWriteError:
+                raise
             except Exception as e:
                 print(f"    ✗ 失败: {e}")
             time.sleep(SLEEP_BETWEEN)
@@ -1762,34 +1935,39 @@ def preflight_check():
 # ============== 主流程 ==============
 def main():
     start_caffeinate()
+    acquire_run_lock()
     os.makedirs(IMG_DIR, exist_ok=True)
     print("=" * 60)
     print("📦 数据安全检查")
     print("=" * 60)
     data = load_existing(JSON_PATH)
     snapshot_backup(JSON_PATH)
-    before_total = count_items(data)
     if os.path.exists(JSON_PATH + ".tmp"):
         print(f">>> [提示] 发现残留临时文件 {JSON_PATH}.tmp，可自行检查后删除")
+    print(f">>> [规则] ONLY_UPDATE_OWN_CHANNEL={ONLY_UPDATE_OWN_CHANNEL}："
+          f"{'只新增新作品；已存在作品仅在含 ' + PLAYLIST_NAME + ' 渠道时更新' if ONLY_UPDATE_OWN_CHANNEL else '已存在作品可追加 xb6v 渠道'}")
 
     if not preflight_check():
         print("\n已中止：网络层不可用，未对 JSON 做任何修改。")
         return
 
-    if len(sys.argv) > 1 and sys.argv[1] in ("backfill", "--backfill"):
-        backfill_existing(data)
+    try:
+        if len(sys.argv) > 1 and sys.argv[1].lstrip("-") == "backfill":
+            backfill_existing(data)
+            print("\n====================================")
+            print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
+            return
+
+        m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
+        d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
+        r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
+        h_ok, h_fail = process_homepage_6vdy(data)
+
         print("\n====================================")
-        print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
-        return
-
-    m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
-    d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
-    r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
-    h_ok, h_fail = process_homepage_6vdy(data)
-
-    print("\n====================================")
-    print(f"统计：电影 {m_ok}成功/{m_fail}失败 | 剧集 {d_ok}/{d_fail} | 推荐 {r_ok}/{r_fail} | 首页 {h_ok}/{h_fail}")
-    print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
+        print(f"统计：电影 {m_ok}成功/{m_fail}失败 | 剧集 {d_ok}/{d_fail} | 推荐 {r_ok}/{r_fail} | 首页 {h_ok}/{h_fail}")
+        print(f"所有抓取任务完成! 数据已实时安全保存在 {JSON_PATH}")
+    except ConcurrentWriteError as e:
+        print(f"\n⛔ {e}")
 
 if __name__ == "__main__":
     main()

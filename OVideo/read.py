@@ -30,13 +30,13 @@ BLOCKED_CHANNEL_NAMES = set()
 BLOCKED_CHANNEL_KEYWORDS = ()
 
 # ===== 渠道优先级配置 =====
-TOP_PRIORITY_CHANNELS = ['shangxidq', 'meiju8', '暴风', '天堂', '光速', '红牛', '量子', '淘片', 'xb6v', 'gdefud', 'huxitech', 'cifppc']
+TOP_PRIORITY_CHANNELS = ['shangxidq', '线路2', '线路6', 'meiju8', '暴风', '天堂', '光速', '红牛', '量子', '淘片', 'xb6v']
 CLOUD_SERIES_PREFIX = '云播线路'
 CHANNEL_PRIORITY = ['chnland']
 
 # ===== Drama / Anime 特殊规则:按集数抢占最高优先级 =====
 EPISODE_COUNT_PRIORITY_CATEGORIES = {'Drama', 'Anime', 'Show'}
-EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', '暴风', '天堂', '光速', '红牛', '量子', '淘片', 'xb6v', 'gdefud', 'huxitech')
+EPISODE_COUNT_PRIORITY_GROUP = ('shangxidq', '线路2', '线路6', '暴风', '天堂', '光速', '红牛', '量子', '淘片', 'xb6v')
 EPISODE_COUNT_PRIORITY_MIN_HIT = 2      # 至少命中几个渠道才触发该规则
 
 # ===== 各分类需要"完整处理"（无黑名单）的渠道数量配置 =====

@@ -373,6 +373,11 @@ def _should_write(old, new):
 
     return _content_len(new) > _content_len(old)
 
+# 豆瓣日期：YYYY / YYYY-MM / YYYY-MM-DD，后面可带地区等备注，如 2025-09(法国)
+RE_DOUBAN_DATE = re.compile(r'^\d{4}(?:-\d{2}){0,2}')
+
+def is_valid_douban_date(s: str) -> bool:
+    return bool(RE_DOUBAN_DATE.match(str(s or '').strip()))
 
 # ------------------ 写回逻辑 ------------------
 def update_douban(item, scraped) -> bool:
@@ -382,8 +387,8 @@ def update_douban(item, scraped) -> bool:
     changed = False
 
     print("  ┌────────────── 豆瓣写回 ──────────────")
-    # 日期：只要以 YYYY-MM-DD 开头即视为有效日期（保留后续地区/平台备注）
-    if re.match(r'^\d{4}-\d{2}-\d{2}', date):
+    # 日期：以 YYYY / YYYY-MM / YYYY-MM-DD 开头即视为有效，原样保留地区备注
+    if is_valid_douban_date(date):
         old_date = str(item.get('date', '')).strip()
         if old_date != date:
             item['date'] = date

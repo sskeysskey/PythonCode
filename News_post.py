@@ -14,10 +14,12 @@
 清洗流水线（按「品牌」决定，与通道无关）：
     1. 通用预处理（所有 provider，含 raw）：去 markdown 符号 / 思维链 / 代码围栏 / 空行
     2. 公共头部：来源推广（Newsletter / Odd Lots ...）           [common_rules=True 时]
-    3. 品牌头部：clean_head_qianwen / clean_head_doubao / clean_head_deepseek
-    4. 模块前缀剥离（"模块一："）                                [strip_module_prefix=True 时]
-    5. 公共尾部：来源推广截断 + AI 追问/声明截断 + 尾部分隔线    [common_rules=True 时]
-    6. 公共全局过滤：分隔线 / 广告 / 过渡句 ...                  [common_rules=True 时]
+    3. 公共头部：AI 开场白 / 对话式引导 / 短标签（第 1 次）       [common_rules=True 时]  ★新增
+    4. 品牌头部：clean_head_qianwen / clean_head_doubao / clean_head_deepseek
+    5. 公共头部：AI 开场白（第 2 次，捕获品牌头部清理后新暴露的开场白）★新增
+    6. 模块前缀剥离（"模块一："）                                [strip_module_prefix=True 时]
+    7. 公共尾部：来源推广截断 + AI 追问/声明截断 + 尾部分隔线    [common_rules=True 时]
+    8. 公共全局过滤：分隔线 / 广告 / 过渡句 ...                  [common_rules=True 时]
 
 所有关键词只在「公共清洗词表」处配置一份。
 """
@@ -89,6 +91,8 @@ STRIP_CODE_FENCES = True
 AI_INTRO_PREFIXES = (
     "意图确认", "意图理解", "意图分析", "您贴出的是", "您提供的", "本周刊", "这是一份", "以下是",
     "这段是", "这篇是", "这是一篇", "这是一则", "该内容是", "本文是", "本篇是", "这篇新闻", "这段英文",
+    # ★新增：对话式开场
+    "您粘贴", "您发送", "您上传", "您给出", "您输入", "你粘贴", "你提供", "你贴出", "你发送",
 )
 
 # 常见的引导过渡词
@@ -97,14 +101,42 @@ AI_INTRO_TAIL_KEYWORDS = ("如下", "梳理", "总结", "整理", "要点", "速
 # 常见的段落标签/短标题词
 SHORT_TAG_KEYWORDS = ("总结", "分模块", "简报", "主旨", "导读", "速览", "概览", "要点", "核心事件", "中文")
 
+# ---- ★新增：AI「对话式开场白」识别（与品牌无关，头部前 N 段生效）----
+# 强对话特征：新闻译文里几乎不会出现「您」「请告诉我」
+PREAMBLE_ADDRESS_STRONG_RE = re.compile(
+    r'您|(?:为|帮|给|替)你|你(?:已)?(?:粘贴|贴出|提供|发送|发来|上传|输入|给出|分享)'
+    r'|请告诉我|请告知|让我知道'
+)
+# 弱对话特征：应答词 / 第一人称开头
+PREAMBLE_ADDRESS_WEAK_RE = re.compile(
+    r'^(?:好的|好|收到|明白了?|了解|当然|没问题|可以)[，,。！!：:\s]'
+    r'|^我(?:已|将|会|先|来|为|这就)'
+)
+# 任务词：必须与对话特征同时出现才判定为开场白
+PREAMBLE_CUE_RE = re.compile(
+    r'梳理|总结|翻译|译文|整理|概括|摘要|要点|中文|处理|分析|文档|Word|PDF|英文|核心内容|原文|全文|文章|新闻|报道'
+)
+PREAMBLE_MAX_LEN = 200                 # 超过此长度不认为是开场白（防误删正文）
+HEAD_PREAMBLE_MAX_REMOVE = 4           # 每次扫描最多从头部删除几段
+
+# 短标签行关键词（如「文章核心内容梳理」「核心内容：」）
+PREAMBLE_LABEL_KEYWORDS = (
+    "梳理", "总结", "摘要", "概述", "概要", "要点", "导读", "速览", "概览", "简报",
+    "核心内容", "核心要点", "核心事件", "主旨", "译文", "中文版", "中文翻译",
+    "全文翻译", "翻译结果", "分模块", "内容提要",
+)
+PREAMBLE_LABEL_MAX_LEN = 20            # 紧跟在开场白之后的标签最大长度
+PREAMBLE_LABEL_SOLO_MAX_LEN = 12       # 前面没有开场白时，只删更短的标签
+SENTENCE_END_PUNCT = "。！？；，.!?;,"   # 以这些结尾说明是正文句子而非标签
+
 # ---- AI 尾部「追问 / 邀约」关键词 ----
 AI_ASK_KEYWORDS = (
-    "需要我", "是否需要", "你是否", "我可以", "要不要我", "要不要说说", "要不要展开",
+    "需要我", "是否需要", "你是否", "我可以", "要不要", "你想进一步",
     "如果你需要", "如果需要", "或者需要", "希望我", "你觉得", "您觉得", "如需", "如需我",
     "哪个方向", "想继续了解", "需要吗", "想继续深", "哪个模块", "需要的话", "如果你希望",
     "以上就是", "以上总结", "这份总结", "符合你的预期", "符合您的预期", "某模块深挖",
-    "每个工作日", "每工作日", "要不要聊聊", "每周一到周五", "每天早上", "这个总结是",
-    "告诉我即可", "请告诉我", "随时告诉我", "要不要顺着", "工作日每天", "要不要介绍",
+    "每个工作日", "每工作日", "每周一到周五", "每天早上", "这个总结是",
+    "告诉我即可", "请告诉我", "随时告诉我", "工作日每天",
 )
 AI_ASK_MAX_LEN = 150
 
@@ -117,7 +149,13 @@ AI_STATEMENT_KEYWORDS = (
     "以上内容基于", "未添加任何主观", "基于所提供新闻", "本总结仅供参考",
     "由 AI 生成", "需要的话", "资料来源：", "数据来源：", "【AI免責聲明】",
     "（由AI生成）", "(由AI生成)", "本内容由AI生成", "本文由AI生成",
-    "本篇由AI生成", "由AI辅助生成", 
+    "本篇由AI生成", "由AI辅助生成", "本文内容由",
+)
+
+# ★新增：强尾巴词（短句内命中即视为 AI 尾巴，无需问号）
+AI_STRONG_TAIL_WORDS = (
+    "告诉我即可", "如需我", "如需进一步", "请随时告诉我",
+    "请告诉我", "请告知", "如需翻译", "如需生成",
 )
 
 # 在最后多少段内寻找 AI 尾巴
@@ -146,6 +184,7 @@ CODE_FENCE_RE = re.compile(r'(?:`{3,}|~{3,})[\w+\-]*')
 THINK_RE = re.compile(r'<(think|thinking)>.*?</\1>', flags=re.S | re.I)
 MODULE_PREFIX_RE = re.compile(r'^模块\s*[一二三四五六七八九十百\d]+\s*[：:]\s*')
 CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s*')   # ★修复：只去行首的 markdown 标题符
 
 
 # =========================================================
@@ -172,6 +211,32 @@ def is_ai_intro_line(s: str) -> bool:
 
     return False
 
+
+def is_ai_preamble_line(s: str) -> bool:
+    """★新增：对话式开场白，如『您粘贴了一篇……请告诉我。』『好的，我来为你总结：』
+    判定 = (强/弱对话特征) AND (任务词) AND 长度受限，三者同时满足才删，避免误伤正文。"""
+    s = s.strip()
+    if not s or len(s) > PREAMBLE_MAX_LEN:
+        return False
+    if not PREAMBLE_CUE_RE.search(s):
+        return False
+    return bool(PREAMBLE_ADDRESS_STRONG_RE.search(s) or PREAMBLE_ADDRESS_WEAK_RE.search(s))
+
+
+def is_preamble_label_line(s: str, after_removal: bool) -> bool:
+    """★新增：短标签行，如『文章核心内容梳理』『核心内容：』。
+    - 紧跟在已删除的开场白之后：长度 <= 20 即可
+    - 位于最开头（前面没有删过东西）：要求更短（<= 12），降低误删正文标题的风险
+    - 以句末标点结尾的视为正文句子，不删"""
+    t = s.strip().rstrip("：:").strip()
+    if not t:
+        return False
+    limit = PREAMBLE_LABEL_MAX_LEN if after_removal else PREAMBLE_LABEL_SOLO_MAX_LEN
+    if len(t) > limit or t[-1] in SENTENCE_END_PUNCT:
+        return False
+    return any(k in t for k in PREAMBLE_LABEL_KEYWORDS)
+
+
 def count_cjk(s: str) -> int:
     return len(CJK_RE.findall(s))
 
@@ -188,9 +253,8 @@ def has_question_mark(s: str) -> bool:
 
 def is_ai_tail_line(s: str) -> bool:
     """是否为 AI 的追问 / 邀约 / 征求反馈 / 免责声明"""
-    # 1. 强特征词：只要在短句中包含即视为 AI 尾巴（无需问号，涵盖“如需我...告诉我即可”）
-    strong_tail_words = ("告诉我即可", "如需我", "如需进一步", "请随时告诉我")
-    if len(s) <= AI_ASK_MAX_LEN and any(k in s for k in strong_tail_words):
+    # 1. 强特征词：只要在短句中包含即视为 AI 尾巴（无需问号）
+    if len(s) <= AI_ASK_MAX_LEN and any(k in s for k in AI_STRONG_TAIL_WORDS):
         return True
 
     # 2. 以邀约词开头
@@ -204,7 +268,7 @@ def is_ai_tail_line(s: str) -> bool:
     # 4. 反馈与声明
     if any(t in s for t in AI_FEEDBACK_TRIGGERS) and any(w in s for w in AI_FEEDBACK_TARGETS):
         return True
-    # 声明词加上短句限制（例如不超过 40 字），或者要求特定前后缀
+    # 声明词加上短句限制（例如不超过 40 字）
     if len(s) <= 40 and any(k in s for k in AI_STATEMENT_KEYWORDS):
         return True
 
@@ -233,8 +297,9 @@ def is_transition_line(s: str) -> bool:
 def preprocess(content: str):
     """通用预处理：对所有 provider（含 raw）生效"""
     content = THINK_RE.sub('', content)
-    content = content.replace('#', '').replace('*', '')
-    lines = [ln.strip() for ln in content.splitlines()]
+    content = content.replace('*', '')
+    # ★修复：不再全局删除 '#'（会破坏 C#、#1 等正文），只去行首标题符
+    lines = [HEADING_RE.sub('', ln).strip() for ln in content.splitlines()]
     if STRIP_CODE_FENCES:
         lines = [ln for ln in lines if not CODE_FENCE_RE.fullmatch(ln)]
     return [ln for ln in lines if ln]
@@ -249,6 +314,24 @@ def strip_head_promo(lines, deleted):
     ]
     for i in reversed(idx):
         deleted.append(lines.pop(i))
+    return lines
+
+
+def strip_ai_preamble(lines, deleted):
+    """★新增：公共「AI 开场白」清洗，对所有品牌生效。
+    从头部连续删除：分隔线 / 典型开场句 / 对话式开场白 / 紧随其后的短标签行。
+    遇到第一行不符合的正文即停止，且单次最多删 HEAD_PREAMBLE_MAX_REMOVE 段。"""
+    removed = 0
+    while lines and removed < HEAD_PREAMBLE_MAX_REMOVE:
+        first = lines[0]
+        if (is_separator_line(first)
+                or is_ai_intro_line(first)
+                or is_ai_preamble_line(first)
+                or is_preamble_label_line(first, after_removal=removed > 0)):
+            deleted.append(lines.pop(0))
+            removed += 1
+            continue
+        break
     return lines
 
 
@@ -300,9 +383,8 @@ def filter_global(lines, deleted):
 # =========================================================
 #   品牌头部 1：千问
 # =========================================================
-# 扩展千问常见的意图说明与标题关键词
-QIANWEN_INTRO_PREFIXES = ("意图确认", "意图理解", "意图分析", "您贴出的是", "您提供的")
 QIANWEN_TITLE_KEYWORDS = ("总结", "简报", "快讯", "快报", "速览", "概览", "资讯", "主旨")
+
 
 def clean_head_qianwen(lines, deleted):
     changed = True
@@ -326,13 +408,13 @@ def clean_head_qianwen(lines, deleted):
             changed = True
             continue
 
-        # 判定 C：头部空行或分隔线
+        # 判定 C：头部分隔线
         if is_separator_line(first):
             deleted.append(lines.pop(0))
             changed = True
             continue
 
-    # 清理前部的超短引导标签（如“一句话主旨”、“分模块总结”等，长度 <= 10 且含特征词，或首行 <= 8 个字的小标签）
+    # 清理前部的超短引导标签
     while lines and (
         (len(lines[0]) <= 12 and any(k in lines[0] for k in SHORT_TAG_KEYWORDS))
         or len(lines[0]) <= 6
@@ -358,14 +440,29 @@ DOUBAO_TITLE_CHECK_KEYWORDS = (
 )
 DOUBAO_INTRO_HINTS = ("总结", "以下", "方面", "几点")
 
+_DB_PUNC = r'[，。：；！？、,.?:;]*'
+_DB_PUNC_REQ = r'[，。：；！？、,.?:;]+'
+
 
 def _build_doubao_title_re():
-    variants = set()
+    """★修复：原实现会把『中文』『总结』『分模块』等短词在首段任意位置抠掉，破坏正文。
+    现在：
+      - 括号形式（全部关键词）与长词（>=5 字）：任意位置删除（行为不变）
+      - 短词（<5 字，如『中文』『总结』）：仅在『行首且后跟标点』或『行尾且前有标点』时删除
+    """
+    safe, edge = set(), set()
     for kw in DOUBAO_TITLE_BASE_KEYWORDS:
-        variants.update((f"（{kw}）", f"({kw})", kw))
-    body = '|'.join(re.escape(v) for v in sorted(variants, key=len, reverse=True))
-    punc = r'[，。：；！？、,.?:;]*'
-    return re.compile(f'{punc}(?:{body}){punc}')
+        safe.update((f"（{kw}）", f"({kw})"))
+        (safe if len(kw) >= 5 or kw == "（）" else edge).add(kw)
+
+    def alt(items):
+        return '|'.join(re.escape(v) for v in sorted(items, key=len, reverse=True))
+
+    return re.compile(
+        f'{_DB_PUNC}(?:{alt(safe)}){_DB_PUNC}'
+        f'|^(?:{alt(edge)}){_DB_PUNC_REQ}'
+        f'|{_DB_PUNC_REQ}(?:{alt(edge)}){_DB_PUNC}$'
+    )
 
 
 DOUBAO_TITLE_RE = _build_doubao_title_re()
@@ -439,7 +536,7 @@ def clean_head_deepseek(lines, deleted):
 PROFILES = {
     "qianwen":  {"head": clean_head_qianwen,  "strip_module_prefix": True, "common_rules": True},
     "doubao":   {"head": clean_head_doubao,   "strip_module_prefix": True, "common_rules": True},
-    "deepseek": {"head": clean_head_deepseek, "strip_module_prefix": True,  "common_rules": True},
+    "deepseek": {"head": clean_head_deepseek, "strip_module_prefix": True, "common_rules": True},
 }
 RAW_PROFILE = "raw"
 
@@ -470,7 +567,10 @@ def clean_content(profile: str, content: str):
     if cfg:
         if cfg["common_rules"]:
             lines = strip_head_promo(lines, deleted)
+            lines = strip_ai_preamble(lines, deleted)      # ★新增：品牌头部之前
         lines = cfg["head"](lines, deleted)
+        if cfg["common_rules"]:
+            lines = strip_ai_preamble(lines, deleted)      # ★新增：品牌头部之后再扫一次
         if cfg["strip_module_prefix"]:
             lines = strip_module_prefix(lines)
         if cfg["common_rules"]:
@@ -508,15 +608,24 @@ def read_file(file_path: str) -> str:
 
 
 def atomic_write(file_path: str, text: str, encoding: str = 'utf-8-sig') -> None:
-    """先写临时文件再替换，避免中途崩溃导致文件损坏"""
+    """先写临时文件再替换，避免中途崩溃导致文件损坏。
+    ★修复：mkstemp 默认 0600，替换后会让 web 服务读不到文件；这里沿用原文件权限（默认 0644）"""
     directory = os.path.dirname(file_path)
     os.makedirs(directory, exist_ok=True)
+    try:
+        mode = os.stat(file_path).st_mode & 0o777
+    except OSError:
+        mode = 0o644
     fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp_", suffix=".html")
     try:
         with os.fdopen(fd, 'w', encoding=encoding) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            os.chmod(tmp_path, mode)
+        except OSError:
+            pass
         os.replace(tmp_path, file_path)
     except Exception:
         try:
@@ -671,7 +780,8 @@ def main() -> int:
 
     segment_content = read_file(SEGMENT_FILE_PATH)
     site_content = read_file(SITE_FILE_PATH)
-    final_content = f"{site_content}\n\n{clipboard_content}"
+    # ★修复：site 为空时不再在文件开头多出两个空行
+    final_content = f"{site_content}\n\n{clipboard_content}" if site_content else clipboard_content
 
     now = datetime.now()
     os.makedirs(TXT_DIRECTORY, exist_ok=True)

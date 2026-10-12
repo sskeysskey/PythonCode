@@ -245,9 +245,9 @@ def resolve_target_key(mapping, explicit_key=''):
 
 def decide_blacklist(url, raw_name, mapping_key):
     """沿用原有黑名单判定规则"""
-    if "%" in url:
-        print("⚠️ 检测到 URL 包含黑名单特征 (%)，将直接加入黑名单...")
-        return True
+    # if "%" in url:
+    #     print("⚠️ 检测到 URL 包含黑名单特征 (%)，将直接加入黑名单...")
+    #     return True
 
     matched_keywords = [k for k in BLACKLIST_KEYWORDS if k in raw_name]
     if matched_keywords:
