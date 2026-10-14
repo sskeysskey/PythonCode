@@ -13,17 +13,26 @@
     0  成功，剪贴板内容合格
     1  连续 3 次点击复制，内容均不合格
     2  超时（TIMEOUT_DURATION 秒内没拿到合格内容）
-    3  模板图片缺失 / provider 名称错误
+    3  模板图片缺失 / provider 名称错误 / 未预期的异常
     5  需要交接（AI 拒答 或 回答异常 或 额度用完且无法切换模型）
+    6  用户中止（鼠标甩到屏幕角落触发 pyautogui fail-safe）
     7  网页端「上传/发送失败」（本篇建议交由同品牌 API 兜底，下一篇仍回网页版）
     8  当前模型免费额度用完，已在网页上切换到备用模型 -> 请用同一 provider 重跑本篇
     9  AI 没有执行总结(反问/菜单式回复) -> 请用同一 provider 重跑本篇
+    10 【v7】滑块验证无法通过 / 验证后无法重新提交（Engine 按 exit 7 同样处理：本篇 API 兜底）
+
+【v7】滑块验证：
+    等待 Copy 的每一轮都会在同一帧里优先找 slider_verify.template；
+    找到 -> 拟人化拖拽 -> 刷新页面 -> 等输入框 -> 重新粘贴「文章+Prompt」并回车 -> 回到等待 Copy 的循环。
+    重新提交用的文本 = 本脚本启动时剪贴板里的内容（由 Engine 放入）。
 """
 
 import os
 import re
 import sys
 import time
+import traceback
+import subprocess
 from time import sleep
 
 import cv2
@@ -35,10 +44,12 @@ from PIL import ImageGrab
 # ================= 全局配置 =================
 USER_HOME = os.path.expanduser("~")
 BASE_RESOURCE_DIR = os.path.join(USER_HOME, "Coding", "python_code", "Resource")
+MODULES_DIR = os.path.join(USER_HOME, "Coding", "python_code", "Modules")
+BROWSER_APP = "Google Chrome"
 
 SCROLL_AMOUNT = -120        # 滚动幅度
 MAX_ATTEMPTS = 3            # 最多点击复制次数
-TIMEOUT_DURATION = 120      # 总超时（秒）
+TIMEOUT_DURATION = 120      # 总超时（秒）；处理完滑块验证后重新计时
 
 # 点击复制后等待剪贴板被写入的最长时间（秒）
 CLIPBOARD_WAIT = 2.0
@@ -47,15 +58,27 @@ CLIPBOARD_WAIT = 2.0
 SAVE_DEBUG_SHOT = True
 DEBUG_SHOT_DIR = "/tmp"
 
+# ================= 通用滑块模块（缺失时自动关闭该功能） =================
+if MODULES_DIR not in sys.path:
+    sys.path.append(MODULES_DIR)
+try:
+    from Slider_Verify import SliderConfig, SliderSolver, reload_browser
+    HAS_SLIDER_MODULE = True
+except Exception as _e:
+    HAS_SLIDER_MODULE = False
+    print(f"警告：无法加载 Slider_Verify 模块（{_e}），滑块验证处理已关闭。")
+
 # ================= 退出码 =================
 EXIT_OK = 0
 EXIT_UNQUALIFIED = 1
 EXIT_TIMEOUT = 2
 EXIT_TEMPLATE_MISSING = 3
 EXIT_HANDOFF = 5
+EXIT_USER_ABORT = 6
 EXIT_UPLOAD_FAIL = 7          # 网页上传/发送失败
-EXIT_MODEL_SWITCHED = 8       # 新增：额度用完，已切换模型，请重跑本篇
-EXIT_OFFTASK = 9              # 新增:AI 未执行总结(反问/给选项),请同 provider 重跑本篇
+EXIT_MODEL_SWITCHED = 8       # 额度用完，已切换模型，请重跑本篇
+EXIT_OFFTASK = 9              # AI 未执行总结(反问/给选项),请同 provider 重跑本篇
+EXIT_VERIFY_FAIL = 10         # 【v7】滑块验证失败 / 验证后无法重新提交
 
 UPLOAD_FAIL_KEY = "upload_fail"
 
@@ -75,12 +98,14 @@ PROVIDERS = {
             "upload_fail": ("qianwen_upload_fail.png",  0.92, False),
             # ---- 额度用完时切换模型所需模板（可选；缺任何一张 -> 退回旧的拒答交接逻辑）----
             "switch_open":    ("qianwen_current36.png", 0.90, False),
-            "switch_hover":   ("qianwen_select37.png", 0.90, False),
+            "switch_hover":   ("qianwen_select37.png",  0.90, False),
             "switch_confirm": ("qianwen_default.png",   0.90, False),
+            # ---- 【v7】滑块验证后重新提交：输入框定位 ----
+            "launch":         ("qianwen_launch.png",    0.90, False),
         },
         "check_refusal_text": True,     # 剪贴板文本命中拒答话术 -> 交接
-        "check_offtask_text": True,     # 新增:剪贴板是"反问/给选项"而非总结 -> 重跑
-        "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后 Cmd+R
+        "check_offtask_text": True,     # 剪贴板是"反问/给选项"而非总结 -> 重跑
+        "refresh_on_stall": True,       # 见到 retry / timeout 图 -> 等 15s 后刷新
         "related_gate": False,          # 复制按钮出现后是否等待 related 图再重定位
         "cursor_before_scroll": (709, 749),  # 内容不合格重试前把鼠标移到这里再滚动
         "copy_offset": (0, 0),
@@ -95,6 +120,29 @@ PROVIDERS = {
             ("click", "switch_confirm"),   # 3) 点击 default
         ],
         "model_switch_step_timeout": 6.0,  # 每一步等待模板出现的最长秒数
+        # ---- 【v7】滑块验证 ----
+        "slider_verify": {
+            "enabled": True,
+            "template": "qianwen_verify.png",
+            "threshold": 0.85,
+            "distance": 257,              # 实测 768 -> 1025
+            "overshoot": 45,              # 多拖一点，滑轨到头会卡住，无副作用
+            "grab_offset": (0, 0),        # 若截图不是滑块本体，用 --dry-run 标定后调整
+            "duration": (1.0, 1.4),       # 拖动耗时（秒）
+            "drag_attempts": 2,           # 单次验证内最多拖几遍
+            "vanish_timeout": 4.0,        # 拖完后等待滑块消失
+            "max_per_run": 3,             # 本次 News_auto 运行最多处理几次验证
+            "after": "refresh_resubmit",  # none / refresh / refresh_resubmit
+            "pre_refresh_delay": 1.0,
+            "post_refresh_delay": 2.5,
+            "resubmit": {
+                "focus_key": "launch",            # 等这个模板出现 = 页面已就绪
+                "focus_offset": (0, -50),         # 与 Engine 的 ShotClickOffset 一致
+                "focus_timeout": 15.0,
+                "mouse_after": [(862, 839), (852, 806)],  # 与 Engine 的 SubmitPrompt / MoveMouse 一致
+                "post_submit_wait": 2.0,
+            },
+        },
     },
     "deepseek": {
         "label": "DeepSeek",
@@ -112,6 +160,7 @@ PROVIDERS = {
         "upload_fail_confirm_delay": 0.8,
         "upload_fail_transient_ok": True,
         "model_switch_enabled": False,
+        "slider_verify": {"enabled": False},
     },
     "doubao": {
         "label": "豆包",
@@ -130,6 +179,7 @@ PROVIDERS = {
         "upload_fail_confirm_delay": 0.8,
         "upload_fail_transient_ok": True,
         "model_switch_enabled": False,
+        "slider_verify": {"enabled": False},
     },
 }
 
@@ -176,6 +226,7 @@ REFUSAL_PHRASES = [
     "若有误判，请长按本条消息",
     "当前访问人数过多",
     "针对这个问题我无法为你提供相应解答",
+    "I'm unable to answer that question",
 ]
 
 # 拒答检测窗口：短文本全文匹配；长文本只看首尾，避免新闻正文引用到类似句子被误判
@@ -296,6 +347,7 @@ def is_refusal_response(text: str) -> bool:
         scope = normalized[:REFUSAL_EDGE_WINDOW] + "\n" + normalized[-REFUSAL_EDGE_WINDOW:]
     return any(p in scope for p in REFUSAL_PHRASES)
 
+
 # 「AI 没做总结,反过来问用户想要什么」的话术(只在短文本全文 / 长文本尾部匹配)
 OFFTASK_PHRASES = [
     "你希望执行哪一种",
@@ -306,6 +358,8 @@ OFFTASK_PHRASES = [
     "请告诉我你希望",
     "请告诉我您希望",
     "你想让我做什么",
+    "你想进一步",
+    "您想进一步",
     "您想让我做什么",
     "你希望我如何处理",
     "您希望我如何处理",
@@ -375,6 +429,13 @@ def clear_clipboard():
         print(f"清空剪贴板失败（忽略）: {e}")
 
 
+def snapshot_clipboard() -> str:
+    try:
+        return pyperclip.paste() or ""
+    except Exception:
+        return ""
+
+
 def read_clipboard_after_copy(timeout=CLIPBOARD_WAIT) -> str:
     """点击复制后轮询剪贴板，直到出现非空内容或超时"""
     deadline = time.time() + timeout
@@ -391,8 +452,34 @@ def read_clipboard_after_copy(timeout=CLIPBOARD_WAIT) -> str:
         sleep(0.2)
 
 
+def _osascript(script: str) -> bool:
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            print(f"osascript 失败: {(r.stderr or '').strip()}")
+        return r.returncode == 0
+    except Exception as e:
+        print(f"osascript 异常: {e}")
+        return False
+
+
+def activate_browser():
+    _osascript(f'tell application "{BROWSER_APP}" to activate')
+    sleep(0.3)
+
+
+def paste_and_enter():
+    """与 Engine 的 SubmitPrompt 一致：Cmd+V → 0.8s → 回车"""
+    _osascript('tell application "System Events" to keystroke "v" using {command down}')
+    sleep(0.8)
+    _osascript('tell application "System Events" to key code 36')
+
+
 def refresh_page_mac():
-    os.system("""osascript -e 'tell application "System Events" to key code 15 using command down'""")
+    if HAS_SLIDER_MODULE:
+        reload_browser(BROWSER_APP)
+    else:
+        _osascript('tell application "System Events" to key code 15 using command down')
 
 
 def scroll_down(cfg, move_cursor=False):
@@ -402,6 +489,102 @@ def scroll_down(cfg, move_cursor=False):
         pyautogui.moveTo(pos[0], pos[1])
     pyautogui.scroll(SCROLL_AMOUNT)
     sleep(1)
+
+
+# ================= 【v7】滑块验证 =================
+def build_slider_solver(cfg):
+    sv = cfg.get("slider_verify") or {}
+    if not sv.get("enabled"):
+        return None
+    if not HAS_SLIDER_MODULE:
+        print("滑块模块不可用，跳过滑块检测。")
+        return None
+    conf = SliderConfig(
+        template=sv.get("template", ""),
+        threshold=float(sv.get("threshold", 0.85)),
+        distance=int(sv.get("distance", 257)),
+        overshoot=int(sv.get("overshoot", 45)),
+        grab_offset=tuple(sv.get("grab_offset", (0, 0))),
+        duration=tuple(sv.get("duration", (1.0, 1.4))),
+        max_attempts=int(sv.get("drag_attempts", 2)),
+        vanish_timeout=float(sv.get("vanish_timeout", 4.0)),
+        debug_dir=DEBUG_SHOT_DIR if SAVE_DEBUG_SHOT else None,
+    )
+    solver = SliderSolver(conf, scale_factor=SCALE_FACTOR)
+    if not solver.available:
+        print(f"警告：滑块模板不可用（{conf.template}），滑块检测自动关闭。")
+        return None
+    return solver
+
+
+def resubmit_prompt(cfg, templates, prompt_text) -> bool:
+    rs = (cfg.get("slider_verify") or {}).get("resubmit") or {}
+    key = rs.get("focus_key", "launch")
+
+    if not prompt_text or len(prompt_text.strip()) < 10:
+        print("启动时未保存到有效的「文章+Prompt」，无法重新提交。")
+        return False
+    if not template_available(templates, key):
+        print(f"重新提交所需模板 {key} 不可用。")
+        return False
+
+    loc, shape = wait_for(templates, key, float(rs.get("focus_timeout", 15.0)))
+    if not loc:
+        print(f"刷新后 {rs.get('focus_timeout', 15.0)}s 内未出现输入框（{key}）。")
+        save_debug_shot("resubmit_no_input")
+        return False
+    sleep(0.5)
+
+    try:
+        pyperclip.copy(prompt_text)
+    except Exception as e:
+        print(f"写回剪贴板失败：{e}")
+        return False
+    sleep(0.3)
+    if snapshot_clipboard() != prompt_text:
+        print("警告：剪贴板写回校验不一致，仍继续尝试提交。")
+
+    activate_browser()
+    x, y = perform_click(loc, shape, offset=tuple(rs.get("focus_offset", (0, 0))))
+    print(f"已点击输入框 ({x}, {y})，重新粘贴并提交...")
+    sleep(0.4)
+    paste_and_enter()
+    for pos in rs.get("mouse_after", []):
+        try:
+            pyautogui.moveTo(pos[0], pos[1])
+        except Exception:
+            pass
+        sleep(0.1)
+    sleep(float(rs.get("post_submit_wait", 2.0)))
+    return True
+
+
+def handle_slider_verify(cfg, templates, solver, hit, prompt_text, state) -> bool:
+    """返回 True = 已处理完毕（需要回到等待 Copy 的循环）；False = 失败，应退出码 10"""
+    sv = cfg["slider_verify"]
+    state["count"] += 1
+    max_per_run = int(sv.get("max_per_run", 3))
+    print(f"检测到滑块验证（本次运行第 {state['count']}/{max_per_run} 次）。")
+    if state["count"] > max_per_run:
+        print("滑块验证出现次数超过上限，放弃网页端。")
+        save_debug_shot("verify_too_many")
+        return False
+
+    result = solver.solve(hit)
+    if not result.solved:
+        print(f"滑块验证未通过：{result.message}")
+        return False
+
+    after = sv.get("after", "refresh_resubmit")
+    if after in ("refresh", "refresh_resubmit"):
+        sleep(float(sv.get("pre_refresh_delay", 1.0)))
+        refresh_page_mac()
+        sleep(float(sv.get("post_refresh_delay", 2.5)))
+    if after == "refresh_resubmit":
+        if not resubmit_prompt(cfg, templates, prompt_text):
+            return False
+        print("滑块验证处理完毕，已重新提交，回到等待 Copy 的循环。")
+    return True
 
 
 # ================= 额度用完 -> 切换模型 =================
@@ -447,7 +630,6 @@ def try_switch_model(cfg, templates) -> bool:
             print(f"模型切换第 {i} 步：悬停到 {key} @ ({x}, {y})")
             pyautogui.moveTo(x, y, duration=0.3)
             sleep(0.2)
-            # 轻微抖动一下，确保触发 mouseenter / mousemove
             pyautogui.moveRel(2, 0, duration=0.1)
             sleep(0.8)
         else:
@@ -556,9 +738,15 @@ def main():
         except ValueError:
             print("汉字阈值参数格式错误，使用默认 50")
 
-    templates = load_templates(cfg)
+    # 【v7】必须最先保存：后面点击复制前会清空剪贴板
+    prompt_snapshot = snapshot_clipboard()
 
-    print(f"[{cfg['label']}] 缩放因子={SCALE_FACTOR}，最多 {MAX_ATTEMPTS} 次，汉字阈值={target_threshold}")
+    templates = load_templates(cfg)
+    slider = build_slider_solver(cfg)
+    verify_state = {"count": 0}
+
+    print(f"[{cfg['label']}] 缩放因子={SCALE_FACTOR}，最多 {MAX_ATTEMPTS} 次，汉字阈值={target_threshold}，"
+          f"滑块检测={'开' if slider else '关'}")
 
     attempt = 1
     start_time = time.time()
@@ -569,6 +757,17 @@ def main():
             sys.exit(EXIT_TIMEOUT)
 
         screen = capture_screen()
+
+        # ---- -1. 【v7】滑块验证：遮罩出现时其它检测都无意义，最优先 ----
+        if slider is not None:
+            hit = slider.locate(screen)
+            if hit:
+                if not handle_slider_verify(cfg, templates, slider, hit, prompt_snapshot, verify_state):
+                    print("滑块验证处理失败 -> 请求 Engine 本篇改用 API 兜底（退出码 10）。")
+                    sys.exit(EXIT_VERIFY_FAIL)
+                attempt = 1
+                start_time = time.time()
+                continue
 
         # ---- 0. 同帧先看 Copy：已出答案时压制所有异常检测 ----
         copy_loc, copy_shape = find(templates, "copy", screen=screen)
@@ -584,7 +783,7 @@ def main():
                 sleep(0.3)
                 continue
 
-        # ---- 2. 拒答图标----
+        # ---- 2. 拒答图标 ----
         forbidden_hit = None
         for key in ("forbidden", "forbidden2", "forbidden3"):
             loc, _ = find(templates, key, screen=screen)
@@ -697,4 +896,15 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except pyautogui.FailSafeException:
+        print("检测到鼠标甩到屏幕角落（pyautogui fail-safe），视为用户中止。")
+        sys.exit(EXIT_USER_ABORT)
+    except Exception as e:
+        # 原来未捕获异常会以 1 退出，被 Engine 误报为「内容不合格」
+        traceback.print_exc()
+        print(f"News_auto 未预期异常：{e}")
+        sys.exit(EXIT_TEMPLATE_MISSING)

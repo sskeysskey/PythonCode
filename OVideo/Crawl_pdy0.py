@@ -794,8 +794,8 @@ TASKS = [
     },
     {
         "sort_type": "hits",
-        # "enabled": True,
-        "enabled": False,
+        "enabled": True,
+        # "enabled": False,
         "jobs": [
             {"year": "",
              "categories": {
@@ -809,8 +809,8 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        # "enabled": True,
-        "enabled": False,
+        "enabled": True,
+        # "enabled": False,
         "jobs": [
             {"year": "2026",
              "categories": {
@@ -828,12 +828,12 @@ TASKS = [
         "jobs": [
             {"year": "",
              "categories": {
-                #  "Movie": {"id": 1, "enabled": True},
-                 "Movie": {"id": 1, "enabled": False},
-                #  "Drama": {"id": 2, "enabled": True},
-                 "Drama": {"id": 2, "enabled": False},
-                #  "Show":  {"id": 3, "enabled": True},
-                 "Show":  {"id": 3, "enabled": False},
+                 "Movie": {"id": 1, "enabled": True},
+                #  "Movie": {"id": 1, "enabled": False},
+                 "Drama": {"id": 2, "enabled": True},
+                #  "Drama": {"id": 2, "enabled": False},
+                 "Show":  {"id": 3, "enabled": True},
+                #  "Show":  {"id": 3, "enabled": False},
                  "Anime": {"id": 4, "enabled": True},
              }
              },
