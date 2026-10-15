@@ -97,7 +97,7 @@ _LOAD_OK = False                 # 是否成功加载了初始数据（未成功
 _LAST_SIG = None                 # 上次读/写后主文件的 (mtime_ns, size)，用于检测外部并发修改
 _LOCK_FH = None
 
-BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版"]
+BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版", "璀璨之城"]
 WHITELIST_NAMES = [
     "镖人 第二季"
 ]
