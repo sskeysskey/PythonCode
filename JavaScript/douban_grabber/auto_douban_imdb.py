@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-豆瓣 + IMDb 一次性抓取与回写  (v3)
+豆瓣 + IMDb 一次性抓取与回写  (v4 - DOM 精准定位版)
 
 流程：
   剪贴板取名字 → 在 OVideos.json 找项目 →
-  抓豆瓣(日期/评分/外文标题/又名/imdb_id/导演/编剧/主演/类型/简介) → 写回 →
-  ┌ 若豆瓣页面带 IMDb ID → 直接跳转 https://www.imdb.com/title/ttXXXX/（最稳，跳过搜索）
-  └ 否则 → 按语种优先级挑检索词 → IMDb 搜索框 → 抓评分
+  【豆瓣】JS 激活 #inp-query → 粘贴名字 → 读取 #search_suggest 联想列表 →
+         按「名字匹配 + 年份(TARGET_YEARS)」挑选 → 跳转该条目 → 插件抓取 → 写回
+  【IMDb】
+     ┌ 豆瓣带 IMDb ID → 直达 https://www.imdb.com/title/ttXXXX/
+     └ 否则 → JS 激活 #suggestion-search → 粘贴检索词 → 读取联想 DOM →
+              按「名字匹配 + 年份(区间覆盖)」挑选 → 直达该 tt → 插件抓取
+              （联想 DOM 无法解析时才降级为图片识别兜底）
   → 写回 → 结束
 
-依赖: pyautogui, 以及同目录下你已有的 screenshot.py
+前置（一次性）：Chrome 菜单 显示 → 开发者 → 允许 Apple 事件中的 JavaScript
+              未开启时自动降级为原来的图片识别流程。
+依赖: pyautogui, 以及你已有的 screenshot.py
 """
 
 import os
@@ -19,6 +25,7 @@ import sys
 import time
 import json
 import glob
+import unicodedata
 import subprocess
 from pathlib import Path
 
@@ -32,11 +39,33 @@ from screenshot import ScreenDetector
 OVIDEOS_JSON  = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
 DOWNLOADS_DIR = Path.home() / 'Downloads'
 
-# —— 模板图 ——（input 用相对文件名，走 ScreenDetector 默认目录；popup 用绝对路径）
+# —— 只抓这些年份的条目（豆瓣联想里的年份必须命中；IMDb 允许区间覆盖）——
+TARGET_YEARS = ['2026']
+
+# —— 站点首页（当前标签页没有搜索框时跳过去）——
+DOUBAN_HOME = 'https://movie.douban.com/'
+IMDB_HOME   = 'https://www.imdb.com/'
+
+# —— 输入框选择器（按优先级）——
+DOUBAN_INPUT_SELECTORS = ['#inp-query', 'input[name="search_text"]']
+IMDB_INPUT_SELECTORS = [
+    '#suggestion-search',
+    'input[aria-controls="react-autowhatever-navSuggestionSearch"]',
+    'input.imdb-header-search__input',
+    'form[role="search"] input[name="q"]',
+]
+
+# —— 图片兜底模板 ——（input 用相对文件名，走 ScreenDetector 默认目录；popup 用绝对路径）
 DOUBAN_INPUT_IMG = 'douban_input.png'
 DOUBAN_POPUP_IMG = '/Users/yanzhang/Coding/python_code/Resource/douban_popup.png'
 IMDB_INPUT_IMG   = 'imdb_input.png'
 IMDB_POPUP_IMG   = '/Users/yanzhang/Coding/python_code/Resource/imdb_popup.png'
+
+DOUBAN_IMAGE_FALLBACK = True   # 仅在「Apple 事件 JS」不可用时启用
+IMDB_IMAGE_FALLBACK   = True   # JS 不可用 或 IMDb 联想 DOM 无法解析时启用
+
+IMDB_REQUIRE_YEAR    = True    # IMDb 联想是否也要求年份规则
+IMDB_MAX_QUERY_TRIES = 3       # IMDb 最多尝试几个检索词候选
 
 # —— 插件下载文件名模式 ——
 DOUBAN_DOWNLOAD_GLOB = 'douban_result*.json'
@@ -46,12 +75,15 @@ IMDB_DOWNLOAD_GLOB   = 'imdb_result*.json'
 IMDB_TITLE_URL = 'https://www.imdb.com/title/{}/'
 
 # —— 等待时间（秒）——
-WAIT_AFTER_PASTE      = 2
-WAIT_POPUP_APPEAR     = 20
-WAIT_PAGE_LOAD        = 4
-WAIT_DOWNLOAD_TIMEOUT = 30
-WAIT_NAV_TIMEOUT      = 15   # 直达跳转时等待 URL 变化
-SECOND_CLICK_Y_OFFSET = 50   # 第二次点击相对图片中心的 Y 偏移（逻辑像素）
+WAIT_AFTER_PASTE        = 2
+WAIT_POPUP_APPEAR       = 20
+WAIT_PAGE_LOAD          = 4    # JS 不可用时的固定等待
+WAIT_PAGE_READY_TIMEOUT = 20   # JS 可用时：等待 URL+readyState 的上限
+WAIT_PAGE_SETTLE        = 1.5  # 页面就绪后再额外稳一下
+WAIT_SUGGEST_TIMEOUT    = 8    # 等待联想列表
+WAIT_DOWNLOAD_TIMEOUT   = 30
+WAIT_NAV_TIMEOUT        = 15
+SECOND_CLICK_Y_OFFSET   = 50   # 图片兜底：第二次点击相对输入框中心的 Y 偏移
 # ===========================================
 
 pyautogui.FAILSAFE = True
@@ -64,12 +96,16 @@ def load_json(path):
 
 
 def save_json(path, data):
-    with open(path, 'w', encoding='utf-8') as f:
+    """原子写入：先写临时文件再替换，防止中途崩溃写坏原文件。"""
+    tmp = f"{path}.tmp"
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def read_clipboard() -> str:
-    """读取当前剪贴板内容（项目名）。"""
     p = subprocess.Popen(['pbpaste'], stdout=subprocess.PIPE)
     out, _ = p.communicate()
     return out.decode('utf-8').strip()
@@ -116,36 +152,28 @@ def click_image_center(detector, location, shape, y_offset=0):
 
 
 # ============================================================
-#                语种判定 / 检索词挑选（核心重写）
+#                语种判定 / 检索词挑选
 # ============================================================
-# 拉丁字母（含重音扩展）
 RE_LATIN   = re.compile(r'[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]')
-# 汉字
 RE_HAN     = re.compile(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]')
-# 日文假名（平/片假名、半角片假名）
 RE_KANA    = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF\uFF66-\uFF9D]')
-# 韩文
 RE_HANGUL  = re.compile(r'[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]')
-# 其他非拉丁字母体系：西里尔/希腊/希伯来/阿拉伯/天城文/泰文
 RE_OTHER   = re.compile(r'[\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF'
                         r'\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F]')
-# 括号里的地区/版本注释，如 (台) （港） [美] 【韩】
 RE_REGION_TAG = re.compile(r'[\(\uFF08\[\uFF3B\u3010][^\)\uFF09\]\uFF3D\u3011]{0,12}'
                            r'[\)\uFF09\]\uFF3D\u3011]')
-# 连续的「拉丁可检索片段」
 RE_LATIN_RUN = re.compile(r"[A-Za-z\u00C0-\u024F\u1E00-\u1EFF0-9'\u2019\-\.\:\&, ]+")
 
 _STRIP_CHARS = " \t\u3000-\u2013\u2014:\uFF1A,\uFF0C\u3001.\u00b7\"\u201c\u201d'\u2018\u2019"
 
-TIER_PURE_LATIN  = 0   # 纯英文/拉丁
-TIER_MIXED_LATIN = 1   # 拉丁 + 非拉丁混排（抽拉丁片段）
-TIER_NON_CN_EN   = 2   # 非中文且非英文（日/韩/俄/印地…）
-TIER_CHINESE     = 3   # 纯中文
-TIER_DROP        = 9   # 丢弃
+TIER_PURE_LATIN  = 0
+TIER_MIXED_LATIN = 1
+TIER_NON_CN_EN   = 2
+TIER_CHINESE     = 3
+TIER_DROP        = 9
 
 
 def clean_candidate(text: str) -> str:
-    """清洗单个候选串：去地区注释、归一空白、剥首尾杂符号。"""
     if not text:
         return ''
     t = str(text)
@@ -167,21 +195,18 @@ def _script_flags(t: str) -> dict:
 
 
 def extract_latin_run(t: str) -> str:
-    """从混排串里抽出最长的拉丁片段，如「Chumbak 幸福邻距离」→「Chumbak」。"""
     runs = [r.strip(_STRIP_CHARS).strip() for r in RE_LATIN_RUN.findall(t)]
     runs = [r for r in runs if RE_LATIN.search(r) and len(r) >= 2]
     return max(runs, key=len) if runs else ''
 
 
 def is_chinese(text: str) -> bool:
-    """纯中文判定：含汉字，且不含假名/韩文/其他文字体系。"""
     t = str(text or '')
     f = _script_flags(t)
     return f['han'] and not (f['kana'] or f['hangul'] or f['other'])
 
 
 def is_english(text: str) -> bool:
-    """纯拉丁判定（可含数字、标点、重音字母）。"""
     t = clean_candidate(text)
     if not t:
         return False
@@ -189,12 +214,10 @@ def is_english(text: str) -> bool:
     non_latin = f['han'] or f['kana'] or f['hangul'] or f['other']
     if f['latin'] and not non_latin:
         return True
-    # 纯 ASCII 数字标题，如 "1917"
     return (not non_latin) and t.isascii() and any(c.isalnum() for c in t)
 
 
 def classify_candidate(text: str):
-    """返回 (tier, 实际用于检索的字符串)。"""
     t = clean_candidate(text)
     if not t:
         return TIER_DROP, ''
@@ -209,14 +232,12 @@ def classify_candidate(text: str):
         if f['han'] and not (f['kana'] or f['hangul'] or f['other']):
             return TIER_CHINESE, t
         return TIER_NON_CN_EN, t
-    # 无任何字母：数字/符号标题
     if t.isascii() and any(c.isalnum() for c in t):
         return TIER_PURE_LATIN, t
     return TIER_DROP, ''
 
 
 def split_aka(aka: str):
-    """把「又名」整段按 / ／ | ｜ 拆分、清洗、去重（保持原顺序）。"""
     if not aka:
         return []
     parts = re.split(r'[/\uFF0F|\uFF5C]', str(aka))
@@ -234,11 +255,6 @@ def split_aka(aka: str):
 
 
 def rank_imdb_candidates(aka: str, foreign_title: str, chinese_name: str = ''):
-    """
-    生成候选并排序。排序主键 = 语种 tier（0 英文 → 1 混排 → 2 非中非英 → 3 中文），
-    次键 = 来源顺序（又名#1..n → 主标题外文 → 中文名兜底）。
-    返回 [(tier, pos, query, source_label), ...]
-    """
     raw = []
     for i, p in enumerate(split_aka(aka)):
         raw.append((p, f'又名#{i + 1}'))
@@ -267,7 +283,6 @@ def rank_imdb_candidates(aka: str, foreign_title: str, chinese_name: str = ''):
 
 
 def pick_imdb_search_query(aka: str, foreign_title: str, chinese_name: str = ''):
-    """返回 (query, source_label, ranked)；找不到时 query 为 ''。"""
     ranked = rank_imdb_candidates(aka, foreign_title, chinese_name)
     if not ranked:
         return '', '', []
@@ -286,9 +301,139 @@ def print_candidates(ranked, limit=8):
 
 
 def normalize_imdb_id(v) -> str:
-    """把任意输入规范成 ttXXXXXXX，失败返回 ''。"""
     m = re.search(r'tt\d{6,}', str(v or ''), re.I)
     return m.group(0).lower() if m else ''
+
+
+# ============================================================
+#           联想结果匹配规则（名字 + 年份）
+# ============================================================
+_RE_ZERO_WIDTH = re.compile(r'[\u200b-\u200f\u2060\ufeff]')
+
+
+def norm_title(s) -> str:
+    """NFKC 归一（全角→半角、全角冒号/空格统一）、去零宽字符、合并空白、大小写不敏感。"""
+    t = unicodedata.normalize('NFKC', str(s or ''))
+    t = _RE_ZERO_WIDTH.sub('', t).replace('\u00a0', ' ')
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t.casefold()
+
+
+def _is_boundary(ch: str) -> bool:
+    """名字后面紧跟的字符：只要不是字母/汉字/假名等『文字』，就算边界（空格、冒号、数字、各种符号）。"""
+    return not ch.isalpha()
+
+
+def title_match_level(candidate, query, allow_reverse=False):
+    """
+    0 = 完全一致
+    1 = 候选以 query 开头，且后面紧跟边界字符（如「火线 第一季」「火线：xx」「火线2」）
+    2 = （仅 allow_reverse）query 以候选开头 + 边界（如 query「The Wire Season 1」vs 标题「The Wire」）
+    None = 不匹配
+    """
+    c, q = norm_title(candidate), norm_title(query)
+    if not c or not q:
+        return None
+    if c == q:
+        return 0
+    if c.startswith(q) and _is_boundary(c[len(q)]):
+        return 1
+    if allow_reverse and q.startswith(c) and _is_boundary(q[len(c)]):
+        return 2
+    return None
+
+
+RE_YEAR_RANGE = re.compile(r'((?:19|20)\d{2})(\s*[\u2013\u2014\-]\s*((?:19|20)\d{2})?)?')
+
+
+def imdb_year_level(text, years):
+    """0 = 起始年命中；1 = 区间覆盖目标年（剧集 2020– / 2017–2026）；None = 不符。"""
+    m = RE_YEAR_RANGE.search(str(text or ''))
+    if not m:
+        return None
+    start = int(m.group(1))
+    if m.group(3):
+        end = int(m.group(3))
+    elif m.group(2):
+        end = 9999          # 「2020–」仍在播
+    else:
+        end = start
+    ys = {int(y) for y in years}
+    if start in ys:
+        return 0
+    if any(start <= y <= end for y in ys):
+        return 1
+    return None
+
+
+def pick_douban_suggestion(items, name, years):
+    years = {str(y) for y in years}
+    cands, name_only = [], []
+    for it in items:
+        lvl = title_match_level(it.get('title', ''), name)
+        if lvl is None:
+            for s in it.get('sub') or []:
+                l2 = title_match_level(s, name)
+                if l2 is not None:
+                    lvl = 2 + l2          # 外文副标题命中，优先级低于中文主标题
+                    break
+        if lvl is None:
+            continue
+        if str(it.get('year', '')).strip() in years:
+            cands.append((lvl, it.get('idx', 0), it))
+        else:
+            name_only.append(it)
+
+    print("  豆瓣联想列表：")
+    for it in items:
+        print(f"    #{it.get('idx')}  {it.get('title', '')}  [{it.get('year', '') or '?'}]  "
+              f"{' | '.join(it.get('sub') or [])}")
+
+    if not cands:
+        if name_only:
+            print(f"  ❌ 名字匹配但年份不在 {sorted(years)}："
+                  + '；'.join(f"{x.get('title')}({x.get('year') or '?'})" for x in name_only))
+        else:
+            print(f"  ❌ 联想中没有名字与「{name}」匹配的条目")
+        return None
+
+    cands.sort(key=lambda x: (x[0], x[1]))
+    best = cands[0][2]
+    print(f"  ✅ 选中：#{best.get('idx')} {best.get('title')} ({best.get('year')})  "
+          f"匹配级别={cands[0][0]}  {best.get('link')}")
+    return best
+
+
+def pick_imdb_suggestion(items, query, years):
+    cands, name_only = [], []
+    print("  IMDb 联想列表：")
+    for it in items:
+        print(f"    #{it.get('idx')}  [{it.get('kind')}] {it.get('title', '')}  "
+              f"{it.get('year_text', '')}  {it.get('id', '')}")
+        if it.get('kind') != 'title' or not it.get('id'):
+            continue
+        lvl = title_match_level(it.get('title', ''), query, allow_reverse=True)
+        if lvl is None:
+            continue
+        ylvl = imdb_year_level(it.get('year_text', ''), years) if IMDB_REQUIRE_YEAR else 0
+        if ylvl is None:
+            name_only.append(it)
+            continue
+        cands.append((lvl, ylvl, it.get('idx', 0), it))
+
+    if not cands:
+        if name_only:
+            print("  ❌ 名字匹配但年份不符：" + '；'.join(
+                f"{x.get('title')}({x.get('year_text') or '?'})" for x in name_only))
+        else:
+            print(f"  ❌ 联想中没有与「{query}」匹配的条目")
+        return None
+
+    cands.sort(key=lambda x: (x[0], x[1], x[2]))
+    best = cands[0][3]
+    print(f"  ✅ 选中：#{best.get('idx')} {best.get('title')} ({best.get('year_text')})  "
+          f"{best.get('id')}  名字级别={cands[0][0]} 年份级别={cands[0][1]}")
+    return best
 
 
 # ------------------ 在 json 里按名字找项目 ------------------
@@ -297,7 +442,6 @@ def find_item_by_name(data, name):
     if not target:
         return None, None, None
 
-    # 1) 精确匹配 name
     for category, items in data.items():
         if not isinstance(items, list):
             continue
@@ -305,7 +449,6 @@ def find_item_by_name(data, name):
             if isinstance(item, dict) and str(item.get('name', '')).strip() == target:
                 return category, idx, item
 
-    # 2) 回退：alias 里任一分段等于目标（大小写不敏感）
     low = target.lower()
     for category, items in data.items():
         if not isinstance(items, list):
@@ -322,7 +465,6 @@ def find_item_by_name(data, name):
 
 # ------------------ 写入判断工具 ------------------
 def _content_len(v):
-    """字符串按字符数、数组按元素个数计算「长度」。"""
     if isinstance(v, list):
         return len(v)
     if v is None:
@@ -331,68 +473,51 @@ def _content_len(v):
 
 
 def insert_key_after(d: dict, after_key: str, new_key: str, new_value):
-    """
-    在字典 d 中将 new_key 赋值为 new_value，并确保它的位置排在 after_key 紧邻的下方。
-    使用原地 clear + update，保持外部对象引用不变。
-    """
     new_items = []
     found_after = False
-
     for k, v in d.items():
         if k == new_key:
-            # 跳过原有的 new_key（如果已存在），以便重新按顺序排在 after_key 下方
             continue
         new_items.append((k, v))
         if k == after_key:
             new_items.append((new_key, new_value))
             found_after = True
-
-    # 防御容错：如果字典里本身没有 after_key，直接追加到末尾
     if not found_after:
         new_items.append((new_key, new_value))
-
     d.clear()
     d.update(new_items)
 
+
 def _should_write(old, new):
-    """
-    写入规则：原字段为空，或新内容比原内容「更长」才写入。
-    - 字符串：比字符数
-    - 数组  ：比元素个数
-    new 本身若为空则一律不写。
-    """
     if isinstance(new, list):
         if not new:
             return False
     else:
         if not str(new).strip():
             return False
-
     if _content_len(old) == 0:
         return True
-
     return _content_len(new) > _content_len(old)
 
-# 豆瓣日期：YYYY / YYYY-MM / YYYY-MM-DD，后面可带地区等备注，如 2025-09(法国)
+
 RE_DOUBAN_DATE = re.compile(r'^\d{4}(?:-\d{2}){0,2}')
+
 
 def is_valid_douban_date(s: str) -> bool:
     return bool(RE_DOUBAN_DATE.match(str(s or '').strip()))
 
+
 # ------------------ 写回逻辑 ------------------
 def update_douban(item, scraped) -> bool:
-    """写回日期 + 豆瓣评分 + imdb_id + 导演/编剧/主演/类型/alias/intro。"""
     date   = str(scraped.get('date', '')).strip()
     douban = str(scraped.get('douban_rating', '')).strip()
     changed = False
 
     print("  ┌────────────── 豆瓣写回 ──────────────")
-    # 日期：以 YYYY / YYYY-MM / YYYY-MM-DD 开头即视为有效，原样保留地区备注
     if is_valid_douban_date(date):
         old_date = str(item.get('date', '')).strip()
         if old_date != date:
             item['date'] = date
-            # 同步在 date 下方增加或更新 date_re 为最新抓到的日期
             insert_key_after(item, after_key='date', new_key='date_re', new_value=date)
             changed = True
             print(f"  │ 日期 date    : {old_date or '空'} -> {date}")
@@ -402,23 +527,21 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 日期未抓到/格式不符，保持原样（抓到：{date or '空'}）")
 
-    # 豆瓣评分
     if douban:
         rating = item.get('评分')
         if not isinstance(rating, dict):
             rating = {}
             item['评分'] = rating
         old = str(rating.get('豆瓣', '')).strip()
-        rating['豆瓣'] = douban
-        changed = True
-        if old and old != douban:
-            print(f"  │ 豆瓣评分 : {old} -> {douban}")
+        if old != douban:
+            rating['豆瓣'] = douban
+            changed = True
+            print(f"  │ 豆瓣评分 : {old or '空'} -> {douban}")
         else:
-            print(f"  │ 豆瓣评分 : {douban}")
+            print(f"  │ 豆瓣评分 : {douban}（无变化）")
     else:
         print("  │ 豆瓣评分 : 页面未抓到，保持原样")
 
-    # IMDb ID（新增，最有价值的字段）
     imdb_id = normalize_imdb_id(scraped.get('imdb_id', ''))
     if imdb_id:
         old_id = normalize_imdb_id(item.get('imdb_id', ''))
@@ -433,9 +556,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print("  │ imdb_id : 页面未提供")
 
-    # ---- 以下字段：仅当原字段为空 或 新内容更长时才写入 ----
-
-    # 导演（字符串，多个已在插件端用 " / " 连接）
     director = str(scraped.get('director', '')).strip()
     if _should_write(item.get('导演'), director):
         old = item.get('导演')
@@ -445,7 +565,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 导演    : 不满足写入条件，保持原样（抓到：{director or '空'}）")
 
-    # 编剧（数组）
     screenwriters = [str(x).strip() for x in (scraped.get('screenwriters') or []) if str(x).strip()]
     if _should_write(item.get('编剧'), screenwriters):
         item['编剧'] = screenwriters
@@ -454,7 +573,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 编剧    : 不满足写入条件，保持原样（抓到：{screenwriters or '空'}）")
 
-    # 主演（数组）
     starring = [str(x).strip() for x in (scraped.get('starring') or []) if str(x).strip()]
     if _should_write(item.get('主演'), starring):
         item['主演'] = starring
@@ -463,7 +581,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 主演    : 不满足写入条件，保持原样（抓到：{starring or '空'}）")
 
-    # 类型（数组）
     genres = [str(x).strip() for x in (scraped.get('genres') or []) if str(x).strip()]
     if _should_write(item.get('类型'), genres):
         item['类型'] = genres
@@ -472,7 +589,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ 类型    : 不满足写入条件，保持原样（抓到：{genres or '空'}）")
 
-    # alias（优先又名整段；无又名则回退主标题外文）
     aka = str(scraped.get('aka', '')).strip()
     foreign_title = str(scraped.get('foreign_title', '')).strip()
     alias = aka if aka else foreign_title
@@ -485,7 +601,6 @@ def update_douban(item, scraped) -> bool:
     else:
         print(f"  │ alias   : 不满足写入条件，保持原样（抓到：{alias or '空'}）")
 
-    # 简介 (intro)
     intro = str(scraped.get('intro', '')).strip()
     if _should_write(item.get('intro'), intro):
         old_intro = str(item.get('intro', '') or '')
@@ -502,7 +617,7 @@ def update_douban(item, scraped) -> bool:
 
 
 def update_imdb(item, scraped, expected_id='') -> bool:
-    """写回 IMDb 评分到 评分.IMDB；带 ID 校验，防止写错片子。"""
+    """写回 IMDb 评分；必须是 /title/tt 条目页，且与期望 ID 一致。"""
     imdb = str(scraped.get('imdb_rating', '')).strip()
     got_id = normalize_imdb_id(scraped.get('imdb_id', '') or scraped.get('url', ''))
     exp_id = normalize_imdb_id(expected_id)
@@ -510,7 +625,12 @@ def update_imdb(item, scraped, expected_id='') -> bool:
     print("  ┌────────────── IMDb写回 ──────────────")
     print(f"  │ 落地页    : {scraped.get('title', '') or '?'}  {got_id or ''}")
 
-    if exp_id and got_id and exp_id != got_id:
+    if not got_id:
+        print("  │ ❌ 落地页不是 IMDb 条目页（无 tt 编号），拒绝写入")
+        print("  └──────────────────────────────────────")
+        return False
+
+    if exp_id and exp_id != got_id:
         print(f"  │ ❌ ID 不匹配（期望 {exp_id} / 实际 {got_id}），拒绝写入")
         print("  └──────────────────────────────────────")
         return False
@@ -520,31 +640,297 @@ def update_imdb(item, scraped, expected_id='') -> bool:
         print("  └──────────────────────────────────────")
         return False
 
+    changed = False
     rating = item.get('评分')
     if not isinstance(rating, dict):
         rating = {}
         item['评分'] = rating
     old = str(rating.get('IMDB', '')).strip()
-    rating['IMDB'] = imdb
-    if old and old != imdb:
-        print(f"  │ IMDb评分 : {old} -> {imdb}")
+    if old != imdb:
+        rating['IMDB'] = imdb
+        changed = True
+        print(f"  │ IMDb评分 : {old or '空'} -> {imdb}")
     else:
-        print(f"  │ IMDb评分 : {imdb}")
+        print(f"  │ IMDb评分 : {imdb}（无变化）")
 
-    # 顺手补 imdb_id
-    if got_id and not normalize_imdb_id(item.get('imdb_id', '')):
+    if not normalize_imdb_id(item.get('imdb_id', '')):
         item['imdb_id'] = got_id
+        changed = True
         print(f"  │ imdb_id : 空 -> {got_id}")
 
     print("  └──────────────────────────────────────")
-    return True
+    return changed
 
 
-# ------------------ Chrome 控制 ------------------
+# ============================================================
+#                    Chrome 控制（AppleScript）
+# ============================================================
 def _osa(script: str) -> str:
     proc = subprocess.run(["osascript", "-e", script],
                           capture_output=True, encoding="utf-8")
     return (proc.stdout or '').strip()
+
+
+def _osa_argv(lines, args, timeout=20):
+    """以 argv 方式传参执行 AppleScript，避免字符串转义问题。返回 (rc, stdout, stderr)。"""
+    cmd = ['osascript']
+    for ln in lines:
+        cmd += ['-e', ln]
+    cmd += [str(a) for a in args]
+    try:
+        p = subprocess.run(cmd, capture_output=True, encoding='utf-8', timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return -1, '', 'timeout'
+    return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+
+
+class ChromeJSUnavailable(Exception):
+    pass
+
+
+_JS_OK = None   # None=未探测 / True / False
+
+
+def chrome_exec_js(js: str, timeout=20):
+    rc, out, err = _osa_argv([
+        'on run argv',
+        'tell application "Google Chrome"',
+        'set r to execute active tab of window 1 javascript (item 1 of argv)',
+        'end tell',
+        'return r',
+        'end run',
+    ], [js], timeout)
+    if rc == 0:
+        return out
+    if 'JavaScript' in err and 'Apple' in err:
+        raise ChromeJSUnavailable(err)
+    return None
+
+
+def js_available() -> bool:
+    global _JS_OK
+    if _JS_OK is not None:
+        return _JS_OK
+    for _ in range(3):
+        try:
+            out = chrome_exec_js("'pong'", timeout=10)
+        except ChromeJSUnavailable:
+            print("⚠️ Chrome 未开启「允许 Apple 事件中的 JavaScript」。")
+            print("   开启方法：Chrome 菜单栏 → 显示 → 开发者 → 允许 Apple 事件中的 JavaScript")
+            print("   本次降级为图片识别流程。")
+            _JS_OK = False
+            return False
+        if out == 'pong':
+            print("✅ Chrome 页面 JS 通道可用（DOM 精准定位模式）")
+            _JS_OK = True
+            return True
+        time.sleep(0.6)
+    print("⚠️ 当前标签无法执行 JS（可能是 chrome:// 页面），本次降级为图片识别流程。")
+    _JS_OK = False
+    return False
+
+
+JS_PRELUDE = r'''
+function vis(el){
+  if(!el) return false;
+  var r = el.getBoundingClientRect();
+  var cs = getComputedStyle(el);
+  return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+}
+function findInput(sels){
+  var first = null;
+  for (var i = 0; i < (sels || []).length; i++){
+    var list = document.querySelectorAll(sels[i]);
+    for (var j = 0; j < list.length; j++){
+      if (!first) first = list[j];
+      if (vis(list[j])) return list[j];
+    }
+  }
+  return first;
+}
+'''
+
+
+def run_page_js(body: str, params=None, timeout=20):
+    """在当前活动标签执行 JS 片段（body 内用 return 返回对象），返回解析后的 Python 对象。"""
+    global _JS_OK
+    js = ("(function(){var P=" + json.dumps(params or {}) + ";" + JS_PRELUDE +
+          "try{var __r=(function(){\n" + body + "\n})();"
+          "return JSON.stringify(__r===undefined?null:__r);}"
+          "catch(e){return JSON.stringify({__error:String((e&&e.message)||e)});}})();")
+    try:
+        out = chrome_exec_js(js, timeout)
+    except ChromeJSUnavailable:
+        _JS_OK = False
+        return None
+    if not out or out == 'missing value':
+        return None
+    try:
+        res = json.loads(out)
+    except Exception:
+        return None
+    if isinstance(res, dict) and '__error' in res:
+        print(f"  [JS 错误] {res['__error']}")
+        return None
+    return res
+
+
+JS_READY_STATE = r'''return {rs: document.readyState, href: location.href};'''
+
+JS_FOCUS_INPUT = r'''
+var el = findInput(P.selectors);
+if (!el) return {ok:false, reason:'no_input'};
+var toggled = false;
+if (!vis(el) && P.openImdbSearch){
+  var cb = document.querySelector('input[type="checkbox"][id*="searchstate" i]');
+  if (cb && !cb.checked){
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change', {bubbles:true}));
+    toggled = true;
+  }
+  el = findInput(P.selectors);
+}
+try { el.scrollIntoView({block:'nearest'}); } catch(e) {}
+el.focus();
+try { el.select(); } catch(e) {}
+return {ok:true, visible:vis(el), focused:(document.activeElement === el),
+        hasFocus:document.hasFocus(), value:el.value || '', toggled:toggled};
+'''
+
+JS_GET_VALUE = r'''
+var el = findInput(P.selectors);
+return {ok:!!el, value: el ? (el.value || '') : ''};
+'''
+
+JS_SET_VALUE = r'''
+var el = findInput(P.selectors);
+if (!el) return {ok:false};
+el.focus();
+var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+desc.set.call(el, P.text);
+el.dispatchEvent(new Event('input', {bubbles:true}));
+el.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, key:'Unidentified'}));
+el.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, key:'Unidentified'}));
+el.dispatchEvent(new Event('change', {bubbles:true}));
+return {ok:true, value:el.value};
+'''
+
+JS_DOUBAN_SUGGEST = r'''
+var inp = findInput(P.selectors);
+var box = document.getElementById('search_suggest');
+if (!box) return {ready:false, reason:'no_box', value: inp ? inp.value : ''};
+var lis = box.querySelectorAll('li');
+var out = [];
+for (var i = 0; i < lis.length; i++){
+  var li = lis[i];
+  var a = li.querySelector('a[href]');
+  var link = li.getAttribute('data-link') || (a ? a.getAttribute('href') : '') || '';
+  try { link = new URL(link, location.href).href; } catch(e) {}
+  var em = li.querySelector('em');
+  var title = em ? (em.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  var spans = Array.prototype.map.call(li.querySelectorAll('p span'), function(s){
+    return (s.textContent || '').replace(/\s+/g, ' ').trim();
+  }).filter(Boolean);
+  var year = '';
+  for (var k = 0; k < spans.length; k++){
+    if (/^(19|20)\d{2}$/.test(spans[k])) { year = spans[k]; break; }
+  }
+  var sugg = '';
+  try { sugg = new URL(link).searchParams.get('suggest') || ''; } catch(e) {}
+  out.push({idx:i, title:title, year:year,
+            sub:spans.filter(function(s){ return s !== year; }),
+            link:link, suggest:sugg});
+}
+return {ready:true, shown:vis(box), value: inp ? inp.value : '', items:out};
+'''
+
+JS_IMDB_SUGGEST = r'''
+var inp = findInput(P.selectors);
+var lb = document.getElementById('react-autowhatever-navSuggestionSearch');
+if (!lb && inp){
+  var own = inp.getAttribute('aria-controls') || '';
+  if (own) lb = document.getElementById(own);
+}
+if (!lb) lb = document.querySelector('[id^="react-autowhatever"][role="listbox"]');
+if (!lb) return {ready:false, reason:'no_listbox', value: inp ? inp.value : ''};
+var lis = lb.querySelectorAll('li');
+var out = [];
+for (var i = 0; i < lis.length; i++){
+  var li = lis[i];
+  var a = li.querySelector('a[href]');
+  var href = a ? (a.getAttribute('href') || '') : '';
+  var lines = (li.innerText || li.textContent || '').split('\n')
+                .map(function(s){ return s.trim(); }).filter(Boolean);
+  var mt = href.match(/\/title\/(tt\d{6,})/i);
+  if (!mt){
+    out.push({idx:i, kind: /\/name\/nm\d+/i.test(href) ? 'name' : 'other',
+              title: lines[0] || '', href: href});
+    continue;
+  }
+  var tEl = li.querySelector('[class*="constTitle"]');
+  var sEls = li.querySelectorAll('[class*="constSubtitle"]');
+  var title = tEl ? (tEl.textContent || '').trim() : (lines[0] || '');
+  var sub = sEls.length
+      ? Array.prototype.map.call(sEls, function(e){ return (e.textContent || '').trim(); })
+      : lines.slice(1);
+  var yt = '';
+  for (var k = 0; k < sub.length; k++){
+    if (/(19|20)\d{2}/.test(sub[k])) { yt = sub[k]; break; }
+  }
+  out.push({idx:i, kind:'title', id:mt[1].toLowerCase(), title:title,
+            year_text:yt, sub:sub.slice(0, 3), href:href});
+}
+return {ready:true, value: inp ? inp.value : '', items:out};
+'''
+
+
+def get_chrome_active_url() -> str:
+    return _osa('tell application "Google Chrome" to return URL of '
+                'active tab of window 1 as string')
+
+
+def navigate_active_tab(url: str) -> bool:
+    rc, _out, err = _osa_argv([
+        'on run argv',
+        'tell application "Google Chrome" to set URL of active tab of window 1 to (item 1 of argv)',
+        'end run',
+    ], [url], 15)
+    if rc != 0:
+        print(f"❌ 导航失败：{err}")
+        return False
+    print(f"➡️  跳转：{url}")
+    return True
+
+
+def wait_for_active_url_contains(needle: str, timeout: int) -> bool:
+    start = time.time()
+    while time.time() - start < timeout:
+        u = get_chrome_active_url()
+        if needle.lower() in (u or '').lower():
+            return True
+        time.sleep(0.4)
+    return False
+
+
+def wait_page_ready(url_needle='', timeout=WAIT_PAGE_READY_TIMEOUT) -> bool:
+    """先等 URL 切换，再等文档 readyState（文档自身的 href 也要包含 needle，防止读到旧页面）。"""
+    start = time.time()
+    if url_needle and not wait_for_active_url_contains(url_needle, timeout):
+        print(f"⚠️ 未确认 URL 包含 {url_needle}")
+    if not js_available():
+        time.sleep(WAIT_PAGE_LOAD)
+        return True
+    needle = url_needle.lower()
+    while time.time() - start < timeout:
+        r = run_page_js(JS_READY_STATE)
+        if isinstance(r, dict) and r.get('rs') in ('interactive', 'complete') \
+                and (not needle or needle in str(r.get('href', '')).lower()):
+            time.sleep(WAIT_PAGE_SETTLE)
+            return True
+        time.sleep(0.4)
+    print("⚠️ 等待页面就绪超时，继续尝试")
+    time.sleep(WAIT_PAGE_SETTLE)
+    return False
 
 
 def _activate_and_switch(keyword, open_url, label):
@@ -578,40 +964,30 @@ def _activate_and_switch(keyword, open_url, label):
             delay 0.2
             return "FOUND"
         else
-            tell application "System Events"
-                keystroke "t" using command down
-                delay 0.5
-                keystroke "{open_url}"
-                delay 0.5
-                key code 36
-            end tell
+            if (count of windows) is 0 then make new window
+            set index of window 1 to 1
+            tell window 1 to make new tab with properties {{URL:"{open_url}"}}
             return "NOT_FOUND_OPENED"
         end if
     end tell
     '''
     result = _osa(script)
-    time.sleep(1.8)
+    time.sleep(0.8)
     if result == "FOUND":
         print(f"✅ 成功切换到 {label} 标签页\n")
     elif result == "NOT_FOUND_OPENED":
         print(f"✅ 未找到 {label} 标签，已打开新页面：{open_url}\n")
+        wait_page_ready(keyword)
     else:
         print(f"⚠️ {label} 操作完成，但返回状态异常：{result}\n")
 
 
 def activate_chrome_and_switch_to_douban():
-    _activate_and_switch("douban.com",
-                         "https://movie.douban.com/subject/1837856/",
-                         "豆瓣")
+    _activate_and_switch("movie.douban.com", DOUBAN_HOME, "豆瓣")
 
 
 def activate_chrome_and_switch_to_imdb():
-    _activate_and_switch("imdb.com", "https://www.imdb.com/", "IMDb")
-
-
-def get_chrome_active_url() -> str:
-    return _osa('tell application "Google Chrome" to return URL of '
-                'active tab of window 1 as string')
+    _activate_and_switch("imdb.com", IMDB_HOME, "IMDb")
 
 
 def open_url_in_chrome(url: str, reuse_keyword: str) -> bool:
@@ -658,16 +1034,6 @@ def open_url_in_chrome(url: str, reuse_keyword: str) -> bool:
     return False
 
 
-def wait_for_active_url_contains(needle: str, timeout: int) -> bool:
-    start = time.time()
-    while time.time() - start < timeout:
-        u = get_chrome_active_url()
-        if needle.lower() in (u or '').lower():
-            return True
-        time.sleep(0.4)
-    return False
-
-
 # ------------------ 触发插件并取结果 ------------------
 def trigger_plugin_and_get_json(download_glob, label):
     clear_old_downloads(download_glob)
@@ -686,9 +1052,134 @@ def trigger_plugin_and_get_json(download_glob, label):
     return scraped
 
 
-# ------------------ 搜索框流程（豆瓣/IMDb 共用） ------------------
-def process_page(input_detector, popup_img_path, download_glob, paste_text, label):
-    print(f"\n----- 开始处理 {label} 页面（搜索路线）-----")
+# ============================================================
+#                  DOM 路线：输入 + 读取联想
+# ============================================================
+def dom_set_input(selectors, text) -> bool:
+    r = run_page_js(JS_SET_VALUE, {'selectors': selectors, 'text': text})
+    return bool(r and r.get('ok'))
+
+
+def dom_fill_input(selectors, text, label, open_imdb=False):
+    """激活输入框并填入文本。返回 'paste' / 'js' / None(找不到输入框)。"""
+    r = run_page_js(JS_FOCUS_INPUT, {'selectors': selectors, 'openImdbSearch': open_imdb})
+    if not r or not r.get('ok'):
+        print(f"  {label}：页面中未找到搜索框")
+        return None
+
+    if r.get('focused') and r.get('hasFocus'):
+        copy_to_clipboard(text)
+        pyautogui.hotkey('command', 'a')
+        time.sleep(0.1)
+        pyautogui.hotkey('command', 'v')
+        time.sleep(0.4)
+        v = run_page_js(JS_GET_VALUE, {'selectors': selectors})
+        if v and norm_title(v.get('value', '')) == norm_title(text):
+            print(f"  ✅ {label}：已激活搜索框并粘贴「{text}」")
+            return 'paste'
+        print(f"  ⚠️ {label}：粘贴后读回内容不一致，改用 JS 写值")
+    else:
+        print(f"  ⚠️ {label}：页面没有键盘焦点（focused={r.get('focused')}, "
+              f"hasFocus={r.get('hasFocus')}），改用 JS 写值")
+
+    if dom_set_input(selectors, text):
+        print(f"  ✅ {label}：已用 JS 写入「{text}」")
+        return 'js'
+    return None
+
+
+def wait_douban_suggestions(query, timeout=WAIT_SUGGEST_TIMEOUT):
+    """返回该检索词对应的 subject 联想列表（可能为空列表）；超时/不一致返回 None。"""
+    nq = norm_title(query)
+    deadline = time.time() + timeout
+    last_sig = None
+    while time.time() < deadline:
+        r = run_page_js(JS_DOUBAN_SUGGEST, {'selectors': DOUBAN_INPUT_SELECTORS})
+        if isinstance(r, dict) and r.get('ready') and r.get('items'):
+            all_items = r['items']
+            subjects = [it for it in all_items if re.search(r'/subject/\d+', it.get('link', ''))]
+            suggs = [it.get('suggest', '') for it in all_items if it.get('suggest')]
+            if suggs:
+                # 链接中的 ?suggest= 与本次检索词一致 → 一定是本次结果
+                if all(norm_title(s) == nq for s in suggs):
+                    return subjects
+            elif r.get('shown'):
+                sig = tuple((it.get('link'), it.get('title')) for it in all_items)
+                if sig == last_sig:
+                    return subjects
+                last_sig = sig
+        time.sleep(0.4)
+    return None
+
+
+def wait_imdb_suggestions(query, timeout=WAIT_SUGGEST_TIMEOUT, min_wait=1.0):
+    """返回 (status, items)；status: ok / empty / no_listbox / unparsed。"""
+    nq = norm_title(query)
+    start = time.time()
+    saw_listbox = False
+    last_sig = None
+    while time.time() - start < timeout:
+        r = run_page_js(JS_IMDB_SUGGEST, {'selectors': IMDB_INPUT_SELECTORS})
+        if isinstance(r, dict) and r.get('ready'):
+            saw_listbox = True
+            items = r.get('items') or []
+            if items and norm_title(r.get('value', '')) == nq and time.time() - start >= min_wait:
+                sig = tuple((it.get('kind'), it.get('id') or it.get('title')) for it in items)
+                if sig == last_sig:
+                    if not any(it.get('kind') in ('title', 'name') for it in items):
+                        return 'unparsed', items
+                    return 'ok', items
+                last_sig = sig
+        time.sleep(0.4)
+    return ('empty' if saw_listbox else 'no_listbox'), []
+
+
+# ------------------ 豆瓣：DOM 路线 ------------------
+def douban_stage_dom(name):
+    print(f"\n----- 豆瓣（DOM 精准路线，年份要求 {TARGET_YEARS}）-----")
+    method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
+    if method is None:
+        print("  当前豆瓣页没有搜索框，跳转电影首页重试")
+        navigate_active_tab(DOUBAN_HOME)
+        wait_page_ready('movie.douban.com')
+        method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
+        if method is None:
+            print("❌ 豆瓣搜索框仍未找到，放弃豆瓣阶段。")
+            return None
+
+    items = wait_douban_suggestions(name)
+    if items is None and method == 'paste':
+        print("  联想未出现，改用 JS 写值重试一次")
+        dom_set_input(DOUBAN_INPUT_SELECTORS, name)
+        items = wait_douban_suggestions(name)
+    if items is None:
+        print("❌ 豆瓣联想列表未出现（或与检索词不一致），放弃豆瓣阶段。")
+        return None
+    if not items:
+        print("❌ 豆瓣联想中没有影视条目，放弃豆瓣阶段。")
+        return None
+
+    pick = pick_douban_suggestion(items, name, TARGET_YEARS)
+    if not pick:
+        return None
+
+    link = pick['link']
+    sid = re.search(r'/subject/(\d+)', link).group(1)
+    needle = f'/subject/{sid}'
+    if not navigate_active_tab(link):
+        return None
+    wait_page_ready(needle)
+
+    scraped = trigger_plugin_and_get_json(DOUBAN_DOWNLOAD_GLOB, '豆瓣')
+    if scraped and needle not in str(scraped.get('url', '')):
+        print(f"❌ 抓取结果 URL 与选中条目不一致（期望 {needle} / 实际 {scraped.get('url')}），丢弃。")
+        return None
+    return scraped
+
+
+# ------------------ 图片路线（兜底，保持原逻辑） ------------------
+def process_page_by_image(input_detector, popup_img_path, download_glob, paste_text, label):
+    print(f"\n----- 开始处理 {label} 页面（图片识别兜底路线）-----")
 
     copy_to_clipboard(paste_text)
 
@@ -718,7 +1209,7 @@ def process_page(input_detector, popup_img_path, download_glob, paste_text, labe
     popup_found = False
     start = time.time()
     while time.time() - start < WAIT_POPUP_APPEAR:
-        _, ploc, pshape = popup_detector.find_images_on_screen(threshold=0.9)
+        _, ploc, _pshape = popup_detector.find_images_on_screen(threshold=0.9)
         if ploc:
             popup_found = True
             print(f"✅ 找到 {label} 弹窗")
@@ -734,32 +1225,98 @@ def process_page(input_detector, popup_img_path, download_glob, paste_text, labe
     return trigger_plugin_and_get_json(download_glob, label)
 
 
-# ------------------ IMDb 直达流程（有 imdb_id 时最优） ------------------
+# ------------------ IMDb 直达流程 ------------------
 def process_imdb_by_id(imdb_id):
     url = IMDB_TITLE_URL.format(imdb_id)
     print(f"\n----- IMDb 直达路线：{url} -----")
     if not open_url_in_chrome(url, 'imdb.com'):
         return None
-    if wait_for_active_url_contains(imdb_id, WAIT_NAV_TIMEOUT):
+    if wait_page_ready(imdb_id, WAIT_NAV_TIMEOUT):
         print("✅ 已到达目标 IMDb 页面")
     else:
-        print("⚠️ 未确认 URL 已切换，仍按固定等待继续尝试")
-    time.sleep(WAIT_PAGE_LOAD)
+        print("⚠️ 未完全确认页面就绪，仍继续尝试")
     return trigger_plugin_and_get_json(IMDB_DOWNLOAD_GLOB, 'IMDb')
+
+
+# ------------------ IMDb：DOM 搜索路线 ------------------
+def imdb_dom_search_and_pick(query):
+    """返回 (status, pick)；status: picked / no_match / dom_failed。"""
+    method = dom_fill_input(IMDB_INPUT_SELECTORS, query, 'IMDb', open_imdb=True)
+    if method is None:
+        print("  当前 IMDb 页没有搜索框，跳转首页重试")
+        navigate_active_tab(IMDB_HOME)
+        wait_page_ready('imdb.com')
+        method = dom_fill_input(IMDB_INPUT_SELECTORS, query, 'IMDb', open_imdb=True)
+        if method is None:
+            return 'dom_failed', None
+
+    status, items = wait_imdb_suggestions(query)
+    if status in ('empty', 'no_listbox') and method == 'paste':
+        print("  联想未出现，改用 JS 写值重试一次")
+        dom_set_input(IMDB_INPUT_SELECTORS, query)
+        status, items = wait_imdb_suggestions(query)
+
+    if status in ('no_listbox', 'unparsed'):
+        print(f"  ⚠️ IMDb 联想 DOM 无法解析（{status}）")
+        return 'dom_failed', None
+    if status == 'empty':
+        print("  IMDb 联想为空")
+        return 'no_match', None
+
+    pick = pick_imdb_suggestion(items, query, TARGET_YEARS)
+    return ('picked', pick) if pick else ('no_match', None)
+
+
+def imdb_stage_search(ranked):
+    """返回 (scraped, picked_id)。"""
+    queries = []
+    for _t, _p, q, _s in ranked:
+        if q not in queries:
+            queries.append(q)
+    queries = queries[:IMDB_MAX_QUERY_TRIES]
+
+    activate_chrome_and_switch_to_imdb()
+
+    if js_available():
+        dom_broken = False
+        for q in queries:
+            print(f"\n🔎 [DOM] IMDb 检索：「{q}」")
+            status, pick = imdb_dom_search_and_pick(q)
+            if status == 'picked':
+                return process_imdb_by_id(pick['id']), pick['id']
+            if status == 'dom_failed':
+                dom_broken = True
+                break
+        if not dom_broken:
+            print("❌ 所有检索词都未在 IMDb 联想中命中「名字 + 年份」规则，放弃（不盲点第一项）。")
+            return None, ''
+        if not IMDB_IMAGE_FALLBACK:
+            return None, ''
+        print("⚠️ 降级为图片识别兜底（点击联想第一项）")
+        dom_set_input(IMDB_INPUT_SELECTORS, '')   # 清空输入框，便于模板图匹配
+        pyautogui.press('escape')
+        time.sleep(0.5)
+    elif not IMDB_IMAGE_FALLBACK:
+        return None, ''
+
+    q = queries[0]
+    print(f"\n🔎 [图片] IMDb 检索：「{q}」")
+    imdb_detector = ScreenDetector(template_names=IMDB_INPUT_IMG, clickValue='left')
+    scraped = process_page_by_image(imdb_detector, IMDB_POPUP_IMG, IMDB_DOWNLOAD_GLOB,
+                                    paste_text=q, label="IMDb")
+    return scraped, ''
 
 
 # ------------------ 主流程 ------------------
 def main():
-    print("=== 豆瓣 + IMDb 一次性抓取启动 (v3) ===")
+    print("=== 豆瓣 + IMDb 一次性抓取启动 (v4 DOM 精准版) ===")
 
-    # 1. 读取剪贴板（项目名）
     name = read_clipboard()
     if not name:
         print("❌ 剪贴板为空，无法继续。")
         return
     print(f"📋 剪贴板内容（项目名）: {name}")
 
-    # 2. 在 json 里找到对应项目
     data = load_json(OVIDEOS_JSON)
     category, idx, item = find_item_by_name(data, name)
     if item is None:
@@ -769,14 +1326,19 @@ def main():
 
     # ========== 第一阶段：豆瓣 ==========
     activate_chrome_and_switch_to_douban()
-    douban_detector = ScreenDetector(template_names=DOUBAN_INPUT_IMG, clickValue='left')
-    douban_scraped = process_page(
-        douban_detector, DOUBAN_POPUP_IMG, DOUBAN_DOWNLOAD_GLOB,
-        paste_text=name, label="豆瓣"
-    )
+    if js_available():
+        douban_scraped = douban_stage_dom(name)
+    elif DOUBAN_IMAGE_FALLBACK:
+        print("⚠️ 豆瓣走图片识别兜底（点击联想第一项，可能不准）")
+        douban_detector = ScreenDetector(template_names=DOUBAN_INPUT_IMG, clickValue='left')
+        douban_scraped = process_page_by_image(
+            douban_detector, DOUBAN_POPUP_IMG, DOUBAN_DOWNLOAD_GLOB,
+            paste_text=name, label="豆瓣")
+    else:
+        douban_scraped = None
 
     imdb_id = ''
-    imdb_query, query_src, ranked = '', '', []
+    ranked = []
 
     if douban_scraped:
         aka           = str(douban_scraped.get('aka', '')).strip()
@@ -787,7 +1349,7 @@ def main():
         print(f"🎬 主标题外文 (foreign)  : {foreign_title or '（空）'}")
         print(f"🆔 豆瓣页 IMDb ID        : {imdb_id or '（空）'}")
 
-        imdb_query, query_src, ranked = pick_imdb_search_query(aka, foreign_title, name)
+        _q, _src, ranked = pick_imdb_search_query(aka, foreign_title, name)
         print_candidates(ranked)
 
         if update_douban(item, douban_scraped):
@@ -796,14 +1358,14 @@ def main():
         else:
             print("豆瓣无有效变化，未写回。")
     else:
-        print("⚠️ 豆瓣抓取失败，尝试用 OVideos.json 中已有信息继续 IMDb 阶段。")
+        print("⚠️ 豆瓣未抓取，尝试用 OVideos.json 中已有信息继续 IMDb 阶段。")
         imdb_id = normalize_imdb_id(item.get('imdb_id', ''))
-        imdb_query, query_src, ranked = pick_imdb_search_query(
-            str(item.get('alias', '')), '', name)
+        _q, _src, ranked = pick_imdb_search_query(str(item.get('alias', '')), '', name)
         print_candidates(ranked)
 
     # ========== 第二阶段：IMDb ==========
     imdb_scraped = None
+    expected_id = imdb_id
 
     if imdb_id:
         imdb_scraped = process_imdb_by_id(imdb_id)
@@ -811,21 +1373,17 @@ def main():
             print("⚠️ 直达路线失败，降级为搜索路线。")
 
     if imdb_scraped is None:
-        if not imdb_query:
+        if not ranked:
             print("\n❌ 既无 IMDb ID，也无有效检索词，无法继续，程序结束。")
             print("=== 结束 ===")
             return
-        print(f"\n🔎 用检索词「{imdb_query}」（来源：{query_src}）搜索 IMDb")
-        activate_chrome_and_switch_to_imdb()
-        imdb_detector = ScreenDetector(template_names=IMDB_INPUT_IMG, clickValue='left')
-        imdb_scraped = process_page(
-            imdb_detector, IMDB_POPUP_IMG, IMDB_DOWNLOAD_GLOB,
-            paste_text=imdb_query, label="IMDb"
-        )
+        imdb_scraped, picked_id = imdb_stage_search(ranked)
+        if picked_id:
+            expected_id = picked_id
 
     if imdb_scraped:
         print(f"⭐ 抓到 IMDb 评分: {imdb_scraped.get('imdb_rating', '') or '（空）'}")
-        if update_imdb(item, imdb_scraped, expected_id=imdb_id):
+        if update_imdb(item, imdb_scraped, expected_id=expected_id):
             save_json(OVIDEOS_JSON, data)
             print("💾 IMDb 数据已写回 OVideos.json。")
         else:
