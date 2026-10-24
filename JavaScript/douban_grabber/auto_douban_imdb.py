@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-豆瓣 + IMDb 一次性抓取与回写  (v4 - DOM 精准定位版)
+豆瓣 + IMDb 一次性抓取与回写  (v5 - 联想稳定等待 + 搜索结果页兜底)
 
 流程：
   剪贴板取名字 → 在 OVideos.json 找项目 →
-  【豆瓣】JS 激活 #inp-query → 粘贴名字 → 读取 #search_suggest 联想列表 →
-         按「名字匹配 + 年份(TARGET_YEARS)」挑选 → 跳转该条目 → 插件抓取 → 写回
+  【豆瓣】
+     ① JS 激活 #inp-query → 粘贴名字 → 等待 #search_suggest 联想「稳定」→
+        按「名字匹配 + 年份(ACTIVE_YEARS)」挑选 → 命中则进入详情页
+     ② 联想为空 / 无符合条目 → 输入框保留字串直接回车 → 搜索结果页
+        (search.douban.com/movie/subject_search) → 解析 .item-root →
+        按「名字 + 年份」挑选（可翻页）→ 进入详情页
+     ③ 两者都无 → 整个程序停止（不进入 IMDb 阶段）
+     进入详情页后 → 插件抓取 → 写回
   【IMDb】
      ┌ 豆瓣带 IMDb ID → 直达 https://www.imdb.com/title/ttXXXX/
      └ 否则 → JS 激活 #suggestion-search → 粘贴检索词 → 读取联想 DOM →
@@ -17,6 +23,7 @@
 前置（一次性）：Chrome 菜单 显示 → 开发者 → 允许 Apple 事件中的 JavaScript
               未开启时自动降级为原来的图片识别流程。
 依赖: pyautogui, 以及你已有的 screenshot.py
+退出码: 0=完成  1=豆瓣阶段失败/致命错误(未进行 IMDb)  2=豆瓣完成但 IMDb 失败
 """
 
 import os
@@ -28,6 +35,7 @@ import glob
 import unicodedata
 import subprocess
 from pathlib import Path
+from urllib.parse import quote, urlparse, parse_qs
 
 PYTHON_CODE_DIR = '/Users/yanzhang/Coding/python_code'
 sys.path.insert(0, PYTHON_CODE_DIR)
@@ -39,12 +47,22 @@ from screenshot import ScreenDetector
 OVIDEOS_JSON  = '/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json'
 DOWNLOADS_DIR = Path.home() / 'Downloads'
 
-# —— 只抓这些年份的条目（豆瓣联想里的年份必须命中；IMDb 允许区间覆盖）——
+# —— 只抓这些年份的条目（豆瓣联想/搜索页年份必须命中；IMDb 允许区间覆盖）——
 TARGET_YEARS = ['2026']
+ACTIVE_YEARS = list(TARGET_YEARS)   # 运行时会被 main() 覆盖
 
 # —— 站点首页（当前标签页没有搜索框时跳过去）——
 DOUBAN_HOME = 'https://movie.douban.com/'
 IMDB_HOME   = 'https://www.imdb.com/'
+
+# —— 豆瓣标签页识别关键字（电影首页/详情页 + 电影搜索结果页）——
+DOUBAN_TAB_KEYWORDS = ['movie.douban.com', 'search.douban.com/movie']
+IMDB_TAB_KEYWORDS   = ['imdb.com']
+
+# —— 豆瓣搜索结果页 ——
+DOUBAN_SEARCH_URL       = 'https://search.douban.com/movie/subject_search?search_text={q}&cat=1002'
+DOUBAN_SEARCH_PAGE_SIZE = 15     # 豆瓣搜索每页条数
+DOUBAN_SEARCH_MAX_PAGES = 2      # 搜索结果最多翻几页（1 = 只看第一页）
 
 # —— 输入框选择器（按优先级）——
 DOUBAN_INPUT_SELECTORS = ['#inp-query', 'input[name="search_text"]']
@@ -75,21 +93,57 @@ IMDB_DOWNLOAD_GLOB   = 'imdb_result*.json'
 IMDB_TITLE_URL = 'https://www.imdb.com/title/{}/'
 
 # —— 等待时间（秒）——
+POLL_INTERVAL           = 0.4
 WAIT_AFTER_PASTE        = 2
 WAIT_POPUP_APPEAR       = 20
 WAIT_PAGE_LOAD          = 4    # JS 不可用时的固定等待
 WAIT_PAGE_READY_TIMEOUT = 20   # JS 可用时：等待 URL+readyState 的上限
 WAIT_PAGE_SETTLE        = 1.5  # 页面就绪后再额外稳一下
-WAIT_SUGGEST_TIMEOUT    = 8    # 等待联想列表
+WAIT_SUGGEST_TIMEOUT    = 8    # IMDb 等待联想列表
 WAIT_DOWNLOAD_TIMEOUT   = 30
 WAIT_NAV_TIMEOUT        = 15
 SECOND_CLICK_Y_OFFSET   = 50   # 图片兜底：第二次点击相对输入框中心的 Y 偏移
+
+# —— 豆瓣联想（需求1：放慢判定，等列表稳定）——
+DOUBAN_SUGGEST_TIMEOUT       = 12   # 联想等待上限
+DOUBAN_SUGGEST_MIN_WAIT      = 2.0  # 输入后至少等这么久才下结论
+DOUBAN_SUGGEST_STABLE_ROUNDS = 3    # 连续 N 次轮询内容不变才认为稳定（≈N×POLL_INTERVAL 秒）
+
+# —— 豆瓣搜索结果页（需求2）——
+DOUBAN_SUBMIT_NAV_TIMEOUT    = 8    # 回车后等待跳转到搜索页的上限
+DOUBAN_SEARCH_RESULT_TIMEOUT = 15   # 等待搜索结果渲染的上限
+DOUBAN_SEARCH_MIN_WAIT       = 1.5
+DOUBAN_SEARCH_STABLE_ROUNDS  = 2
+DOUBAN_SEARCH_EMPTY_ROUNDS   = 3    # 页面数据明确为空时，连续确认 N 次再判定「真没有」
 # ===========================================
 
 pyautogui.FAILSAFE = True
 
+EXIT_OK          = 0
+EXIT_DOUBAN_FAIL = 1
+EXIT_IMDB_FAIL   = 2
+
 
 # ------------------ 基础工具 ------------------
+# 匹配末尾的年份后缀：英雄2026 / 英雄 2026 / 英雄-2026 / 英雄(2026) / 英雄（2026）
+RE_TRAILING_YEAR = re.compile(
+    r'^(?P<name>.*?\S)[\s\-－—_·]*[\(（\[【]?\s*(?P<year>(?:19|20)\d{2})\s*[\)）\]】]?$'
+)
+
+
+def split_name_year(raw: str):
+    """
+    '英雄2026' -> ('英雄', '2026')
+    '英雄'     -> ('英雄', '')
+    '2012'     -> ('2012', '')   # 整个串只是年份时不拆
+    """
+    s = (raw or '').strip()
+    m = RE_TRAILING_YEAR.match(s)
+    if not m:
+        return s, ''
+    return m.group('name').strip(), m.group('year')
+
+
 def load_json(path):
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -308,11 +362,11 @@ def normalize_imdb_id(v) -> str:
 # ============================================================
 #           联想结果匹配规则（名字 + 年份）
 # ============================================================
-_RE_ZERO_WIDTH = re.compile(r'[\u200b-\u200f\u2060\ufeff]')
+_RE_ZERO_WIDTH = re.compile(r'[\u200b-\u200f\u2060\ufeff\u202a-\u202e]')
 
 
 def norm_title(s) -> str:
-    """NFKC 归一（全角→半角、全角冒号/空格统一）、去零宽字符、合并空白、大小写不敏感。"""
+    """NFKC 归一（全角→半角、全角冒号/空格统一）、去零宽/方向控制字符、合并空白、大小写不敏感。"""
     t = unicodedata.normalize('NFKC', str(s or ''))
     t = _RE_ZERO_WIDTH.sub('', t).replace('\u00a0', ' ')
     t = re.sub(r'\s+', ' ', t).strip()
@@ -391,7 +445,7 @@ def pick_douban_suggestion(items, name, years):
 
     if not cands:
         if name_only:
-            print(f"  ❌ 名字匹配但年份不在 {sorted(years)}："
+            print(f"  ❌ 联想中名字匹配但年份不在 {sorted(years)}："
                   + '；'.join(f"{x.get('title')}({x.get('year') or '?'})" for x in name_only))
         else:
             print(f"  ❌ 联想中没有名字与「{name}」匹配的条目")
@@ -401,6 +455,83 @@ def pick_douban_suggestion(items, name, years):
     best = cands[0][2]
     print(f"  ✅ 选中：#{best.get('idx')} {best.get('title')} ({best.get('year')})  "
           f"匹配级别={cands[0][0]}  {best.get('link')}")
+    return best
+
+
+# —— 豆瓣搜索结果页：标题解析与匹配 ——
+RE_SEARCH_TITLE_YEAR = re.compile(r'[\(（]\s*((?:19|20)\d{2})\s*[\)）]\s*$')
+RE_LATIN_START = re.compile(r'[a-z\u00c0-\u024f]')
+
+
+def parse_search_title(raw: str):
+    """'暗流 \u200e (2026)' -> ('暗流', '2026')；'肖申克的救赎 The Shawshank Redemption (1994)' -> (..., '1994')"""
+    t = unicodedata.normalize('NFKC', str(raw or ''))
+    t = _RE_ZERO_WIDTH.sub('', t).replace('\u00a0', ' ')
+    t = re.sub(r'\s+', ' ', t).strip()
+    m = RE_SEARCH_TITLE_YEAR.search(t)
+    if not m:
+        return t, ''
+    return t[:m.start()].strip(), m.group(1)
+
+
+def douban_search_match_level(title, name):
+    """
+    搜索结果页标题形如「中文名 外文原名」：
+      0 = 完全一致，或「name + 空格 + 拉丁字母开头的外文原名（不含汉字）」
+      1 = 以 name 开头 + 边界（如「暗流 第二季」「暗流2」）
+      None = 不匹配（如「暗流涌动」）
+    """
+    lvl = title_match_level(title, name)
+    if lvl == 1:
+        t, q = norm_title(title), norm_title(name)
+        rest = t[len(q):].strip()
+        if rest and RE_LATIN_START.match(rest) and not RE_HAN.search(rest):
+            lvl = 0
+    return lvl
+
+
+def pick_douban_search_result(items, name, years, page=0):
+    years = {str(y) for y in years}
+    cands, name_only = [], []
+    print(f"  豆瓣搜索结果（第 {page + 1} 页）：")
+    for it in items:
+        title, year = parse_search_title(it.get('raw_title', ''))
+        it['title'], it['year'] = title, year
+        subs = [s.strip() for s in re.split(r'[/／]', it.get('abstract', '') or '') if s.strip()]
+        print(f"    #{it.get('idx')}  {title}  [{year or '?'}]  {it.get('abstract', '')}  "
+              f"({it.get('src')})")
+
+        lvl = douban_search_match_level(title, name)
+        if lvl is None:
+            for s in subs:
+                l2 = title_match_level(s, name)
+                if l2 is not None:
+                    lvl = 2 + l2          # 摘要里的外文名命中，优先级更低
+                    break
+        if lvl is None:
+            continue
+        if year in years:
+            cands.append((lvl, it.get('idx', 0), it))
+        else:
+            name_only.append(it)
+
+    if not cands:
+        if name_only:
+            print(f"  ❌ 搜索页名字匹配但年份不在 {sorted(years)}："
+                  + '；'.join(f"{x['title']}({x['year'] or '?'})" for x in name_only))
+        else:
+            print(f"  ❌ 搜索页没有名字与「{name}」匹配的条目")
+        return None
+
+    cands.sort(key=lambda x: (x[0], x[1]))
+    best_lvl = cands[0][0]
+    best = cands[0][2]
+    same = [c for c in cands if c[0] == best_lvl]
+    if len(same) > 1:
+        print(f"  ⚠️ 有 {len(same)} 个同级候选，按豆瓣排序取第一个："
+              + '；'.join(f"{c[2]['title']}({c[2]['year']})" for c in same))
+    print(f"  ✅ 选中：#{best.get('idx')} {best['title']} ({best['year']})  "
+          f"匹配级别={best_lvl}  {best.get('link')}")
     return best
 
 
@@ -684,11 +815,17 @@ def _osa_argv(lines, args, timeout=20):
     return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
 
 
+def bring_chrome_front():
+    """发送快捷键前确保 Chrome 在最前台，避免按键打到别的 App。"""
+    _osa('tell application "Google Chrome" to activate')
+    time.sleep(0.2)
+
+
 class ChromeJSUnavailable(Exception):
     pass
 
 
-_JS_OK = None   # None=未探测 / True / False
+_JS_OK = None   # None=未探测/暂未确定 / True / False(明确不可用)
 
 
 def chrome_exec_js(js: str, timeout=20):
@@ -708,6 +845,7 @@ def chrome_exec_js(js: str, timeout=20):
 
 
 def js_available() -> bool:
+    """只有「明确未开启 Apple 事件 JS」才永久降级；临时失败（页面加载中等）下次会重新探测。"""
     global _JS_OK
     if _JS_OK is not None:
         return _JS_OK
@@ -725,8 +863,7 @@ def js_available() -> bool:
             _JS_OK = True
             return True
         time.sleep(0.6)
-    print("⚠️ 当前标签无法执行 JS（可能是 chrome:// 页面），本次降级为图片识别流程。")
-    _JS_OK = False
+    print("⚠️ 当前标签暂时无法执行 JS（可能是 chrome:// 页面或正在加载），本次按不可用处理。")
     return False
 
 
@@ -815,6 +952,15 @@ el.dispatchEvent(new Event('change', {bubbles:true}));
 return {ok:true, value:el.value};
 '''
 
+JS_SUBMIT_FORM = r'''
+var el = findInput(P.selectors);
+if (!el) return {ok:false, reason:'no_input'};
+var f = el.form;
+if (!f) return {ok:false, reason:'no_form'};
+if (f.requestSubmit) f.requestSubmit(); else f.submit();
+return {ok:true};
+'''
+
 JS_DOUBAN_SUGGEST = r'''
 var inp = findInput(P.selectors);
 var box = document.getElementById('search_suggest');
@@ -842,6 +988,54 @@ for (var i = 0; i < lis.length; i++){
             link:link, suggest:sugg});
 }
 return {ready:true, shown:vis(box), value: inp ? inp.value : '', items:out};
+'''
+
+# 豆瓣搜索结果页：优先读 DOM（.item-root / a.title-text），DOM 为空时用 window.__DATA__ 兜底
+JS_DOUBAN_SEARCH_RESULTS = r'''
+function clean(s){
+  return String(s || '').replace(/[\u200b-\u200f\u2060\ufeff\u202a-\u202e]/g, '')
+                        .replace(/\s+/g, ' ').trim();
+}
+var out = [], seen = {};
+var roots = document.querySelectorAll('.item-root');
+for (var i = 0; i < roots.length; i++){
+  var root = roots[i];
+  var a = root.querySelector('a.title-text') || root.querySelector('.title a[href]');
+  if (!a) continue;
+  var href = a.href || a.getAttribute('href') || '';
+  var mt = href.match(/movie\.douban\.com\/subject\/(\d+)/);
+  if (!mt || seen[mt[1]]) continue;
+  seen[mt[1]] = 1;
+  var ab  = root.querySelector('.meta.abstract');
+  var ab2 = root.querySelector('.meta.abstract_2');
+  out.push({idx: out.length, sid: mt[1],
+            link: 'https://movie.douban.com/subject/' + mt[1] + '/',
+            raw_title: clean(a.textContent),
+            abstract: ab ? clean(ab.textContent) : '',
+            abstract_2: ab2 ? clean(ab2.textContent) : '',
+            src: 'dom'});
+}
+var D = null;
+try { D = window.__DATA__; } catch(e) { D = null; }
+var dItems = null, total = null;
+if (D && typeof D === 'object'){
+  dItems = [];
+  if (typeof D.total === 'number') total = D.total;
+  (D.items || []).forEach(function(x){
+    var u = String((x && x.url) || '');
+    var m = u.match(/movie\.douban\.com\/subject\/(\d+)/);
+    if (!m) return;
+    dItems.push({sid: m[1], link: 'https://movie.douban.com/subject/' + m[1] + '/',
+                 raw_title: clean(x.title), abstract: clean(x.abstract),
+                 abstract_2: clean(x.abstract_2), src: 'data'});
+  });
+}
+if (!out.length && dItems && dItems.length){
+  out = dItems.map(function(x, k){ x.idx = k; return x; });
+}
+return {href: location.href, rs: document.readyState, items: out,
+        dom_roots: roots.length, has_data: !!D,
+        data_count: dItems ? dItems.length : null, total: total};
 '''
 
 JS_IMDB_SUGGEST = r'''
@@ -908,7 +1102,7 @@ def wait_for_active_url_contains(needle: str, timeout: int) -> bool:
         u = get_chrome_active_url()
         if needle.lower() in (u or '').lower():
             return True
-        time.sleep(0.4)
+        time.sleep(POLL_INTERVAL)
     return False
 
 
@@ -927,14 +1121,15 @@ def wait_page_ready(url_needle='', timeout=WAIT_PAGE_READY_TIMEOUT) -> bool:
                 and (not needle or needle in str(r.get('href', '')).lower()):
             time.sleep(WAIT_PAGE_SETTLE)
             return True
-        time.sleep(0.4)
+        time.sleep(POLL_INTERVAL)
     print("⚠️ 等待页面就绪超时，继续尝试")
     time.sleep(WAIT_PAGE_SETTLE)
     return False
 
 
-def _activate_and_switch(keyword, open_url, label):
+def _activate_and_switch(keywords, open_url, label):
     print(f"\n===== 激活Chrome并查找 {label} 标签 =====")
+    cond = ' or '.join(f'(tabUrl contains "{k}")' for k in keywords)
     script = f'''
     set foundTab to missing value
     set targetWin to missing value
@@ -948,7 +1143,7 @@ def _activate_and_switch(keyword, open_url, label):
             repeat with tIdx from 1 to tabCount
                 set t to tab tIdx of w
                 set tabUrl to URL of t as string
-                if tabUrl contains "{keyword}" and tabUrl is not "" then
+                if ({cond}) and tabUrl is not "" then
                     set foundTab to t
                     set targetWin to w
                     set targetTabIdx to tIdx
@@ -977,17 +1172,17 @@ def _activate_and_switch(keyword, open_url, label):
         print(f"✅ 成功切换到 {label} 标签页\n")
     elif result == "NOT_FOUND_OPENED":
         print(f"✅ 未找到 {label} 标签，已打开新页面：{open_url}\n")
-        wait_page_ready(keyword)
+        wait_page_ready(keywords[0])
     else:
         print(f"⚠️ {label} 操作完成，但返回状态异常：{result}\n")
 
 
 def activate_chrome_and_switch_to_douban():
-    _activate_and_switch("movie.douban.com", DOUBAN_HOME, "豆瓣")
+    _activate_and_switch(DOUBAN_TAB_KEYWORDS, DOUBAN_HOME, "豆瓣")
 
 
 def activate_chrome_and_switch_to_imdb():
-    _activate_and_switch("imdb.com", IMDB_HOME, "IMDb")
+    _activate_and_switch(IMDB_TAB_KEYWORDS, IMDB_HOME, "IMDb")
 
 
 def open_url_in_chrome(url: str, reuse_keyword: str) -> bool:
@@ -1037,6 +1232,7 @@ def open_url_in_chrome(url: str, reuse_keyword: str) -> bool:
 # ------------------ 触发插件并取结果 ------------------
 def trigger_plugin_and_get_json(download_glob, label):
     clear_old_downloads(download_glob)
+    bring_chrome_front()
     pyautogui.hotkey('option', 'n')
     print(f"已触发 Option+N（{label}），等待插件下载结果...")
     downloaded = wait_for_download(download_glob, WAIT_DOWNLOAD_TIMEOUT)
@@ -1088,27 +1284,48 @@ def dom_fill_input(selectors, text, label, open_imdb=False):
     return None
 
 
-def wait_douban_suggestions(query, timeout=WAIT_SUGGEST_TIMEOUT):
-    """返回该检索词对应的 subject 联想列表（可能为空列表）；超时/不一致返回 None。"""
+def wait_douban_suggestions(query, timeout=DOUBAN_SUGGEST_TIMEOUT,
+                            min_wait=DOUBAN_SUGGEST_MIN_WAIT,
+                            stable_rounds=DOUBAN_SUGGEST_STABLE_ROUNDS):
+    """
+    返回该检索词对应的 subject 联想列表（可能为空列表）；完全没出现返回 None。
+    规则：输入框值 == 检索词；联想链接 ?suggest= 与检索词一致（或列表可见）；
+          内容连续 stable_rounds 次不变，且距输入已过 min_wait 秒，才认定「加载完毕」。
+    """
     nq = norm_title(query)
-    deadline = time.time() + timeout
-    last_sig = None
-    while time.time() < deadline:
+    start = time.time()
+    last_sig, stable, last_subjects = None, 0, None
+    while time.time() - start < timeout:
         r = run_page_js(JS_DOUBAN_SUGGEST, {'selectors': DOUBAN_INPUT_SELECTORS})
-        if isinstance(r, dict) and r.get('ready') and r.get('items'):
+        ok, subjects, sig = False, [], None
+        if isinstance(r, dict) and r.get('ready') and r.get('items') \
+                and norm_title(r.get('value', '')) == nq:
             all_items = r['items']
-            subjects = [it for it in all_items if re.search(r'/subject/\d+', it.get('link', ''))]
             suggs = [it.get('suggest', '') for it in all_items if it.get('suggest')]
             if suggs:
-                # 链接中的 ?suggest= 与本次检索词一致 → 一定是本次结果
-                if all(norm_title(s) == nq for s in suggs):
-                    return subjects
-            elif r.get('shown'):
-                sig = tuple((it.get('link'), it.get('title')) for it in all_items)
-                if sig == last_sig:
-                    return subjects
-                last_sig = sig
-        time.sleep(0.4)
+                ok = all(norm_title(s) == nq for s in suggs)
+            else:
+                ok = bool(r.get('shown'))
+            if ok:
+                subjects = [it for it in all_items
+                            if re.search(r'/subject/\d+', it.get('link', ''))]
+                sig = tuple((it.get('link'), it.get('title'), it.get('year')) for it in all_items)
+
+        if ok:
+            if sig == last_sig:
+                stable += 1
+            else:
+                last_sig, stable = sig, 0
+            last_subjects = subjects
+            if stable >= stable_rounds and time.time() - start >= min_wait:
+                return subjects
+        else:
+            last_sig, stable = None, 0
+        time.sleep(POLL_INTERVAL)
+
+    if last_subjects is not None:
+        print("  ℹ️ 联想列表在超时前未完全稳定，使用最后一次读取结果")
+        return last_subjects
     return None
 
 
@@ -1130,51 +1347,230 @@ def wait_imdb_suggestions(query, timeout=WAIT_SUGGEST_TIMEOUT, min_wait=1.0):
                         return 'unparsed', items
                     return 'ok', items
                 last_sig = sig
-        time.sleep(0.4)
+        time.sleep(POLL_INTERVAL)
     return ('empty' if saw_listbox else 'no_listbox'), []
+
+
+# ------------------ 豆瓣：公共 ------------------
+def ensure_douban_movie_page():
+    """豆瓣阶段从 movie.douban.com 开始（若当前停留在搜索结果页等其它页面，先回电影首页）。"""
+    u = get_chrome_active_url() or ''
+    if 'movie.douban.com' not in u:
+        print(f"  当前标签不在豆瓣电影站（{u or '空'}），先跳转电影首页")
+        navigate_active_tab(DOUBAN_HOME)
+        wait_page_ready('movie.douban.com')
+
+
+def douban_open_subject_and_scrape(link):
+    m = re.search(r'/subject/(\d+)', link or '')
+    if not m:
+        print(f"❌ 无法从链接解析豆瓣条目 ID：{link}")
+        return None
+    sid = m.group(1)
+    needle = f'/subject/{sid}'
+    url = f'https://movie.douban.com/subject/{sid}/'
+    if not navigate_active_tab(url):
+        return None
+    wait_page_ready(needle)
+
+    scraped = trigger_plugin_and_get_json(DOUBAN_DOWNLOAD_GLOB, '豆瓣')
+    if not scraped:
+        return None
+    if needle not in str(scraped.get('url', '')):
+        print(f"❌ 抓取结果 URL 与选中条目不一致（期望 {needle} / 实际 {scraped.get('url')}），丢弃。")
+        return None
+    got_year = str(scraped.get('year', '')).strip()
+    if got_year and got_year not in {str(y) for y in ACTIVE_YEARS}:
+        print(f"  ⚠️ 详情页年份 {got_year} 不在目标年份 {ACTIVE_YEARS} 中，请留意（仍按选中结果写回）")
+    return scraped
+
+
+# ------------------ 豆瓣：搜索结果页（回车兜底） ------------------
+def build_douban_search_url(name, start=0):
+    url = DOUBAN_SEARCH_URL.format(q=quote(name, safe=''))
+    if start:
+        url += f'&start={start}'
+    return url
+
+
+def _qs_of(url):
+    try:
+        return parse_qs(urlparse(url or '').query)
+    except Exception:
+        return {}
+
+
+def _search_text_of(url) -> str:
+    return (_qs_of(url).get('search_text') or [''])[0]
+
+
+def _start_of(url) -> int:
+    try:
+        return int((_qs_of(url).get('start') or ['0'])[0] or 0)
+    except ValueError:
+        return 0
+
+
+def wait_douban_search_nav(name, timeout):
+    """等待活动标签进入「本检索词」的搜索结果页。返回 ok / mismatch / subject / timeout。"""
+    nq = norm_title(name)
+    start = time.time()
+    while time.time() - start < timeout:
+        u = get_chrome_active_url() or ''
+        if 'subject_search' in u:
+            if norm_title(_search_text_of(u)) == nq:
+                wait_page_ready('subject_search')
+                return 'ok'
+            return 'mismatch'
+        if re.search(r'movie\.douban\.com/subject/\d+', u):
+            return 'subject'      # 回车时选中了某条联想，进入了详情页
+        time.sleep(POLL_INTERVAL)
+    return 'timeout'
+
+
+def douban_submit_search(name) -> bool:
+    """输入框带着原字串直接回车；失败则直接打开搜索 URL。返回是否已到达正确的搜索结果页。"""
+    print("\n----- 豆瓣：联想未命中 → 回车进入搜索结果页 -----")
+    submitted = False
+    r = run_page_js(JS_FOCUS_INPUT, {'selectors': DOUBAN_INPUT_SELECTORS, 'openImdbSearch': False})
+    if r and r.get('ok'):
+        if norm_title(r.get('value', '')) != norm_title(name):
+            dom_set_input(DOUBAN_INPUT_SELECTORS, name)
+            r = run_page_js(JS_FOCUS_INPUT, {'selectors': DOUBAN_INPUT_SELECTORS,
+                                             'openImdbSearch': False})
+        if r and r.get('focused') and r.get('hasFocus'):
+            pyautogui.press('enter')
+            submitted = True
+            print(f"  ⏎ 已在搜索框（内容「{name}」）按下回车")
+        else:
+            s = run_page_js(JS_SUBMIT_FORM, {'selectors': DOUBAN_INPUT_SELECTORS})
+            submitted = bool(s and s.get('ok'))
+            print(f"  页面无键盘焦点，JS 提交表单：{'成功' if submitted else '失败'}")
+    else:
+        print("  页面中未找到搜索框")
+
+    if submitted:
+        st = wait_douban_search_nav(name, DOUBAN_SUBMIT_NAV_TIMEOUT)
+        if st == 'ok':
+            print("  ✅ 已进入搜索结果页")
+            return True
+        print(f"  ⚠️ 回车后未进入正确的搜索结果页（{st}），改为直接打开搜索 URL")
+
+    if not navigate_active_tab(build_douban_search_url(name)):
+        return False
+    return wait_douban_search_nav(name, WAIT_PAGE_READY_TIMEOUT) == 'ok'
+
+
+def wait_douban_search_results(name, start_offset, timeout=DOUBAN_SEARCH_RESULT_TIMEOUT):
+    """返回 (items, total)；items: list（[] = 确认无影视结果）或 None（读不到）。"""
+    nq = norm_title(name)
+    t0 = time.time()
+    last_sig, stable, empty_rounds = None, 0, 0
+    last_items, total = None, None
+    while time.time() - t0 < timeout:
+        r = run_page_js(JS_DOUBAN_SEARCH_RESULTS)
+        if isinstance(r, dict):
+            href = r.get('href', '')
+            if 'subject_search' in href and norm_title(_search_text_of(href)) == nq \
+                    and _start_of(href) == start_offset:
+                if r.get('total') is not None:
+                    total = r.get('total')
+                items = r.get('items') or []
+                elapsed = time.time() - t0
+                if items:
+                    empty_rounds = 0
+                    sig = tuple((it.get('sid'), it.get('raw_title')) for it in items)
+                    if sig == last_sig:
+                        stable += 1
+                    else:
+                        last_sig, stable = sig, 0
+                    last_items = items
+                    if stable >= DOUBAN_SEARCH_STABLE_ROUNDS and elapsed >= DOUBAN_SEARCH_MIN_WAIT:
+                        return items, total
+                elif r.get('has_data') and r.get('data_count') == 0 and r.get('rs') == 'complete':
+                    empty_rounds += 1
+                    if empty_rounds >= DOUBAN_SEARCH_EMPTY_ROUNDS and elapsed >= DOUBAN_SEARCH_MIN_WAIT:
+                        return [], total
+        time.sleep(POLL_INTERVAL)
+    if last_items:
+        print("  ℹ️ 搜索结果在超时前未完全稳定，使用最后一次读取结果")
+        return last_items, total
+    return None, total
+
+
+def douban_search_page_pick(name):
+    if not douban_submit_search(name):
+        print("❌ 无法进入豆瓣搜索结果页。")
+        return None
+
+    total = None
+    last_full = True
+    for page in range(max(1, DOUBAN_SEARCH_MAX_PAGES)):
+        start = page * DOUBAN_SEARCH_PAGE_SIZE
+        if page > 0:
+            if total is not None and start >= total:
+                break
+            if not last_full:
+                break
+            print(f"  第 {page} 页未命中，翻到第 {page + 1} 页")
+            if not navigate_active_tab(build_douban_search_url(name, start)):
+                break
+            wait_page_ready(f'start={start}')
+
+        items, t = wait_douban_search_results(name, start)
+        if t is not None:
+            total = t
+        if items is None:
+            print("  ❌ 搜索结果页未能读取到结果（超时）")
+            break
+        if not items:
+            print(f"  ❌ 搜索结果页没有与「{name}」相关的影视条目")
+            break
+
+        pick = pick_douban_search_result(items, name, ACTIVE_YEARS, page)
+        if pick:
+            return pick
+        last_full = len(items) >= DOUBAN_SEARCH_PAGE_SIZE
+    return None
 
 
 # ------------------ 豆瓣：DOM 路线 ------------------
 def douban_stage_dom(name):
-    print(f"\n----- 豆瓣（DOM 精准路线，年份要求 {TARGET_YEARS}）-----")
+    print(f"\n----- 豆瓣（DOM 精准路线，年份要求 {ACTIVE_YEARS}）-----")
+    ensure_douban_movie_page()
+
     method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
     if method is None:
         print("  当前豆瓣页没有搜索框，跳转电影首页重试")
         navigate_active_tab(DOUBAN_HOME)
         wait_page_ready('movie.douban.com')
         method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
-        if method is None:
-            print("❌ 豆瓣搜索框仍未找到，放弃豆瓣阶段。")
-            return None
 
-    items = wait_douban_suggestions(name)
-    if items is None and method == 'paste':
-        print("  联想未出现，改用 JS 写值重试一次")
-        dom_set_input(DOUBAN_INPUT_SELECTORS, name)
+    pick = None
+    if method is not None:
         items = wait_douban_suggestions(name)
-    if items is None:
-        print("❌ 豆瓣联想列表未出现（或与检索词不一致），放弃豆瓣阶段。")
-        return None
-    if not items:
-        print("❌ 豆瓣联想中没有影视条目，放弃豆瓣阶段。")
-        return None
+        if items is None and method == 'paste':
+            print("  联想未出现，改用 JS 写值重试一次")
+            dom_set_input(DOUBAN_INPUT_SELECTORS, name)
+            items = wait_douban_suggestions(name)
 
-    pick = pick_douban_suggestion(items, name, TARGET_YEARS)
+        if items is None:
+            print("  ⚠️ 豆瓣联想列表未出现（确实无联想）")
+        elif not items:
+            print("  ⚠️ 豆瓣联想中没有影视条目")
+        else:
+            pick = pick_douban_suggestion(items, name, ACTIVE_YEARS)
+    else:
+        print("  ⚠️ 豆瓣搜索框仍未找到，直接走搜索结果页")
+
+    if pick:
+        return douban_open_subject_and_scrape(pick['link'])
+
+    # —— 需求2：联想无结果 / 无符合条目 → 回车进入搜索结果页再找 ——
+    pick = douban_search_page_pick(name)
     if not pick:
         return None
-
-    link = pick['link']
-    sid = re.search(r'/subject/(\d+)', link).group(1)
-    needle = f'/subject/{sid}'
-    if not navigate_active_tab(link):
-        return None
-    wait_page_ready(needle)
-
-    scraped = trigger_plugin_and_get_json(DOUBAN_DOWNLOAD_GLOB, '豆瓣')
-    if scraped and needle not in str(scraped.get('url', '')):
-        print(f"❌ 抓取结果 URL 与选中条目不一致（期望 {needle} / 实际 {scraped.get('url')}），丢弃。")
-        return None
-    return scraped
+    return douban_open_subject_and_scrape(pick['link'])
 
 
 # ------------------ 图片路线（兜底，保持原逻辑） ------------------
@@ -1263,7 +1659,7 @@ def imdb_dom_search_and_pick(query):
         print("  IMDb 联想为空")
         return 'no_match', None
 
-    pick = pick_imdb_suggestion(items, query, TARGET_YEARS)
+    pick = pick_imdb_suggestion(items, query, ACTIVE_YEARS)
     return ('picked', pick) if pick else ('no_match', None)
 
 
@@ -1308,28 +1704,40 @@ def imdb_stage_search(ranked):
 
 
 # ------------------ 主流程 ------------------
-def main():
-    print("=== 豆瓣 + IMDb 一次性抓取启动 (v4 DOM 精准版) ===")
+def main() -> int:
+    print("=== 豆瓣 + IMDb 一次性抓取启动 (v5) ===")
 
-    name = read_clipboard()
-    if not name:
+    raw = read_clipboard()
+    if not raw:
         print("❌ 剪贴板为空，无法继续。")
-        return
-    print(f"📋 剪贴板内容（项目名）: {name}")
+        return EXIT_DOUBAN_FAIL
+
+    name, year_hint = split_name_year(raw)     # name 用于豆瓣/IMDb；raw 用于查 JSON
+    print(f"📋 剪贴板原文: {raw}")
+    print(f"   检索名: {name}   年份后缀: {year_hint or '无'}")
 
     data = load_json(OVIDEOS_JSON)
-    category, idx, item = find_item_by_name(data, name)
+
+    # 先用原文（带年份）查 JSON，查不到再用去年份后的名字查
+    category, idx, item = find_item_by_name(data, raw)
+    if item is None and name != raw:
+        category, idx, item = find_item_by_name(data, name)
     if item is None:
-        print(f"❌ 未在 OVideos.json 中找到名为「{name}」的项目，程序结束。")
-        return
+        print(f"❌ 未在 OVideos.json 中找到「{raw}」（去年份后「{name}」也未找到），程序结束。")
+        return EXIT_DOUBAN_FAIL
     print(f"✅ 已定位项目 [{category}][{idx}]")
+
+    # 年份后缀存在时，用它作为唯一的目标年份；否则沿用 TARGET_YEARS
+    global ACTIVE_YEARS
+    ACTIVE_YEARS = [year_hint] if year_hint else list(TARGET_YEARS)
+    print(f"   本次目标年份: {ACTIVE_YEARS}")
 
     # ========== 第一阶段：豆瓣 ==========
     activate_chrome_and_switch_to_douban()
     if js_available():
         douban_scraped = douban_stage_dom(name)
     elif DOUBAN_IMAGE_FALLBACK:
-        print("⚠️ 豆瓣走图片识别兜底（点击联想第一项，可能不准）")
+        print("⚠️ 豆瓣走图片识别兜底（点击联想第一项，可能不准；该模式下无搜索结果页兜底）")
         douban_detector = ScreenDetector(template_names=DOUBAN_INPUT_IMG, clickValue='left')
         douban_scraped = process_page_by_image(
             douban_detector, DOUBAN_POPUP_IMG, DOUBAN_DOWNLOAD_GLOB,
@@ -1337,31 +1745,29 @@ def main():
     else:
         douban_scraped = None
 
-    imdb_id = ''
-    ranked = []
+    # —— 豆瓣失败：整个流程停止（IMDb 强依赖豆瓣信息）——
+    if not douban_scraped:
+        print(f"\n🛑 豆瓣联想与搜索结果页均未找到「{name}」{ACTIVE_YEARS} 的匹配条目（或抓取失败），"
+              f"程序停止，不进行 IMDb 阶段。")
+        print("=== 结束 ===")
+        return EXIT_DOUBAN_FAIL
 
-    if douban_scraped:
-        aka           = str(douban_scraped.get('aka', '')).strip()
-        foreign_title = str(douban_scraped.get('foreign_title', '')).strip()
-        imdb_id       = normalize_imdb_id(douban_scraped.get('imdb_id', ''))
+    aka           = str(douban_scraped.get('aka', '')).strip()
+    foreign_title = str(douban_scraped.get('foreign_title', '')).strip()
+    imdb_id       = normalize_imdb_id(douban_scraped.get('imdb_id', ''))
 
-        print(f"🎬 又名 (aka)            : {aka or '（空）'}")
-        print(f"🎬 主标题外文 (foreign)  : {foreign_title or '（空）'}")
-        print(f"🆔 豆瓣页 IMDb ID        : {imdb_id or '（空）'}")
+    print(f"🎬 又名 (aka)            : {aka or '（空）'}")
+    print(f"🎬 主标题外文 (foreign)  : {foreign_title or '（空）'}")
+    print(f"🆔 豆瓣页 IMDb ID        : {imdb_id or '（空）'}")
 
-        _q, _src, ranked = pick_imdb_search_query(aka, foreign_title, name)
-        print_candidates(ranked)
+    _q, _src, ranked = pick_imdb_search_query(aka, foreign_title, name)
+    print_candidates(ranked)
 
-        if update_douban(item, douban_scraped):
-            save_json(OVIDEOS_JSON, data)
-            print("💾 豆瓣数据已写回 OVideos.json。")
-        else:
-            print("豆瓣无有效变化，未写回。")
+    if update_douban(item, douban_scraped):
+        save_json(OVIDEOS_JSON, data)
+        print("💾 豆瓣数据已写回 OVideos.json。")
     else:
-        print("⚠️ 豆瓣未抓取，尝试用 OVideos.json 中已有信息继续 IMDb 阶段。")
-        imdb_id = normalize_imdb_id(item.get('imdb_id', ''))
-        _q, _src, ranked = pick_imdb_search_query(str(item.get('alias', '')), '', name)
-        print_candidates(ranked)
+        print("豆瓣无有效变化，未写回。")
 
     # ========== 第二阶段：IMDb ==========
     imdb_scraped = None
@@ -1374,9 +1780,9 @@ def main():
 
     if imdb_scraped is None:
         if not ranked:
-            print("\n❌ 既无 IMDb ID，也无有效检索词，无法继续，程序结束。")
+            print("\n❌ 既无 IMDb ID，也无有效检索词，无法继续 IMDb 阶段。")
             print("=== 结束 ===")
-            return
+            return EXIT_IMDB_FAIL
         imdb_scraped, picked_id = imdb_stage_search(ranked)
         if picked_id:
             expected_id = picked_id
@@ -1390,9 +1796,12 @@ def main():
             print("IMDb 无有效变化，未写回。")
     else:
         print("⚠️ IMDb 抓取失败。")
+        print("\n=== 结束 ===")
+        return EXIT_IMDB_FAIL
 
     print("\n=== 全部完成，结束 ===")
+    return EXIT_OK
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

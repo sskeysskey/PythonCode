@@ -809,8 +809,8 @@ TASKS = [
     },
     {
         "sort_type": "time",
-        "enabled": True,
-        # "enabled": False,
+        # "enabled": True,
+        "enabled": False,
         "jobs": [
             {"year": "2026",
              "categories": {

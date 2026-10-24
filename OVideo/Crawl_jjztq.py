@@ -133,6 +133,9 @@ LIST_PAGES = [
     # ("http://jjztq.cn/jj/4.html", "Anime", "动漫(4)"),
 ]
 
+# 这些线路在存在其他渠道时需要排到最后
+LOW_PRIORITY_LINES = ("阿里云", "线路1")
+
 ALL_GROUPS           = ("Movie", "Drama", "Show", "Anime")
 SERIAL_GROUPS        = ("Drama", "Anime", "Show")   # 连载类：按集数规则处理
 ADD_CHANNEL_GROUPS   = ("Movie", "Drama", "Anime")  # 已有记录允许追加本站渠道的分类（同 shangxidq）
@@ -1572,6 +1575,24 @@ def extract_playlists(soup, page_url):
         result.append({"name": name, "episodes": eps})
     return result
 
+def move_low_priority_lines_to_end(playlists):
+    """
+    若存在 LOW_PRIORITY_LINES 之外的线路（如 腾讯云、线路2、芒果），
+    则把 阿里云、线路1 移到列表末尾；否则保持原顺序不变。
+    各组内部保留抓取时的原始相对顺序。
+    """
+    low_names = {_norm_space(x) for x in LOW_PRIORITY_LINES}
+
+    def is_low(pl):
+        return _norm_space(pl.get("name", "")) in low_names
+
+    normal = [pl for pl in playlists if not is_low(pl)]
+    low = [pl for pl in playlists if is_low(pl)]
+
+    if not normal or not low:      # 只有其中一类时不需要调整
+        return playlists
+    return normal + low
+
 def parse_subpage(sub_url, default_name, default_info, list_img=""):
     """返回 (rec, meta)；meta 中含 year，不写入 JSON"""
     soup = BeautifulSoup(fetch(sub_url), "lxml")
@@ -1631,7 +1652,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
         "alias":  "",
         "intro":  intro or "",
         "评分":   {"豆瓣": "", "IMDB": ""},
-        "playlist": extract_playlists(soup, sub_url),
+        "playlist": move_low_priority_lines_to_end(extract_playlists(soup, sub_url)),
     }
     return rec, {"year": year, "fields": fields}
 

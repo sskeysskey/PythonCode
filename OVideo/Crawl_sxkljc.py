@@ -120,7 +120,8 @@ DOMAIN        = "https://m.sxkljc.com"
 SITE_HOST     = "sxkljc.com"               # 识别「本站线路」：m./www. 子域均算本站
 SITE_KEY      = "sxkljc"                   # 用于 url/url1/url2 键中识别本站
 PLAYLIST_NAME = "sxkljc"                   # 写入 JSON 的 playlist 名称（统一）
-PREFERRED_LINE_KEYWORDS = ("云播资源",)     # 只抓名称包含这些关键字的线路（按顺序优先）
+PREFERRED_LINE_KEYWORDS = ("云播资源",)     # 首选线路关键字（按顺序优先）
+FALLBACK_LINE_KEYWORDS  = ("高清资源",)     # 首选都没有时，按顺序尝试这些备用线路
 PLAYLIST_FALLBACK_FIRST = False            # True：找不到「云播资源」时退而取第一条线路
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
@@ -736,18 +737,23 @@ class BrowserHelper:
             time.sleep(POLL_INTERVAL)
 
     def get_html(self, url):
-        self.start()
-        resp = self._page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-        status = resp.status if resp else 0
-        if status == 404:
-            raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
-        time.sleep(PAGE_SETTLE)
-        html = self._wait_until_ready(url)
-        if status >= 500 or status == 429:
-            state, _ = self._page_state()
-            if state != "site":
-                raise FetchError(f"HTTP {status}: {url}")
-        return html
+        if not self._started:
+            self.start()
+        if FORCE_BROWSER or self._prefer_browser:
+            return self.browser.get_html(url)
+        try:
+            r = self._direct_get(url, referer=DOMAIN + "/")
+        except Exception as e:
+            # 超时或连接异常：丢弃可能已失效的连接池，改走浏览器
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = None
+            if BROWSER_FALLBACK:
+                print(f"    [直连] 请求异常，切换真实浏览器: {e}")
+                return self._browser_html(url)
+            raise FetchError(f"网络请求异常: {e}")
 
     def get_bytes(self, url, timeout=None, referer=None):
         self.start()
@@ -797,6 +803,14 @@ class Fetcher:
         self._started = False
         self._prefer_browser = False
         self._blocked_after_sync = 0
+
+    def _reset_session(self):
+        try:
+            if self._session:
+                self._session.close()
+        except Exception:
+            pass
+        self._session = None
 
     def _get_session(self):
         if self._session is not None:
@@ -870,6 +884,7 @@ class Fetcher:
         try:
             r = self._direct_get(url, referer=DOMAIN + "/")
         except Exception as e:
+            self._reset_session()          # 销毁卡住的连接池，下一次重试是全新连接
             raise FetchError(f"网络请求异常: {e}")
         if r.status_code == 404:
             raise NoRetryFetchError(f"HTTP 404 (不重试): {url}")
@@ -1807,7 +1822,8 @@ def _container_episodes(container, page_url):
     return filter_episodes(eps)
 
 def extract_playlists(soup, page_url):
-    """只取「云播资源」线路，统一命名为 PLAYLIST_NAME。返回 (playlists, 页面上所有线路名)"""
+    """按优先级选线路：首选 → 备用 → （可选）第一条。统一命名为 PLAYLIST_NAME。
+    返回 (playlists, 页面上所有线路名, 实际选中的线路名)"""
     lines, seen = [], set()
     tabs = soup.select("li.ewave-tab[data-target]") or soup.select(".playlist-tab [data-target]")
     for tab in tabs:
@@ -1828,16 +1844,21 @@ def extract_playlists(soup, page_url):
             if eps:
                 lines.append(("", eps))
 
-    chosen = None
-    for kw in PREFERRED_LINE_KEYWORDS:
-        chosen = next((eps for n, eps in lines if kw in n), None)
+    chosen, chosen_name = None, ""
+    # 首选 + 备用关键字，按顺序逐个尝试
+    for kw in tuple(PREFERRED_LINE_KEYWORDS) + tuple(FALLBACK_LINE_KEYWORDS):
+        for n, eps in lines:
+            if kw in n:
+                chosen, chosen_name = eps, n
+                break
         if chosen:
             break
-    if chosen is None and lines:
-        if all(not n for n, _ in lines) or PLAYLIST_FALLBACK_FIRST:
-            chosen = lines[0][1]
+    # 都没匹配上时，可选退而取第一条
+    if chosen is None and lines and (all(not n for n, _ in lines) or PLAYLIST_FALLBACK_FIRST):
+        chosen_name, chosen = lines[0]
+
     pls = [{"name": PLAYLIST_NAME, "episodes": chosen}] if chosen else []
-    return pls, [n or "(未命名)" for n, _ in lines]
+    return pls, [n or "(未命名)" for n, _ in lines], chosen_name
 
 def parse_subpage(sub_url, default_name, default_info, list_img=""):
     """返回 (rec, meta)；meta 中含 year，不写入 JSON"""
@@ -1854,7 +1875,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
     img_url = pick_img_attr(soup.select_one(".vod-info .pic img")) or list_img
     img_url = fix_img_url(img_url, sub_url)
 
-    playlists, line_names = extract_playlists(soup, sub_url)
+    playlists, line_names, chosen_line = extract_playlists(soup, sub_url)
 
     rec = {
         "name":   real_name,
@@ -1874,7 +1895,7 @@ def parse_subpage(sub_url, default_name, default_info, list_img=""):
         "评分":   {"豆瓣": f["douban"], "IMDB": ""},
         "playlist": playlists,
     }
-    return rec, {"year": year, "fields": f, "lines": line_names}
+    return rec, {"year": year, "fields": f, "lines": line_names, "chosen": chosen_line}
 
 
 # ============== 去重查找 ==============
@@ -2088,13 +2109,13 @@ def process_list_page(data, list_url, group, page_name, seen_urls):
             new_pls = rec["playlist"]
             if not new_pls:
                 flush()
-                print(f"    ! 未找到「{'/'.join(PREFERRED_LINE_KEYWORDS)}」线路，跳过"
+                print(f"    ! 未找到「{'/'.join(PREFERRED_LINE_KEYWORDS + FALLBACK_LINE_KEYWORDS)}」线路，跳过"
                       f"（页面线路：{meta['lines'] or '无'}）")
                 fail += 1
                 polite_sleep()
                 continue
             line_desc = ", ".join(f"{p['name']}({len(p['episodes'])})" for p in new_pls)
-            buf.append(f"    [线路] {line_desc}  年份:{year}  地区:{rec.get('地区') or '未知'}")
+            buf.append(f"    [线路] {line_desc}  来源:「{meta['chosen']}」  年份:{year}  地区:{rec.get('地区') or '未知'}")
 
             max_line = max(len(p["episodes"]) for p in new_pls)
             if group in ("Drama", "Anime") and max_line > MAX_EPISODES:

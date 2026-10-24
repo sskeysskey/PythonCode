@@ -35,6 +35,9 @@ PLAYER_TEMPLATE = "{url}"
 
 BTN_MOVE, BTN_KEEP, BTN_STOP = "移动", "保留", "终止"
 
+# 外层 URL（blacklist 的 key）包含这些域名的条目直接跳过：不弹窗、不移动、不删除、不置顶
+SKIP_DOMAINS = ("gdefud.com", "cifppc.com", "huxitech.com", "chnland.com")
+
 
 def log(msg: str) -> None:
     line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
@@ -228,6 +231,35 @@ def is_valid(value) -> bool:
             and isinstance(value[0], str) and value[0].startswith("http"))
 
 
+from urllib.parse import urlsplit
+
+
+def host_of(url: str) -> str:
+    """取出域名（小写，去掉开头的 www.）"""
+    h = (urlsplit(url).hostname or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+def should_skip(key: str) -> bool:
+    """外层 URL 包含指定域名则跳过（子域名也会匹配，例如 www.cifppc.com）"""
+    k = key.lower()
+    return any(d in k for d in SKIP_DOMAINS)
+
+def is_same_domain(page_url: str, play_url: str) -> bool:
+    """来源页与播放地址是否同域名；任一为空则视为不同"""
+    a, b = host_of(page_url), host_of(play_url)
+    return bool(a) and a == b
+
+
+def delete_item(key: str) -> bool:
+    """只从 blacklist 删除，不写入 url_mapping"""
+    bl = load_json(BLACKLIST)
+    if key not in bl:
+        log(f"⚠️ blacklist 中已不存在该项，跳过：{key}")
+        return False
+    del bl[key]
+    save_json_atomic(BLACKLIST, bl)
+    return True
+
 def move_item(key: str) -> bool:
     """写前重读；先写 mapping 再写 blacklist，保证不丢数据"""
     bl = load_json(BLACKLIST)
@@ -277,14 +309,26 @@ def main() -> None:
         sys.exit(f"读取 blacklist 失败：{e}")
 
     all_items = list(bl.items())[::-1]  # 倒序
-    todo = [(k, v) for k, v in all_items if is_valid(v)]
-    skipped = len(all_items) - len(todo)
+    todo = []
+    skipped_invalid = 0   # 没有有效播放地址
+    skipped_domain = 0    # 外层 URL 属于指定域名
+    for k, v in all_items:
+        if not is_valid(v):
+            skipped_invalid += 1
+        elif should_skip(k):
+            skipped_domain += 1
+        else:
+            todo.append((k, v))
+    skipped = skipped_invalid + skipped_domain
+
     log(f"开始复核：共 {len(all_items)} 条，可复核 {len(todo)} 条，"
-        f"跳过无播放地址 {skipped} 条{'（DRY-RUN）' if args.dry_run else ''}")
+        f"跳过无播放地址 {skipped_invalid} 条，"
+        f"跳过指定域名 {skipped_domain} 条"
+        f"{'（DRY-RUN）' if args.dry_run else ''}")
     if not todo:
         return
 
-    moved = kept = 0
+    moved = deleted = kept = 0
     backed_up = False
     win_id = None  # 专用复核窗口的 id
 
@@ -298,6 +342,7 @@ def main() -> None:
         for idx, (key, value) in enumerate(todo, 1):
             play_url = value[0]
             title = value[1] if len(value) > 1 and isinstance(value[1], str) else "(无标题)"
+            same = is_same_domain(key, play_url)
 
             # 在同一个窗口里跳转到新地址（上一条的页面/播放会被替换掉）
             win_id = open_in_review_window(build_open_url(play_url), win_id)
@@ -305,10 +350,12 @@ def main() -> None:
                 log("无法控制 Chrome，终止（请检查 系统设置 > 隐私与安全性 > 自动化 权限）")
                 break
 
+            warn = "⚠️ 来源与播放地址同域名：选“移动”将直接从 blacklist 删除\n\n" if same else ""
             msg = (f"[{idx}/{len(todo)}]  {title}\n\n"
                    f"播放地址：\n{play_url}\n\n"
                    f"来源页：\n{key}\n\n"
-                   f"2 = 移动（移到 url_mapping）\n"
+                   f"{warn}"
+                   f"2 = 移动（同域名则删除，不同域名则移到 url_mapping）\n"
                    f"1 = 保留（留在 blacklist，并移到最上面）\n"
                    f"Esc = 终止本次复核")
             choice = ask(msg, "Blacklist 复核")
@@ -331,24 +378,34 @@ def main() -> None:
                     break
                 continue
 
-            # 移动
+            # 移动 / 同域名删除
             if args.dry_run:
-                moved += 1
-                log(f"[DRY-RUN] 将移动：{title} | {key}")
+                if same:
+                    deleted += 1
+                    log(f"[DRY-RUN] 同域名，将直接删除：{title} | {key}")
+                else:
+                    moved += 1
+                    log(f"[DRY-RUN] 将移动：{title} | {key}")
                 continue
             try:
                 ensure_backup()
-                if move_item(key):
-                    moved += 1
-                    log(f"已移动：{title} | {key}")
+                if same:
+                    if delete_item(key):
+                        deleted += 1
+                        log(f"同域名，已从 blacklist 删除：{title} | {key}")
+                else:
+                    if move_item(key):
+                        moved += 1
+                        log(f"已移动：{title} | {key}")
             except Exception as e:
-                log(f"❌ 移动失败：{key} | {e}，为安全起见终止")
+                log(f"❌ 处理失败：{key} | {e}，为安全起见终止")
                 break
     finally:
         if not args.keep_tabs:
             close_review_window(win_id)
 
-    log(f"结束：移动 {moved} 条，保留(置顶) {kept} 条，跳过 {skipped} 条")
+    log(f"结束：移动 {moved} 条，删除(同域名) {deleted} 条，"
+        f"保留(置顶) {kept} 条，跳过 {skipped} 条")
 
 
 if __name__ == "__main__":

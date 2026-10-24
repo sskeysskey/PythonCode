@@ -52,20 +52,20 @@ class ScreenDetector:
             self.template_name_list = template_names
 
         # 计算屏幕缩放因子 (用于处理 Mac Retina 2x 问题)
-        self.scale_factor = self._get_scale_factor()
-        print(f"检测到屏幕缩放因子: {self.scale_factor}")
+        # 缩放因子在首次截图时顺带计算，避免每次启动额外截一张全屏图
+        self.scale_factor: float = 0.0
 
         self._load_templates(self.template_name_list)
 
-    def _get_scale_factor(self) -> float:
+    def _calc_scale_factor(self, img_width: int) -> float:
         """
         计算 ImageGrab (物理像素) 和 pyautogui (逻辑坐标) 之间的缩放比例。
         在 Mac Retina 屏上通常是 2.0，在普通屏上通常是 1.0。
         """
         try:
-            with ImageGrab.grab() as sc:
-                img_width = sc.size[0]
             screen_width, _ = pyautogui.size()
+            if screen_width <= 0:
+                raise ValueError(f"非法屏幕宽度 {screen_width}")
             return img_width / screen_width
         except Exception as e:
             print(f"警告: 无法计算屏幕缩放因子，默认为 1.0。错误: {e}")
@@ -94,12 +94,17 @@ class ScreenDetector:
         return len(self.templates) > 0
 
     def capture_screen(self) -> np.ndarray:
-        """屏幕捕获"""
+        """屏幕捕获（首次捕获时顺带计算缩放因子）"""
         with ImageGrab.grab() as screenshot:
             img_np = np.array(screenshot)
-            if img_np.shape[2] == 4:
-                return cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
-            return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+        if not self.scale_factor:
+            self.scale_factor = self._calc_scale_factor(img_np.shape[1])
+            print(f"检测到屏幕缩放因子: {self.scale_factor}")
+
+        if img_np.ndim == 3 and img_np.shape[2] == 4:
+            return cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
     def find_images_on_screen(self, threshold: float = 0.95) -> Tuple[Optional[str], Optional[Tuple[int, int]], Optional[Tuple[int, int, int]]]:
         """
@@ -284,52 +289,76 @@ class ScreenDetector:
     # ------------------------------------------------------------------
     # 【新增】锚点-目标配对点击
     # ------------------------------------------------------------------
-    def run_pair(self, anchor_name: str, target_name: str,
-                 dx: int, dy: int, tol_x: int, tol_y: int, do_click: bool) -> str:
+    @staticmethod
+    def _pick_target(ax: int, ay: int,
+                     targets: List[Tuple[int, int, float]],
+                     dx: int, dy: int, tol_x: int, tol_y: int,
+                     row_fallback: bool) -> Optional[Tuple[int, int, str]]:
         """
-        1. 找到 anchor 的全部匹配，按 (y, x) 升序排序（最上方优先）
-        2. 对每个 anchor，在 target 全部匹配中寻找偏移 ≈ (dx, dy) 的那个
-           （|实际dx-dx|<=tol_x 且 |实际dy-dy|<=tol_y，取欧氏误差最小者）
+        在 targets 中为锚点 (ax, ay) 选一个目标。
+        1) 严格模式：偏移落在 (dx±tol_x, dy±tol_y) 内，取欧氏误差最小者
+        2) 兜底模式：同一行（|ey|<=tol_y）且位于锚点左侧，取最近者（忽略 dx）
+        """
+        best = None
+        for tx, ty, _ in targets:
+            ex = (tx - ax) - dx
+            ey = (ty - ay) - dy
+            if abs(ex) <= tol_x and abs(ey) <= tol_y:
+                d = ex * ex + ey * ey
+                if best is None or d < best[0]:
+                    best = (d, tx, ty, "strict")
+        if best is None and row_fallback:
+            for tx, ty, _ in targets:
+                ey = (ty - ay) - dy
+                if abs(ey) <= tol_y and tx < ax:
+                    d = abs(tx - ax)
+                    if best is None or d < best[0]:
+                        best = (d, tx, ty, "row")
+        if best is None:
+            return None
+        return best[1], best[2], best[3]
+
+    def run_pair(self, anchor_name: str, target_name: str,
+                 dx: int, dy: int, tol_x: int, tol_y: int, do_click: bool,
+                 threshold: float = 0.85, row_fallback: bool = True) -> str:
+        """
+        1. 找到 anchor 全部匹配，按 (y, x) 升序（最上方优先）
+        2. 对每个 anchor 用 _pick_target 找配对目标
         3. 最上方 anchor 配不上时依次尝试下一个
-        输出：PAIR_CLICKED:x,y / PAIR_FOUND:x,y / PAIR_NOT_FOUND / NO_ANCHOR
+        输出：PAIR_CLICKED / PAIR_FOUND / PAIR_NOT_FOUND / NO_ANCHOR
         """
         deadline = time.time() + self.timeout_seconds
         anchor_seen = False
 
         while True:
             screen = self.capture_screen()
-            anchors = self._match_all(screen, anchor_name)
+            anchors = self._match_all(screen, anchor_name, threshold)
 
             if anchors:
                 anchor_seen = True
                 anchors.sort(key=lambda m: (m[1], m[0]))
-                targets = self._match_all(screen, target_name)
+                targets = self._match_all(screen, target_name, threshold)
                 print(f"锚点 {anchor_name} 共 {len(anchors)} 个: {[(a[0], a[1]) for a in anchors]}")
                 print(f"目标 {target_name} 共 {len(targets)} 个: {[(t[0], t[1]) for t in targets]}")
 
                 for rank, (ax, ay, _) in enumerate(anchors, 1):
-                    best = None
-                    for tx, ty, _ts in targets:
-                        ex = (tx - ax) - dx
-                        ey = (ty - ay) - dy
-                        if abs(ex) <= tol_x and abs(ey) <= tol_y:
-                            dist = ex * ex + ey * ey
-                            if best is None or dist < best[0]:
-                                best = (dist, tx, ty)
+                    # 调试信息：列出每个候选相对该锚点的实际偏移，便于校准 dx/dy
+                    offs = [(tx - ax, ty - ay) for tx, ty, _ in targets]
+                    print(f"锚点#{rank} ({ax}, {ay}) 候选偏移: {offs}，期望 ({dx}, {dy})")
 
-                    if best is not None:
-                        _, tx, ty = best
+                    pick = self._pick_target(ax, ay, targets, dx, dy, tol_x, tol_y, row_fallback)
+                    if pick is not None:
+                        tx, ty, how = pick
                         if rank > 1:
                             print(f"注意: 最上方锚点无对应目标，改用第 {rank} 个锚点。")
-                        print(f"配对成功: 锚点({ax}, {ay}) -> 目标({tx}, {ty})，实际偏移 ({tx - ax}, {ty - ay})，期望 ({dx}, {dy})")
+                        print(f"配对成功[{how}]: 锚点({ax}, {ay}) -> 目标({tx}, {ty})，"
+                              f"实际偏移 ({tx - ax}, {ty - ay})，期望 ({dx}, {dy})")
                         if do_click:
                             self._click_logical(tx, ty)
                             print(f"PAIR_CLICKED:{tx},{ty}")
                             return "PAIR_CLICKED"
                         print(f"PAIR_FOUND:{tx},{ty}")
                         return "PAIR_FOUND"
-
-                    print(f"锚点#{rank} ({ax}, {ay}) 附近未找到偏移约 ({dx}, {dy}) 的 {target_name}。")
 
             if time.time() >= deadline:
                 break
@@ -392,11 +421,10 @@ def parse_args() -> Tuple[Union[str, List[str]], Optional[str], bool, bool, Opti
     return image_names_str, clickValue, Opposite, scroll_in_run1, x_offset, y_offset, nth_match, timeout_seconds
 
 
-def parse_pair_args() -> Tuple[str, str, int, int, int, int, bool, int]:
-    """【新增】--pair 模式参数解析"""
+def parse_pair_args():
     argv = sys.argv[2:]
     if len(argv) < 4:
-        print("用法: python screenshot.py --pair <anchor.png> <target.png> <dx> <dy> [tol_x=60] [tol_y=20] [click=true] [timeout=3]")
+        print("用法: python screenshot.py --pair <anchor.png> <target.png> <dx> <dy> [tol_x=60] [tol_y=20] [click=true] [timeout=3] [threshold=0.85] [row_fallback=true]")
         sys.exit(EXIT_DEPENDENCY)
     try:
         anchor = argv[0].strip()
@@ -407,16 +435,20 @@ def parse_pair_args() -> Tuple[str, str, int, int, int, int, bool, int]:
         tol_y = int(argv[5]) if len(argv) > 5 else 20
         do_click = (argv[6].lower() != 'false') if len(argv) > 6 else True
         timeout = int(argv[7]) if len(argv) > 7 else 3
+        threshold = float(argv[8]) if len(argv) > 8 else 0.85
+        row_fallback = (argv[9].lower() != 'false') if len(argv) > 9 else True
     except ValueError as e:
         print(f"错误: --pair 参数非法: {e}")
         sys.exit(EXIT_DEPENDENCY)
-    return anchor, target, dx, dy, abs(tol_x), abs(tol_y), do_click, timeout
+    return (anchor, target, dx, dy, abs(tol_x), abs(tol_y),
+            do_click, timeout, threshold, row_fallback)
 
 
 if __name__ == '__main__':
     # ---------------- 【新增】配对模式 ----------------
     if len(sys.argv) > 1 and sys.argv[1] == '--pair':
-        anchor, target, dx, dy, tol_x, tol_y, do_click, timeout = parse_pair_args()
+        (anchor, target, dx, dy, tol_x, tol_y,
+         do_click, timeout, threshold, row_fallback) = parse_pair_args()
         detector = ScreenDetector(
             template_names=[anchor, target],
             clickValue='left' if do_click else None,
@@ -428,7 +460,8 @@ if __name__ == '__main__':
             print("程序执行完毕。")
             sys.exit(EXIT_DEPENDENCY)
         try:
-            detector.run_pair(anchor, target, dx, dy, tol_x, tol_y, do_click)
+            detector.run_pair(anchor, target, dx, dy, tol_x, tol_y, do_click,
+                              threshold=threshold, row_fallback=row_fallback)
         finally:
             print("程序执行完毕。")
         sys.exit(EXIT_OK)

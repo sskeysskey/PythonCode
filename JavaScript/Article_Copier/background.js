@@ -3241,37 +3241,45 @@ function extractAndCopy() {
   // Washington Post 处理
   // ==========================================
   else if (window.location.hostname.includes("washingtonpost.com")) {
-    // ① 先取最可能的文章容器，fallback 到 body
-    const container = document.querySelector('article') || document.body;
+    // ① 找出所有文章容器：新版是 main 下的多个 <article>（信息流），旧版只有一个
+    const articleEls = Array.from(document.querySelectorAll('main article'));
+    const scopes = articleEls.length
+      ? articleEls
+      : [document.querySelector('article') || document.body];
 
-    // 1. 提取正文：
-    // 【修改点】：补充了 blockquote、blockquote p、cite 以及可能作为段落/小标题的其他常见元素
-    let paras = Array.from(container.querySelectorAll(
-      'p[data-contentid], ' +
-      'p[data-component="Text"], ' +
-      'p[data-apitype="text"], ' +
-      'p[data-testid="paragraph"], ' +
-      'p.article-content, ' +
-      'blockquote p, ' +               // ★ 新增：抓取 blockquote 里的 p
-      'blockquote:not(:has(p)), ' +     // ★ 新增：如果 blockquote 内部没有嵌套 p，直接抓取 blockquote 本身
-      'cite, ' +                       // ★ 补充：引用的来源/人名（如果有）
-      'h2[data-testid="article-header"], ' +
-      'h2, h3, ' +                     // ★ 补充：文章内的小标题
-      'ul[data-testid="list"] li, ' +
+    // ② 不再依赖 data-* 属性或哈希类名，改用语义标签
+    const WP_TEXT_SELECTOR = [
+      'h1', 'h2', 'h3',
+      'p',                                   // 所有段落（新版 p 没有 data 属性）
+      'blockquote:not(:has(p))',             // 没有嵌套 p 的引用块
+      'cite',
+      '.meteredContent li',                  // 新版列表
+      'ul[data-testid="list"] li',           // 旧版列表
       'ol[data-apitype="list"] li'
-    ));
+    ].join(', ');
 
-    // 过滤并拼接文本
-    textContent = paras
-      .map(p => {
-        // 排除掉广告容器内可能带有的文字、版权声明等干扰
-        if (p.closest('[data-component="Ad"], .component-ad')) return '';
-        return p.textContent.trim();
-      })
-      .filter(t => t && t.length > 1 && !/^[•@∞]/.test(t))
-      // 避免某些嵌套结构导致相同文字重复提取
-      .filter((t, idx, arr) => arr.indexOf(t) === idx)
-      .join('\n\n');
+    // ③ 需要排除的区域：图片/图说、侧栏、导航、页脚、广告
+    const WP_EXCLUDE =
+      'figure, figcaption, aside, nav, footer, [data-component="Ad"], .component-ad';
+
+    // 多篇文章之间的分隔符（不想要分隔线就改成 '\n\n'）
+    const ARTICLE_SEPARATOR = '\n\n————————————————\n\n';
+
+    const articleTexts = scopes.map(scope => {
+      const seen = new Set(); // 每篇文章内部去重，避免嵌套结构造成重复
+      return Array.from(scope.querySelectorAll(WP_TEXT_SELECTOR))
+        .filter(el => !el.closest(WP_EXCLUDE))
+        .map(el => el.textContent.replace(/\s+/g, ' ').trim())
+        .filter(t => t && t.length > 1 && !/^[•@∞]/.test(t))
+        .filter(t => {
+          if (seen.has(t)) return false;
+          seen.add(t);
+          return true;
+        })
+        .join('\n\n');
+    }).filter(Boolean);
+
+    textContent = articleTexts.join(ARTICLE_SEPARATOR);
 
     // 2. 提取并下载图片
     // 【核心修改点 1】：扩大搜索范围，直接使用 main 或 body，避免被 .grid-full-inner-standard 局限导致漏掉正文图片

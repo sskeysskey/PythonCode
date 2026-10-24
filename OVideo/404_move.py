@@ -66,10 +66,9 @@ def main():
             # 文件损坏或为空时，用空字典兜底
             blacklist_data = {}
 
-    # 与 write.py 的黑名单格式保持一致：{ url: [说明, url] }
     # 由于失败场景没有下载文件名，这里用一个说明字段占位；
     # read.py 只用 key（即 url）做判断，value 不影响过滤。
-    blacklist_data[extracted_url] = ["ignore/404 自动拉黑", extracted_url]
+    blacklist_data[extracted_url] = [extracted_url, "404 自动拉黑"]
 
     with open(BLACKLIST_FILE, 'w', encoding='utf-8') as f:
         json.dump(blacklist_data, f, ensure_ascii=False, indent=4)
