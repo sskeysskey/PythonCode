@@ -113,7 +113,7 @@ SITE_KEY      = "jjztq"                    # 用于 url/url1/url2 键中识别�
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 TARGET_COMPARE_CHANNEL = "shangxidq"          # 目标比对排序渠道
-ENABLE_GDEFUD_RULE     = True              # 新增渠道时是否启用 gdefud 仲裁
+ENABLE_shangxidq_RULE     = True              # 新增渠道时是否启用 shangxidq 仲裁
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN   = 1.0                      # 每条之间的基础间隔（会加随机抖动）
 
@@ -165,7 +165,7 @@ WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "猫与
                    "暗芝居 第十七季", "鬼之花嫁", "成长秀～向日葵马戏团～"]
 
 QIANGXIAN_KEYWORDS = ['TC', 'TS', '抢先', 'HC']
-TC_LOCK_NAMES = {"起义", "猛攻"}
+TC_LOCK_NAMES = {}
 
 EMPTY_VALUES = {"未知", "内详", "暂无", "/", "-", "无"}
 INVALID_EPISODE_NAMES = {"立即播放", "收藏", "播放", "下载"}
@@ -1159,7 +1159,12 @@ def remove_indices(playlist, indices):
         playlist.pop(i)
 
 def playlist_signature(pls):
-    return [(pl.get("name"), list((pl.get("episodes") or {}).items())) for pl in pls]
+    """与线路顺序无关的签名：按线路名排序，集数也按名称排序后比较"""
+    return sorted(
+        (pl.get("name") or "",
+         tuple(sorted((pl.get("episodes") or {}).items())))
+        for pl in pls
+    )
 
 def total_episode_count(pls):
     return sum(len(pl.get("episodes") or {}) for pl in pls)
@@ -1203,8 +1208,8 @@ def _ensure_site_url(existing, sub_url, force_new=False):
     existing.update(ordered)
     return new_key
 
-def resolve_insert_position_with_gdefud(playlist, new_episodes, default_insert_pos=None, group="", log=print):
-    """本站 ≥ gdefud 集数(选集数) 时，必须排在 gdefud 之前（同 shangxidq 规则）"""
+def resolve_insert_position_with_shangxidq(playlist, new_episodes, default_insert_pos=None, group="", log=print):
+    """本站 ≥ shangxidq 集数(选集数) 时，必须排在 shangxidq 之前（同 shangxidq 规则）"""
     target = len(playlist) if default_insert_pos is None else max(0, min(default_insert_pos, len(playlist)))
     g_idx = next((i for i, pl in enumerate(playlist)
                   if pl.get("name", "").strip().lower() == TARGET_COMPARE_CHANNEL.lower()), None)
@@ -1593,6 +1598,36 @@ def move_low_priority_lines_to_end(playlists):
         return playlists
     return normal + low
 
+# ============== 芒果线路置顶 ==============
+MANGO_KEYWORD = "芒果"   # 线路名包含该关键字即视为芒果渠道
+
+def move_mango_within_site(playlist):
+    """
+    只在本站线路内部把「芒果」线路置顶。
+    - 本站线路占据的下标位置保持不变，只调整它们之间的先后顺序
+    - 其他渠道（如 shangxidq 等）的位置完全不动
+    - 同为芒果的多条线路保持原相对顺序
+    原地修改 playlist，返回是否发生了变化。
+    """
+    site_idx = [i for i, pl in enumerate(playlist) if is_site_playlist(pl)]
+    if not site_idx:
+        return False
+
+    site = [playlist[i] for i in site_idx]
+    mango = [pl for pl in site if MANGO_KEYWORD in (pl.get("name") or "")]
+    if not mango:
+        return False
+
+    rest = [pl for pl in site if MANGO_KEYWORD not in (pl.get("name") or "")]
+    new_site = mango + rest
+    if all(a is b for a, b in zip(new_site, site)):
+        return False
+
+    # 按原来的下标位置回填，保证其他渠道的位置不变
+    for i, pl in zip(site_idx, new_site):
+        playlist[i] = pl
+    return True
+
 def parse_subpage(sub_url, default_name, default_info, list_img=""):
     """返回 (rec, meta)；meta 中含 year，不写入 JSON"""
     soup = BeautifulSoup(fetch(sub_url), "lxml")
@@ -1711,6 +1746,30 @@ def find_existing_global(data, name, sub_url, prefer_group=None, year="", log=pr
 
 
 # ============== 合并到已有记录 ==============
+# ============== 枪版 → 高清 升级检测 ==============
+QUALITY_RE = re.compile(r"^(HD|FHD|UHD|4K|1080P?|720P?|BD|蓝光|高清|超清)$", re.IGNORECASE)
+
+def extract_quality_label(playlists):
+    """从线路的集数名中找出画质标签，如 'HD'；找不到返回空串"""
+    for pl in playlists or []:
+        for ep in (pl.get("episodes") or {}):
+            ep_s = str(ep).strip()
+            if QUALITY_RE.match(ep_s):
+                return ep_s.upper()
+    return ""
+
+def refresh_date_to_today(old_date):
+    """
+    把 date 的日期部分换成今天，保留后缀（如地区）：
+      '2026-09-26(美国)' -> '2026-10-27(美国)'
+      '2026'             -> '2026-10-27'
+      ''                 -> '2026-10-27'
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    old_date = old_date or ""
+    suffix = re.sub(r"^\d{4}(?:-\d{2}(?:-\d{2})?)?", "", old_date)
+    return today + suffix
+
 def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=False):
     """返回 (status, changed)；force_add=True 时忽略「该分类不允许追加渠道」限制（白名单/用户强制）"""
     new_pls = rec.get("playlist", [])
@@ -1719,6 +1778,8 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
     site_idx = site_playlist_indices(playlist)
     site_set = set(site_idx)
     old_site = [playlist[i] for i in site_idx]
+    # 【新增】合并前 jjztq 线路是否含枪版关键字
+    old_site_has_tc = any(has_tc_keyword(ep) for pl in old_site for ep in (pl.get("episodes") or {}))
     others = [(i, pl) for i, pl in enumerate(playlist) if i not in site_set]
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1775,8 +1836,8 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
                 pos = best_i + 1 if best_i >= 0 else len(playlist)
         else:
             pos = len(playlist)
-        if ENABLE_GDEFUD_RULE:
-            pos = resolve_insert_position_with_gdefud(playlist, best_new_eps, pos, group, log)
+        if ENABLE_shangxidq_RULE:
+            pos = resolve_insert_position_with_shangxidq(playlist, best_new_eps, pos, group, log)
         playlist[pos:pos] = copy.deepcopy(new_pls)
         # 【修复】已存在本站 url 键时复用，避免重复写出指向同一地址的 urlN
         key = _ensure_site_url(existing, sub_url)
@@ -1805,6 +1866,30 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
             existing["image"] = local
             fields_changed = True
             log(f"      [字段更新] 补充封面: {local}")
+
+    # —— 【新增】枪版 → 高清：本站线路不再含 TC/TS/HC 等关键字时，更新 info 和 date ——
+    cur_site = [playlist[i] for i in site_playlist_indices(playlist)]
+    cur_site_has_tc = any(has_tc_keyword(ep) for pl in cur_site for ep in (pl.get("episodes") or {}))
+    if old_site_has_tc and cur_site and not cur_site_has_tc:
+        label = extract_quality_label(cur_site) or extract_quality_label(new_pls)
+        if label:
+            new_info = f"更新至{label}"
+            if existing.get("info") != new_info:
+                log(f"      [枪版→高清] info「{existing.get('info', '')}」 -> 「{new_info}」")
+                existing["info"] = new_info
+                info_changed = True
+
+        old_date = existing.get("date", "")
+        new_date = refresh_date_to_today(old_date)
+        if new_date != old_date:
+            log(f"      [枪版→高清] date「{old_date}」 -> 「{new_date}」")
+            existing["date"] = new_date
+            fields_changed = True
+
+    # —— 本站线路内部芒果置顶（放在所有排序逻辑之后）——
+    if move_mango_within_site(playlist):
+        playlist_changed = True
+        log(f"      [排序调整] {SITE_KEY} 内「{MANGO_KEYWORD}」线路已置顶")
 
     changed = playlist_changed or info_changed or fields_changed or url_added
     if status == "decreased":
@@ -1947,6 +2032,7 @@ def process_detail(data, url, group, list_name="", list_info="", list_img="",
             if ep_cnt > 0:
                 best = max(new_pls, key=lambda p: len(p["episodes"]))["episodes"]
                 rec["info"] = make_episode_info(ep_cnt, get_episode_unit(group, best, rec.get("info", "")))
+        move_mango_within_site(rec["playlist"])
         data.setdefault(group, []).append(rec)
         if not save_json(data):
             print("    ⚠️ 本条未能写盘（见上方提示）")

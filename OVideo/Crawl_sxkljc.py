@@ -126,7 +126,7 @@ PLAYLIST_FALLBACK_FIRST = False            # True：找不到「云播资源」�
 JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 TARGET_COMPARE_CHANNEL = "shangxidq"       # 目标比对排序渠道
-ENABLE_GDEFUD_RULE     = True              # 新增渠道时是否启用 gdefud 仲裁
+ENABLE_shangxidq_RULE     = True              # 新增渠道时是否启用 shangxidq 仲裁
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN   = 1.0                      # 每条之间的基础间隔（会加随机抖动）
 
@@ -1223,7 +1223,7 @@ def _ensure_site_url(existing, sub_url, force_new=False):
     existing.update(ordered)
     return new_key
 
-def resolve_insert_position_with_gdefud(playlist, new_episodes, default_insert_pos=None, group="", log=print):
+def resolve_insert_position_with_shangxidq(playlist, new_episodes, default_insert_pos=None, group="", log=print):
     target = len(playlist) if default_insert_pos is None else max(0, min(default_insert_pos, len(playlist)))
     g_idx = next((i for i, pl in enumerate(playlist)
                   if pl.get("name", "").strip().lower() == TARGET_COMPARE_CHANNEL.lower()), None)
@@ -2010,8 +2010,8 @@ def merge_into_existing(existing, rec, sub_url, group, log=print):
                 pos = best_i + 1 if best_i >= 0 else len(playlist)
         else:
             pos = len(playlist)
-        if ENABLE_GDEFUD_RULE:
-            pos = resolve_insert_position_with_gdefud(playlist, best_new_eps, pos, group, log)
+        if ENABLE_shangxidq_RULE:
+            pos = resolve_insert_position_with_shangxidq(playlist, best_new_eps, pos, group, log)
         playlist[pos:pos] = copy.deepcopy(new_pls)
         key = _ensure_site_url(existing, sub_url, force_new=True)
         url_added = True

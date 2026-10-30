@@ -289,9 +289,38 @@ function downloadResult(data, filename) {
 }
 
 // ================== 命令入口：自动判断页面类型 ==================
+// 带重试：页面还在加载/跳转时 executeScript 会报错，间隔 1.5s 重试，最多 3 次；
+// 仍失败则下载一个 type:"error" 的 JSON，让 Python 立刻知道（而不是干等）。
+function runScrape(tab, func, filename, attempt = 1) {
+  chrome.scripting.executeScript(
+    { target: { tabId: tab.id }, func: func },
+    (results) => {
+      const err = chrome.runtime.lastError;
+      const result = results && results[0] && results[0].result;
+      if (err || !result) {
+        const msg = err ? err.message : 'empty result';
+        console.warn(`抓取失败(第${attempt}次)：`, msg);
+        if (attempt < 3) {
+          setTimeout(() => runScrape(tab, func, filename, attempt + 1), 1500);
+          return;
+        }
+        downloadResult({
+          type: 'error',
+          error: String(msg),
+          url: tab.url || '',
+          grabbed_at: new Date().toISOString()
+        }, filename);
+        return;
+      }
+      downloadResult(result, filename);
+    }
+  );
+}
+
 chrome.commands.onCommand.addListener((command) => {
   if (command !== 'scrape-page') return;
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  // lastFocusedWindow 比 currentWindow 在 Service Worker 里更可靠
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
     if (!tabs || !tabs.length) return;
     const tab = tabs[0];
     const url = tab.url || '';
@@ -308,18 +337,6 @@ chrome.commands.onCommand.addListener((command) => {
       console.warn('当前页面既不是豆瓣也不是IMDb，忽略。URL=', url);
       return;
     }
-
-    chrome.scripting.executeScript(
-      { target: { tabId: tab.id }, func: func },
-      (results) => {
-        if (chrome.runtime.lastError) {
-          console.error(chrome.runtime.lastError);
-          return;
-        }
-        if (results && results[0] && results[0].result) {
-          downloadResult(results[0].result, filename);
-        }
-      }
-    );
+    runScrape(tab, func, filename);
   });
 });

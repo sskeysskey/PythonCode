@@ -116,7 +116,6 @@ JSON_PATH     = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.jso
 IMG_DIR       = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image"
 PLAYLIST_NAME = "shangxidq"
 SITE_KEY      = "shangxidq"
-TARGET_COMPARE_CHANNEL = "gdefud"  # 目标比对排序渠道
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN  = 1.0
 
@@ -1069,39 +1068,6 @@ def get_effective_episode_count(episodes, group=""):
             return len(episodes)
     return num if num > 0 else len(episodes)
 
-def resolve_insert_position_with_gdefud(playlist, new_episodes, default_insert_pos=None, group="", log=print):
-    """
-    针对「项目已有，新增 shangxidq 渠道」的核心排序仲裁逻辑：
-    如果存在 gdefud 渠道：
-    - 除非 shangxidq 集数 < gdefud 集数，
-    - 否则（大于或等于的情况），都必须将 shangxidq 放置在 gdefud 之前。
-    """
-    if default_insert_pos is None:
-        target_pos = len(playlist)
-    else:
-        target_pos = max(0, min(default_insert_pos, len(playlist)))
-
-    gdefud_idx = next(
-        (i for i, pl in enumerate(playlist) if pl.get("name", "").strip().lower() == TARGET_COMPARE_CHANNEL.lower()),
-        None
-    )
-
-    if gdefud_idx is not None:
-        gdefud_eps = playlist[gdefud_idx].get("episodes", {})
-        cnt_gdefud = get_effective_episode_count(gdefud_eps, group=group)
-        cnt_site = get_effective_episode_count(new_episodes, group=group)
-
-        if cnt_site >= cnt_gdefud:
-            if target_pos > gdefud_idx:
-                log(f"      🛡️ [渠道优先级仲裁] 检测到已有 {TARGET_COMPARE_CHANNEL}(集数/选集:{cnt_gdefud})，{SITE_KEY}(集数/选集:{cnt_site}) >= {TARGET_COMPARE_CHANNEL}，将插入位置由第 {target_pos + 1} 位提前至第 {gdefud_idx + 1} 位 (排在 {TARGET_COMPARE_CHANNEL} 之前)")
-                target_pos = gdefud_idx
-            else:
-                log(f"      🛡️ [渠道优先级仲裁] 检测到已有 {TARGET_COMPARE_CHANNEL}(集数/选集:{cnt_gdefud})，{SITE_KEY}(集数/选集:{cnt_site}) 目标位置(第 {target_pos + 1} 位)已在 {TARGET_COMPARE_CHANNEL}(第 {gdefud_idx + 1} 位)之前，符合规则")
-        else:
-            log(f"      🛡️ [渠道优先级仲裁] 检测到已有 {TARGET_COMPARE_CHANNEL}(集数/选集:{cnt_gdefud})，{SITE_KEY}(集数/选集:{cnt_site}) < {TARGET_COMPARE_CHANNEL}，保持后置或默认顺序 (第 {target_pos + 1} 位)")
-
-    return target_pos
-
 def _url_keys_sorted(existing):
     return sorted(
         [k for k in existing.keys() if k == "url" or re.match(r"^url\d+$", k)],
@@ -1139,12 +1105,10 @@ def _ensure_site_url(existing, sub_url, force_new=False):
     return new_url_key
 
 def append_site_channel(existing, new_episodes, sub_url, group="", log=print):
-    """新增 shangxidq 渠道：智能结合 gdefud 规则计算最佳插入位置"""
+    """新增 shangxidq 渠道：直接追加到 playlist 末尾"""
     new_url_key = _ensure_site_url(existing, sub_url, force_new=True)
     playlist = existing.setdefault("playlist", [])
-    insert_pos = resolve_insert_position_with_gdefud(
-        playlist, new_episodes, default_insert_pos=len(playlist), group=group, log=log
-    )
+    insert_pos = len(playlist)
     playlist.insert(insert_pos, {"name": PLAYLIST_NAME, "episodes": new_episodes})
     return new_url_key, insert_pos
 
@@ -1737,16 +1701,7 @@ def process_existing_record(existing, new_episodes, sub_url, rec, matched_group,
     else:
         new_url_key = _ensure_site_url(existing, sub_url, force_new=True)
         new_pl = {"name": PLAYLIST_NAME, "episodes": new_episodes}
-        target_pos = insert_playlist_by_priority(playlist, new_pl)
-        # 兼容 gdefud 规则保护
-        final_pos = resolve_insert_position_with_gdefud(
-            playlist, new_episodes, default_insert_pos=target_pos, group=matched_group, log=log
-        )
-        if final_pos != target_pos:
-            playlist.insert(final_pos, playlist.pop(target_pos))
-            pos = final_pos
-        else:
-            pos = target_pos
+        pos = insert_playlist_by_priority(playlist, new_pl)
         log(f"      [新增渠道] 已将 {SITE_KEY} 写入 {new_url_key}，并把播放源插入至第 {pos + 1} 位")
         update_time_if_needed()
         return "channel_added"
@@ -1885,13 +1840,6 @@ def process_list_page(data, list_url, group, page_name):
                         promote = True
                         insert_at = idx_global_max + 1 if idx_global_max >= 0 else 0
                         buf.append(f"    [{matched_group}] {SITE_KEY}({new_max}) < 其他最大({global_max})，目标下标 {insert_at}")
-
-                # 【核心扩展】：如果是新增渠道，在 Drama/Anime 晋级中优先受 gdefud 规则保护
-                if promote and (not has_site_channel):
-                    insert_at = resolve_insert_position_with_gdefud(
-                        existing.get("playlist", []), new_eps, default_insert_pos=insert_at,
-                        group=matched_group, log=buf.append
-                    )
 
                 if promote:
                     playlist = existing.setdefault("playlist", [])

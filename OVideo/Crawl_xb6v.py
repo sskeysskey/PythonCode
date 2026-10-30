@@ -97,7 +97,7 @@ _LOAD_OK = False                 # 是否成功加载了初始数据（未成功
 _LAST_SIG = None                 # 上次读/写后主文件的 (mtime_ns, size)，用于检测外部并发修改
 _LOCK_FH = None
 
-BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版", "璀璨之城"]
+BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版", "璀璨之城", "宠它", "爱的恋习生"]
 WHITELIST_NAMES = [
     "镖人 第二季"
 ]
@@ -535,27 +535,37 @@ def extract_year(*candidates):
             return m.group(0)
     return ""
 
+FULL_DATE_PATTERN = re.compile(r"(?:19|20)\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}")
+
+def is_full_date(s):
+    """是否包含完整的 年-月-日（允许后面带 日 或 (地区) 等后缀）"""
+    return bool(s) and bool(FULL_DATE_PATTERN.search(str(s)))
+
 def should_update_date(old_date, new_date):
     """
-    判断是否应该用 new_date 替换 old_date：
-    1. new_date 为空，绝不更新。
-    2. 原 old_date 为空，直接填入。
-    3. 分别提取两者的「最前面4位年份」：
-       - 新年份 > 旧年份：允许更新
-       - 新年份 < 旧年份：拒绝更新
-       - 新年份 == 旧年份：仅在新字串长度严格大于旧字串时更新
-    4. 若无法提取有效年份，保守处理：已有旧数据则不覆盖。
+    判断是否应该用 new_date 替换 old_date。
+    原则一：旧值已是完整年月日，新值不完整（如 '2027(未定)'、'2026-09'）→ 拒绝
+    原则二：新值字符数少于旧值 → 拒绝
+    其余：按年份比较；年份相同时仅在新值更长时才更新
     """
-    if not new_date:
+    old_str = str(old_date or "").strip()
+    new_str = str(new_date or "").strip()
+
+    if not new_str:
         return False
-    if not old_date:
+    if not old_str:
         return True
 
-    old_str = str(old_date).strip()
-    new_str = str(new_date).strip()
+    # 原则一：完整 → 不完整，拒绝
+    if is_full_date(old_str) and not is_full_date(new_str):
+        return False
 
-    old_m = re.search(r'((?:19|20)\d{2})', old_str) or re.search(r'(\d{4})', old_str)
-    new_m = re.search(r'((?:19|20)\d{2})', new_str) or re.search(r'(\d{4})', new_str)
+    # 原则二：新内容字符数少于旧内容，拒绝
+    if len(new_str) < len(old_str):
+        return False
+
+    old_m = re.search(r"((?:19|20)\d{2})", old_str)
+    new_m = re.search(r"((?:19|20)\d{2})", new_str)
 
     if old_m and new_m:
         old_year = int(old_m.group(1))
@@ -564,8 +574,10 @@ def should_update_date(old_date, new_date):
             return True
         if new_year < old_year:
             return False
+        # 同年：只有严格更长才更新
         return len(new_str) > len(old_str)
 
+    # 无法提取年份：保守处理，已有旧值则不覆盖
     return False
 
 # ============== 播放列表提取 ==============
@@ -1155,11 +1167,41 @@ def has_own_channel(item):
             return True
     return False
 
+_CN_DIGIT_MAP = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                 "六": 6, "七": 7, "八": 8, "九": 9}
+
+def _cn_num_to_int(s):
+    """把 一~九十九 的中文数字转为整数，无法识别返回 0"""
+    if not s:
+        return 0
+    if s == "十":
+        return 10
+    if "十" in s:
+        left, _, right = s.partition("十")
+        tens = _CN_DIGIT_MAP.get(left, 1) if left else 1
+        ones = _CN_DIGIT_MAP.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return _CN_DIGIT_MAP.get(s, 0)
+
+def _canonical_season(text):
+    """
+    统一季数写法：
+      三季 / 第三季 / 第3季 / 三季全 / 第三季全  ->  第3季
+    注意：只改写季数，不丢弃季数本身，第二季与第三季仍然不同。
+    """
+    def _repl(m):
+        raw = m.group(1)
+        n = int(raw) if raw.isdigit() else _cn_num_to_int(raw)
+        return f"第{n}季" if n > 0 else m.group(0)
+
+    return re.sub(r"第?([0-9]+|[一二三四五六七八九十]+)季(?:全)?", _repl, text)
+
 def _normalize_name(s):
     if not s:
         return ""
     s = s.translate(str.maketrans("：！？，（）【】", ":!?,()[]"))
-    return re.sub(r"\s+", "", s).strip().lower()
+    s = re.sub(r"\s+", "", s).strip().lower()
+    return _canonical_season(s)
 
 def clean_season_one(s):
     return re.sub(r"(?:第[一1]季)$", "", s or "").strip()
@@ -1378,7 +1420,7 @@ def insert_6vdy_playlist(playlist, new_pl, existing):
         print(f"      [排序规则] 6vdy 集数 {vdy_cnt} > 其他渠道最大集数 {max_other}，置顶第一位")
         return
 
-    target_names = {"shangxidq", "gdefud", "huxitech"}
+    target_names = {"shangxidq"}
     target_indexes = [idx for idx, item in enumerate(playlist) if item.get("name", "") in target_names]
 
     if target_indexes:

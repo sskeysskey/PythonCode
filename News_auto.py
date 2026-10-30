@@ -165,6 +165,8 @@ PROVIDERS = {
             "related": ("doubao_related.png", 0.80, True),
             "wrong":   ("doubao_wrong.png",   0.88, False),
             # "upload_fail": ("doubao_upload_fail.png", 0.92, False),
+            # 新增：锚点模板（找不到时会一直滚屏）
+            "regenerate": ("doubao_regenerate.png", 0.88, True),
         },
         "check_refusal_text": True,
         "check_offtask_text": False,
@@ -176,6 +178,10 @@ PROVIDERS = {
         "upload_fail_transient_ok": True,
         "model_switch_enabled": False,
         "slider_verify": {"enabled": False},
+        # 新增：锚点配置
+        "anchor_key": "regenerate",                 # 先找到它才继续
+        "anchor_follow_keys": ("related", "copy"),  # 找到锚点后，等待这两者中任意一个出现
+        "anchor_follow_timeout": 3.0,               # 等待 related/copy 的最长秒数
     },
 }
 
@@ -368,6 +374,20 @@ def wait_for(templates, key, timeout, interval=0.4):
             return None, None
         sleep(interval)
 
+def wait_for_any(templates, keys, timeout, interval=0.4):
+    """等待多个模板中任意一个出现，返回 (命中的key, location, shape)。"""
+    deadline = time.time() + timeout
+    while True:
+        screen = capture_screen()
+        for key in keys:
+            if not template_available(templates, key):
+                continue
+            loc, shape = find(templates, key, screen=screen)
+            if loc:
+                return key, loc, shape
+        if time.time() >= deadline:
+            return None, None, None
+        sleep(interval)
 
 def _normalize_text(text: str) -> str:
     return re.sub(r'\s+', '', text or "")
@@ -853,8 +873,29 @@ def main():
                 sleep(5)
                 continue
 
-        # ---- 4. Copy 按钮 ----
-        location, shape = copy_loc, copy_shape
+        # ---- 4. Copy 按钮 / 锚点 ----
+        anchor_key = cfg.get("anchor_key")
+        if anchor_key:
+            # 4a. 没有锚点 -> 继续滚屏
+            anchor_loc, _ = find(templates, anchor_key, screen=screen)
+            if not anchor_loc:
+                print(f"未找到 {anchor_key}，继续滚屏...")
+                scroll_down(cfg)
+                continue
+
+            # 4b. 找到锚点 -> 再找 related 或 copy
+            print(f"找到 {anchor_key}，开始查找 related/copy...")
+            hit_key, location, shape = wait_for_any(
+                templates,
+                cfg.get("anchor_follow_keys", ("related", "copy")),
+                float(cfg.get("anchor_follow_timeout", 3.0)),
+            )
+            if not hit_key:
+                print("找到锚点后未找到 related/copy，继续滚屏...")
+                scroll_down(cfg)
+                continue
+        else:
+            location, shape = copy_loc, copy_shape
 
         if not location:
             if check_wrong_confirmed(templates):

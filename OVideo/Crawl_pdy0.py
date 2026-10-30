@@ -815,9 +815,9 @@ TASKS = [
             {"year": "2026",
              "categories": {
                  "Movie": {"id": 1, "enabled": True, "pages": 1, "skip_score_filter": True},
-                 "Drama": {"id": 2, "enabled": True, "pages": 0},
+                 "Drama": {"id": 2, "enabled": True, "pages": 1},
                  "Show": {"id": 3, "enabled": True, "pages": 0},
-                 "Anime": {"id": 4, "enabled": True, "pages": 0}
+                 "Anime": {"id": 4, "enabled": True, "pages": 1}
              }
              },
         ]

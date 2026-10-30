@@ -271,8 +271,10 @@ class SliderConfig:
     velocity_skew: Range = (0.70, 0.95)    # <1：速度峰值靠前（人手特征）
     y_jitter: float = 1.2
     y_drift: float = 2.5
-    mid_pause_prob: float = 0.25
-    mid_pause: Range = (0.04, 0.16)
+    # mid_pause_prob: float = 0.25
+    # mid_pause: Range = (0.04, 0.16)
+    mid_pause_prob: float = 0.55
+    mid_pause: Range = (0.12, 0.35)
     settle_back: Tuple[int, int] = (2, 8)
     settle_back_prob: float = 0.70
     post_release_drift_prob: float = 0.60

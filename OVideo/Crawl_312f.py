@@ -117,9 +117,9 @@ SLEEP_BETWEEN   = 1.0
 # 每个分类默认抓前 N 页；命令行可覆盖：movie=N drama=N show=N anime=N，或 pages=N（全部统一）
 PAGES_BY_GROUP = {
     "Movie": 1,
-    "Drama": 2,
-    "Show":  2,
-    "Anime": 2,
+    "Drama": 1,
+    "Show":  1,
+    "Anime": 1,
 }
 DEFAULT_PAGES = 1          # 未在上表中配置的分类抓几页
 ONLY_GROUPS = set()        # 命令行 only=anime,drama 填充；为空表示全部分类都跑
@@ -219,7 +219,7 @@ BLACKLIST_NAMES = [
     "天堂之剑", "定海神针：九尾三世劫", "机甲少女破时空战记", "永恒和一日",
     "无名传奇", "魔彩王国历险记", "阿松与阿暖", "欲望的陷阱", "轻松熊", "家1",
     "人生赢家", "判决", "判决墨西哥剧", "后门", "校规101", "校规", "无人区",
-    "第二盘",
+    "第二盘", "别班 第二季",
 ]
 BLACKLIST_URLS = []
 WHITELIST_NAMES = [
@@ -1249,8 +1249,8 @@ def make_series_info(episodes, group, old_info=""):
         return f"更新至{n}期"
     return make_episode_info(n, unit)
 
-def resolve_insert_position_with_gdefud(playlist, new_episodes, default_insert_pos=None, group="", log=print):
-    """新增渠道时：本站集数 >= gdefud 集数，则必须排在 gdefud 之前"""
+def resolve_insert_position_with_shangxidq(playlist, new_episodes, default_insert_pos=None, group="", log=print):
+    """新增渠道时：本站集数 >= shangxidq 集数，则必须排在 shangxidq 之前"""
     target_pos = len(playlist) if default_insert_pos is None else max(0, min(default_insert_pos, len(playlist)))
     gidx = next((i for i, pl in enumerate(playlist)
                  if str(pl.get("name", "")).strip().lower() == TARGET_COMPARE_CHANNEL.lower()), None)
@@ -1886,8 +1886,8 @@ def merge_into_existing(existing, rec, sub_url, matched_group, log):
         target = own_anchor
     else:
         target = len(others)
-    if own_anchor is None:     # 新增渠道才走 gdefud 仲裁
-        target = resolve_insert_position_with_gdefud(others, best_new, default_insert_pos=target,
+    if own_anchor is None:     # 新增渠道才走 shangxidq 仲裁
+        target = resolve_insert_position_with_shangxidq(others, best_new, default_insert_pos=target,
                                                      group=matched_group, log=log)
     target = max(0, min(target, len(others)))
     existing["playlist"] = others[:target] + merged + others[target:]
