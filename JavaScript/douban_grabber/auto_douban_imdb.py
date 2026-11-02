@@ -32,6 +32,7 @@ import sys
 import time
 import json
 import glob
+import urllib.request
 import unicodedata
 import datetime
 import argparse
@@ -152,7 +153,17 @@ NAME_FALLBACK_ENABLED = True                                   # 总开关
 NAME_FALLBACK_LOG     = Path(__file__).resolve().parent / 'name_fallback.log'
 NAME_FALLBACK_NOTIFY  = True                                   # macOS 通知中心弹窗提醒
 
+# —— 海报图片补抓 ——
+COVER_DIR         = Path('/Users/yanzhang/Coding/LocalServer/Resources/OVideo/cover_image')
+COVER_FILL_ENABLED = True
+COVER_REFERER     = 'https://movie.douban.com/'
+COVER_UA          = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                     '(KHTML, like Gecko) Chrome/124.0 Safari/537.36')
+RE_BAD_FILENAME   = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
 pyautogui.FAILSAFE = True
+# —— 标点宽松匹配：忽略标点/符号后相等也视为同一名字（需求：「我们要火啦!!」≈「我们要火啦.!!」）——
+LOOSE_TITLE_MATCH = True
 
 EXIT_OK          = 0
 EXIT_DOUBAN_FAIL = 1
@@ -407,6 +418,11 @@ def norm_title(s) -> str:
     t = re.sub(r'\s+', ' ', t).strip()
     return t.casefold()
 
+def loose_key(s) -> str:
+    """归一化后去掉所有标点/符号/空白，只保留文字和数字。
+       '我们要火啦.!!' -> '我们要火啦'；'我们要火啦!!' -> '我们要火啦'"""
+    t = norm_title(s)
+    return re.sub(r'[\W_]+', '', t)
 
 def _is_boundary(ch: str) -> bool:
     """名字后面紧跟的字符：只要不是字母/汉字/假名等『文字』，就算边界（空格、冒号、数字、各种符号）。"""
@@ -415,9 +431,10 @@ def _is_boundary(ch: str) -> bool:
 
 def title_match_level(candidate, query, allow_reverse=False):
     """
-    0 = 完全一致
-    1 = 候选以 query 开头，且后面紧跟边界字符（如「火线 第一季」「火线：xx」「火线2」）
-    2 = （仅 allow_reverse）query 以候选开头 + 边界（如 query「The Wire Season 1」vs 标题「The Wire」）
+    0   = 完全一致
+    0.5 = 去掉标点符号后一致（如「我们要火啦.!!」≈「我们要火啦!!」）
+    1   = 候选以 query 开头，且后面紧跟边界字符（如「火线 第一季」「火线2」）
+    2   = （仅 allow_reverse）query 以候选开头 + 边界
     None = 不匹配
     """
     c, q = norm_title(candidate), norm_title(query)
@@ -425,6 +442,12 @@ def title_match_level(candidate, query, allow_reverse=False):
         return None
     if c == q:
         return 0
+
+    if LOOSE_TITLE_MATCH:
+        lc, lq = loose_key(candidate), loose_key(query)
+        if lc and lc == lq:
+            return 0.5
+
     if c.startswith(q) and _is_boundary(c[len(q)]):
         return 1
     if allow_reverse and q.startswith(c) and _is_boundary(q[len(c)]):
@@ -849,6 +872,88 @@ def update_douban(item, scraped) -> bool:
 
     print("  └──────────────────────────────────────")
     return changed
+
+def safe_filename(s) -> str:
+    t = RE_BAD_FILENAME.sub('_', str(s or '')).strip().strip('.')
+    t = re.sub(r'\s+', ' ', t)
+    return t[:120] or 'cover'
+
+
+def download_cover(img_url, base_name=None, sid='') -> str:
+    """下载海报到 COVER_DIR，文件名取自图片 URL（如 p2937098552.webp）。返回文件名。"""
+    COVER_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 从 URL 取文件名：.../s_ratio_poster/public/p2937098552.webp → p2937098552.webp
+    fname = os.path.basename(urlparse(img_url).path)
+    stem, ext = os.path.splitext(fname)
+    ext = ext.lower()
+    if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+        ext = '.jpg'
+    stem = safe_filename(stem)
+    if not stem or stem == 'cover':
+        raise RuntimeError(f'无法从地址解析文件名：{img_url}')
+    fname = f'{stem}{ext}'
+    dest = COVER_DIR / fname
+
+    # 同名文件已存在：同一张海报已下载过，直接复用
+    if dest.exists():
+        return fname
+
+    req = urllib.request.Request(img_url, headers={
+        'User-Agent': COVER_UA,
+        'Referer': COVER_REFERER,
+    })
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        content = resp.read()
+    if len(content) < 1024:
+        raise RuntimeError(f'返回内容过小（{len(content)} 字节），疑似错误页')
+
+    tmp = dest.parent / (dest.name + '.part')
+    tmp.write_bytes(content)
+    os.replace(tmp, dest)
+    return fname
+
+
+def fill_cover_if_empty(data, item, douban_scraped) -> bool:
+    """仅当 item['image'] 为空时补抓海报并写回 json['image']（保持原字段顺序）。"""
+    if not COVER_FILL_ENABLED:
+        return False
+
+    print("  ┌────────────── 海报图片 ──────────────")
+    cur = str(item.get('image') or '').strip()
+    if cur:
+        print(f"  │ image 已有值：{cur}，跳过")
+        print("  └──────────────────────────────────────")
+        return False
+
+    url = str(douban_scraped.get('image_url') or '').strip()
+    if not url:
+        print("  │ 豆瓣未抓到海报地址（请确认 background.js 已更新并重新加载插件）")
+        print("  └──────────────────────────────────────")
+        return False
+
+    m = re.search(r'/subject/(\d+)', str(douban_scraped.get('url', '')))
+    sid = m.group(1) if m else ''
+    raw_name = str(item.get('name') or '').strip()
+
+    try:
+        fname = download_cover(url, raw_name, sid)
+    except Exception as e:
+        print(f"  │ 下载失败：{e}")
+        print("  └──────────────────────────────────────")
+        return False
+
+    # 键已存在 → 原地赋值，位置不变；键不存在 → 插到 name 后面
+    if 'image' in item:
+        item['image'] = fname
+    else:
+        insert_key_after(item, after_key='name', new_key='image', new_value=fname)
+
+    save_json(OVIDEOS_JSON, data)
+    print(f"  │ 海报已保存：{COVER_DIR / fname}")
+    print(f"  │ image : 空 -> {fname}")
+    print("  └──────────────────────────────────────")
+    return True
 
 
 def update_imdb(item, scraped, expected_id='') -> bool:
@@ -2315,6 +2420,8 @@ def main() -> int:
         print("💾 豆瓣数据已写回 OVideos.json。")
     else:
         print("豆瓣无有效变化，未写回。")
+
+    fill_cover_if_empty(data, item, douban_scraped)   # ← 新增：image 为空时补抓海报
 
     # ========== 第二阶段：IMDb ==========
     imdb_scraped = None

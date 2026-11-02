@@ -26,6 +26,7 @@ import sys
 import time
 import shutil
 import argparse
+import re, sqlite3, tempfile
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -59,6 +60,21 @@ SCROLL_CFG = {
     "maxMs": 120000,      # 单页滚动最长时间
     "imgWaitMs": 8000,    # 滚到底后等待图片加载的最长时间
 }
+
+# ---- FT 插件二次探测 ----
+FT_PROBE_CFG = {
+    "clipWaitS": 12,    # 按键后等待剪贴板被插件写入的最长秒数
+    "dlGraceS": 3,      # 按键后额外等待，让插件的下载请求进入 Chrome 下载列表
+    "dlWaitS": 90,      # 等待下载完成的最长秒数
+}
+CHROME_HISTORY = os.path.expanduser(
+    "~/Library/Application Support/Google/Chrome/Default/History")   # 多个 profile 时改这里
+DOWNLOADS_DIR = os.path.expanduser("~/Downloads")
+WEBKIT_OFFSET_US = 11644473600 * 1_000_000   # Chrome 时间戳（1601 年起的微秒）与 Unix 时间的偏移
+AS_OPTION_X = 'tell application "System Events" to key code 7 using option down'   # key code 7 = X
+
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+WORD_RE = re.compile(r"[A-Za-z0-9\u00C0-\u024F]+(?:['\u2019\-][A-Za-z0-9\u00C0-\u024F]+)*")
 
 # ---- 图集页（按"是否滚到最后一张图"判断，而非字数）----
 # (域名, 路径前缀)：域名匹配规则与 TARGET_DOMAINS 相同；路径为该前缀本身或以 "前缀/" 开头
@@ -779,6 +795,95 @@ def append_short(url, title, desc, method):
     os.replace(tmp, SHORT_HTML)
     return True
 
+def is_ft(url):
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return _host_match(host, "ft.com")
+
+
+def count_text(text):
+    """与页面 JS 的计数规则一致：中日韩按字符，其余按单词。"""
+    cjk = len(CJK_RE.findall(text))
+    words = len(WORD_RE.findall(CJK_RE.sub(" ", text)))
+    return {"cjk": cjk, "words": words}
+
+
+def now_webkit_us():
+    return int(time.time() * 1_000_000) + WEBKIT_OFFSET_US
+
+
+def query_chrome_downloads(since_us):
+    """读取 Chrome 下载记录。复制 History（含 WAL）后再读，避免与 Chrome 抢锁。
+    state: 0=进行中 1=完成 2=取消 3=中断（Chrome 内部枚举）"""
+    tmp = tempfile.mkdtemp(prefix="nas_hist_")
+    try:
+        dst = os.path.join(tmp, "History")
+        shutil.copy2(CHROME_HISTORY, dst)
+        if os.path.exists(CHROME_HISTORY + "-wal"):
+            shutil.copy2(CHROME_HISTORY + "-wal", dst + "-wal")
+        con = sqlite3.connect(dst)
+        try:
+            rows = con.execute(
+                "SELECT state, target_path, current_path FROM downloads WHERE start_time >= ?",
+                (since_us,)).fetchall()
+        finally:
+            con.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # 只关心 Downloads 目录下的记录
+    return [r for r in rows if (r[1] or "").startswith(DOWNLOADS_DIR + "/")
+            or (r[2] or "").startswith(DOWNLOADS_DIR + "/")]
+
+
+def wait_and_clean_downloads(since_us):
+    """等待本次探测的下载全部结束，然后只删除这些记录对应的文件。"""
+    time.sleep(FT_PROBE_CFG["dlGraceS"])
+    end = time.time() + FT_PROBE_CFG["dlWaitS"]
+    while True:
+        rows = query_chrome_downloads(since_us)
+        busy = [r for r in rows if r[0] == 0]
+        if not busy or time.time() > end or stop_requested():
+            break
+        time.sleep(1)
+    if busy:
+        log.warning("  仍有 %d 个下载未完成，这些文件暂不删除", len(busy))
+    for state, target, cur in rows:
+        if state == 0:          # 还在下载，跳过
+            continue
+        for p in {target, cur}:
+            if p and p.startswith(DOWNLOADS_DIR + "/") and os.path.isfile(p):
+                os.remove(p)
+                log.info("  已删除探测副产品: %s", os.path.basename(p))
+
+
+def ft_probe(t):
+    """对当前 FT tab 按 option+X，用剪贴板文本判字数。返回 (是否达标, 说明)。
+    无论结果如何，都会清理本次探测产生的图片。"""
+    since = now_webkit_us() - 2 * 1_000_000           # 留 2 秒余量
+    sentinel = f"__NAS_PROBE_{time.time_ns()}__"
+    subprocess.run(["pbcopy"], input=sentinel, text=True, check=True)   # 先放哨兵值
+    try:
+        activate_tab(t)
+        time.sleep(0.6)                                # 等 Chrome 获得焦点
+        osa(AS_OPTION_X)
+        text = None
+        end = time.time() + FT_PROBE_CFG["clipWaitS"]
+        while time.time() < end:
+            if stop_requested():
+                raise StopRequested()
+            cur = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+            if cur != sentinel and cur.strip():
+                text = cur
+                break
+            time.sleep(0.4)
+        if text is None:
+            return False, "插件探测：剪贴板未更新（插件未触发或复制失败）"
+        st, desc = judge_article({"count": count_text(text)})
+        return st == "ok", f"插件探测：{desc}"
+    finally:
+        wait_and_clean_downloads(since)
 
 # ============================ 核心流程 ============================
 
@@ -889,7 +994,7 @@ def main(quiet=False):
         fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         print("已有一个实例在运行，退出。")
-        return 1                                   # ← 改
+        return 1
 
     setup_logging()
     log.info("=" * 60)
@@ -898,21 +1003,21 @@ def main(quiet=False):
     if stop_requested():
         dialog(f"检测到停止文件，未执行任何操作：\n{STOP_FILE}\n\n删除该文件后再按快捷键即可运行。",
                via_chrome=False)
-        return 2                                   # ← 改
+        return 2
 
     try:
         if osa(AS_IS_RUNNING).strip() != "true":
             dialog("Google Chrome 没有运行。", via_chrome=False)
-            return 1                               # ← 改
+            return 1
         all_tabs = list_tabs()
     except NotAuthorized:
         dialog("没有控制 Chrome 的权限。\n请到「系统设置 → 隐私与安全性 → 自动化」里，"
                "允许「终端」控制「Google Chrome」，然后重试。", via_chrome=False)
-        return 1                                   # ← 改
+        return 1
 
     skipped = sum(1 for t in all_tabs if not is_target(t["url"]))
     processed = set()
-    stats = {"ok": 0, "short": 0, "gallery": 0, "gallery_fail": 0, "error": 0, "gone": 0}
+    stats = {"ok": 0, "short": 0, "gallery": 0, "gallery_fail": 0, "error": 0, "gone": 0, "ft_rescued": 0}
     errors = []
     stopped = False
     gone_streak = 0
@@ -963,6 +1068,20 @@ def main(quiet=False):
                 log.info("  %s | 方法: %s | 未完成图片: %s | 用时 %.1fs",
                          desc, "gallery" if mode == "gallery" else res.get("method"),
                          res.get("pendingImages"), (res.get("elapsedMs") or 0) / 1000)
+                if status == "short" and is_ft(t["url"]):
+                    try:
+                        ok, pdesc = ft_probe(t)
+                    except StopRequested:
+                        stopped = True
+                        break
+                    except Exception as e:
+                        ok, pdesc = False, f"插件探测异常: {e}"
+                    desc += " ｜ " + pdesc
+                    log.info("  FT 二次判断：%s", pdesc)
+                    if ok:
+                        status = "ok"                 # 改为 ok：不关闭、不写入 HTML
+                        stats["ft_rescued"] += 1
+                        log.info("  -> 插件探测达标，保留该 tab")
                 if status == "short":
                     stats["short"] += 1
                     added = append_short(t["url"], res.get("title", ""), desc, res.get("method", ""))
@@ -983,11 +1102,11 @@ def main(quiet=False):
     except JSDisabled:
         dialog("Chrome 未允许 AppleScript 执行 JavaScript。\n\n请在 Chrome 菜单栏：\n"
                "显示(View) → 开发者(Developer) → 勾选「允许 Apple 事件中的 JavaScript」\n然后重新运行。")
-        return 1                                   # ← 改
+        return 1
     except NotAuthorized:
         dialog("没有控制 Chrome 的权限。\n请到「系统设置 → 隐私与安全性 → 自动化」里，"
                "允许「终端」控制「Google Chrome」。", via_chrome=False)
-        return 1                                   # ← 改
+        return 1
 
     mins, secs = divmod(int(time.time() - t_start), 60)
     head = "⏹ 检测到停止文件，已中止。" if stopped else "✅ 全部滚屏完成！"
@@ -996,6 +1115,7 @@ def main(quiet=False):
            f"图集完成：{stats['gallery']} 个\n"
            f"正文过短：{stats['short']} 个"
            f"{'（已关闭）' if CLOSE_SHORT_TABS and stats['short'] else ''}\n")
+    msg += f"FT 插件救回：{stats['ft_rescued']} 个\n"
     if stats["gallery_fail"]:
         msg += f"图集未确认：{stats['gallery_fail']} 个（tab 保留）\n"
     msg += (f"处理出错：{stats['error']} 个\n"

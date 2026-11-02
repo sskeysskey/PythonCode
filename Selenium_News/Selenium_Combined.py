@@ -29,6 +29,8 @@ except ImportError as e:
     print("请确保 javascript_news.py 和其他 selenium_*.py 文件在同一个文件夹内。")
     sys.exit(1)
 
+FAILED_TASKS = []
+
 def run_task(module_name, module_obj):
     """
     通用任务执行器
@@ -40,10 +42,10 @@ def run_task(module_name, module_obj):
     print("=" * 60)
     
     try:
-        # 调用模块中的 main() 函数
         module_obj.main()
         print(f"\n✅ {module_name} 执行完毕。\n")
     except Exception as e:
+        FAILED_TASKS.append(module_name)
         print(f"\n❌ {module_name} 执行出错: {e}\n")
     
     # 任务之间稍作停顿，让系统资源缓冲一下
@@ -85,6 +87,27 @@ def activate_terminal():
         # Linux 其他系统暂不处理
         pass
 
+class KeepAwake:
+    """在 with 代码块期间阻止屏幕保护、熄屏和系统休眠（仅 macOS）"""
+
+    def __enter__(self):
+        # -d 阻止屏幕关闭（也能阻止屏保启动）
+        # -i 阻止空闲休眠
+        # -m 阻止磁盘空闲休眠
+        # -s 接电源时阻止系统休眠
+        # -w 绑定当前进程，脚本退出时 caffeinate 自动结束
+        self.proc = subprocess.Popen(
+            ['caffeinate', '-dims', '-w', str(os.getpid())]
+        )
+        print("☕ 已启用防休眠 (caffeinate)")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+        print("🔓 已取消防休眠")
+        return False  # 不吞掉异常
+
 def main():
     total_start = time.time()
     print(f"🕒 开始全量更新任务，当前时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -96,6 +119,7 @@ def main():
         # 确保 Javascript_News 模块已经按照之前的建议修改为跨平台版本
         Javascript_News.main()
     except Exception as e:
+        FAILED_TASKS.append("第一阶段 (JavaScript News)")
         print(f"❌ 第一阶段 (JavaScript News) 执行失败: {e}")
         # 即使第一阶段失败，也继续尝试第二阶段
     
@@ -140,4 +164,9 @@ def main():
     print("=" * 60)
 
 if __name__ == "__main__":
-    main()
+    with KeepAwake():
+        main()
+    if FAILED_TASKS:
+        print("⚠️ 以下任务失败：" + "、".join(FAILED_TASKS))
+        sys.exit(1)
+    sys.exit(0)

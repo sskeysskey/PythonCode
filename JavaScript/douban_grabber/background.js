@@ -182,6 +182,16 @@ function scrapeDoubanPage() {
     return (el.textContent || el.innerText || '').replace(/\s+/g, ' ').trim();
   }
 
+  // 14. 海报图片地址：#mainpic 里的 <img>，尽量换成大图 l_ratio_poster
+  function extractImageUrl() {
+    const img = document.querySelector('#mainpic img')
+      || document.querySelector('img[rel="v:image"]');
+    if (!img) return '';
+    const src = (img.getAttribute('src') || '').trim();
+    if (!src) return '';
+    return src.replace('/s_ratio_poster/', '/l_ratio_poster/');
+  }
+
   const aka = extractAka();
 
   return {
@@ -203,6 +213,7 @@ function scrapeDoubanPage() {
     genres: extractGenres(),
     reviews: extractReviews(),
     intro: extractIntro(),
+    image_url: extractImageUrl(),       // ★ 新增：海报图片地址
     url: location.href,
     grabbed_at: new Date().toISOString()
   };

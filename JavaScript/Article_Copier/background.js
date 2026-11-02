@@ -318,24 +318,35 @@ function extractAndCopy() {
       document.querySelector('.article-grid');
 
     if (articleBody || contentScope) {
-      // ---------- 1. 文本提取（按文档顺序，<p> 与图片说明一起收） ----------
+      // ---------- 1. 文本提取（按文档顺序，<p>、<div> 段落与图片说明一起收） ----------
       const textScope = contentScope || articleBody;
-      const flowEls = Array.from(textScope.querySelectorAll('p, figcaption'));
+
+      // 叶子块：自身不再包含块级子元素，避免把外层容器整体抓一遍导致重复
+      const isLeafBlock = (el) =>
+        !el.querySelector('p, div, figure, figcaption, ul, ol, h1, h2, h3, h4, h5, h6, blockquote');
+
+      const flowEls = Array.from(textScope.querySelectorAll('p, figcaption, div')).filter(el => {
+        if (el.tagName === 'P' || el.tagName === 'FIGCAPTION') return true;
+        // div 只在正文容器（#article-body）内才作为段落考虑
+        return !!articleBody && articleBody.contains(el) && isLeafBlock(el);
+      });
+
       const pieces = [];
       const seenText = new Set();
       flowEls.forEach(el => {
         let piece = '';
-        if (el.tagName === 'P') {
-          if (keepParagraph(el)) piece = el.textContent.trim();
-        } else if (el.tagName === 'FIGCAPTION') {
+        if (el.tagName === 'FIGCAPTION') {
           piece = getCleanCaption(el);
+        } else {
+          // P 和叶子 DIV 都走同一套段落过滤规则
+          if (keepParagraph(el)) piece = el.textContent.trim();
         }
         if (piece && !seenText.has(piece)) {
           seenText.add(piece);
           pieces.push(piece);
         }
       });
-      textContent = pieces.join('\n\n'); // 复用外层变量（修复原 const 遮蔽 bug）
+      textContent = pieces.join('\n\n');
 
       // ---------- 2. 图片下载 ----------
       const imgScope = contentScope || document.body;

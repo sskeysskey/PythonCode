@@ -34,15 +34,15 @@ except ImportError:
 
 # ===================== 配置区 =====================
 PYTHON       = sys.executable
-CRAWLER_PY   = "/Users/yanzhang/Coding/python_code/OVideo/Crawl_shangxidq.py"
+CRAWLER_PY    = "/Users/yanzhang/Coding/python_code/OVideo/Crawl_dzfwjd.py"
 DETAIL_PY    = "/Users/yanzhang/Coding/python_code/JavaScript/douban_grabber/auto_douban_imdb.py"
 JSON_PATH    = "/Users/yanzhang/Coding/LocalServer/Resources/OVideo/OVideos.json"
 STATE_PATH   = os.path.expanduser("~/.auto_pipeline_state.json")   # 失败记录/冷却
 LOG_DIR      = os.path.join(os.path.dirname(JSON_PATH), "logs")
 
-USER_DATA_DIR = os.path.expanduser("~/.shangxidq_chrome_profile")  # 与 Crawl 脚本一致
-CDP_PORT      = 9222
-SITE_KEY      = "shangxidq.com"
+USER_DATA_DIR = os.path.expanduser("~/.dzfwjd_chrome_profile") 
+CDP_PORT      = 9224 
+SITE_KEY      = "dzfwjd.com"   
 
 # —— 阶段1：Chrome / Cloudflare ——
 QUIT_CHROME_FIRST      = True    # 与你原流程一致：先退出所有 Chrome
@@ -54,11 +54,11 @@ CHALLENGE_TITLE_WORDS  = ("just a moment", "请稍候", "稍等", "attention req
                           "checking your browser", "verify", "安全检查")
 CONTINUE_ON_CRAWL_FAIL = True    # 爬取失败也继续做阶段2（处理历史遗留的待定项）
 
-# —— 第一站点：jjztq（直连爬取，无需 CDP / 预热）——
-SHANGXIDQ_ENABLED    = True
-SHANGXIDQ_CRAWLER_PY = "/Users/yanzhang/Coding/python_code/OVideo/Crawl_shangxidq.py"
-SHANGXIDQ_ARGS       = []          # 可选，例如 ["pages=2"]；不要加 open / cdp
-SHANGXIDQ_TIMEOUT    = 3600        # 秒。被拦截时脚本会弹 Chrome 等人工验证，需要留足时间
+# —— 第一站点：DZFWJD
+DZFWJD_ENABLED    = True
+DZFWJD_CRAWLER_PY = "/Users/yanzhang/Coding/python_code/OVideo/Crawl_dzfwjd.py"
+DZFWJD_ARGS       = []          # 可选，例如 ["pages=2"]；不要加 open / cdp
+DZFWJD_TIMEOUT    = 3600        # 秒。被拦截时脚本会弹 Chrome 等人工验证，需要留足时间
 
 # —— 第二站点：jjztq（直连爬取，无需 CDP / 预热）——
 JJZTQ_ENABLED    = True
@@ -469,7 +469,7 @@ def ensure_normal_chrome():
 
 # ---------------- 阶段1：爬取 ----------------
 def phase_crawl():
-    banner("阶段 1/2：爬取 shangxidq（Cloudflare + CDP + fast）")
+    banner("阶段 1/2：爬取 dzfwjd（Cloudflare + CDP）")
     try:
         if cdp_alive():
             log("检测到调试端口已在监听，直接复用")
@@ -482,8 +482,8 @@ def phase_crawl():
                 log("❌ 调试端口未就绪，放弃爬取。")
                 return False
         wait_cloudflare_pass()
-        log("开始爬取（cdp fast）...")
-        rc = subprocess.run([PYTHON, CRAWLER_PY, "cdp", "fast"]).returncode
+        log("开始爬取（cdp）...")
+        rc = subprocess.run([PYTHON, CRAWLER_PY, "cdp"]).returncode
         log(f"爬取脚本结束，退出码 {rc}")
         return rc == 0
     finally:
@@ -504,8 +504,8 @@ def run_direct_crawler(title, script, args, timeout):
     log(f"{title} 爬取脚本结束，退出码 {rc}")
     return rc == 0
 
-def phase_crawl_shangxidq():
-    return run_direct_crawler("shangxidq", SHANGXIDQ_CRAWLER_PY, SHANGXIDQ_ARGS, SHANGXIDQ_TIMEOUT)
+def phase_crawl_dzfwjd():
+    return run_direct_crawler("dzfwjd", DZFWJD_CRAWLER_PY, DZFWJD_ARGS, DZFWJD_TIMEOUT)
 
 def phase_crawl_jjztq():
     return run_direct_crawler("jjztq", JJZTQ_CRAWLER_PY, JJZTQ_ARGS, JJZTQ_TIMEOUT)
@@ -632,7 +632,7 @@ def main():
     ap.add_argument("--skip-detail", action="store_true", help="跳过所有补全")
     ap.add_argument("--skip-jjztq", action="store_true", help="本次不跑 jjztq")
     ap.add_argument("--skip-312f", action="store_true", help="本次不跑 312f")
-    ap.add_argument("--skip-shangxidq", action="store_true", help="本次跳过 shangxidq（爬取+补全）")
+    ap.add_argument("--skip-dzfwjd", action="store_true", help="本次跳过 dzfwjd（爬取+补全）")
     ap.add_argument("--skip-sxkljc", action="store_true", help="本次不跑 sxkljc")
     ap.add_argument("--skip-xb6v", action="store_true", help="本次不跑 xb6v")
     ap.add_argument("--force-crawl", action="store_true",
@@ -651,7 +651,7 @@ def main():
 
     # 站点按顺序执行：每个站点 = 爬取 → 补全
     sites = [
-    ("shangxidq", phase_crawl_shangxidq, not args.skip_shangxidq),
+    ("dzfwjd", phase_crawl, DZFWJD_ENABLED and not args.skip_dzfwjd),
     ("jjztq", phase_crawl_jjztq, JJZTQ_ENABLED and not args.skip_jjztq),
     ("312f", phase_crawl_312f, PHASE312F_ENABLED and not args.skip_312f),
     ("sxkljc", phase_crawl_sxkljc, PHASESXKLJC_ENABLED and not args.skip_sxkljc),
@@ -679,6 +679,11 @@ def main():
 
             if not args.skip_detail:
                 detail_res[site] = phase_detail(site)
+                # ========== 新增：补全结束后，自动切回终端 ==========
+                def activate_terminal():
+                    run_cmd(["osascript", "-e", 'tell application "Terminal" to activate'])
+                activate_terminal()
+                time.sleep(0.8) # 给系统一点时间完成窗口切换，可选
     except KeyboardInterrupt:
         log("用户中断 (Ctrl+C)")
         return 1

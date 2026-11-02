@@ -1147,12 +1147,20 @@ def _is_site_url(u):
 
 
 # ============== 本站线路（多 playlist）块操作 ==============
-def is_site_playlist(pl):
-    eps = pl.get("episodes") or {}
-    return any(_is_site_url(v) for v in eps.values())
+def _jjztq_source_id(url):
+    """从 /zt/138413.html 或 /q/138413-1-0.html 中提取资源 ID"""
+    m = re.search(r"/(?:zt|q)/(\d+)", str(url or ""))
+    return m.group(1) if m else ""
 
-def site_playlist_indices(playlist):
-    return [i for i, pl in enumerate(playlist) if is_site_playlist(pl)]
+def is_site_playlist(pl, sub_url):          # 去掉 =None
+    sid = _jjztq_source_id(sub_url)
+    eps = pl.get("episodes") or {}
+    return bool(sid) and any(
+        _is_site_url(v) and _jjztq_source_id(v) == sid for v in eps.values()
+    )
+
+def site_playlist_indices(playlist, sub_url):
+    return [i for i, pl in enumerate(playlist) if is_site_playlist(pl, sub_url)]
 
 def remove_indices(playlist, indices):
     for i in sorted(indices, reverse=True):
@@ -1176,19 +1184,16 @@ def _url_keys_sorted(existing):
     )
 
 def has_site_url_key(existing, sub_url):
-    for k in _url_keys_sorted(existing):
-        v = existing.get(k, "") or ""
-        if SITE_KEY in v or normalize_url(v) == normalize_url(sub_url):
-            return True
-    return False
+    n = normalize_url(sub_url)
+    return any(normalize_url(existing.get(k, "") or "") == n
+               for k in _url_keys_sorted(existing))
 
-def _ensure_site_url(existing, sub_url, force_new=False):
+def _ensure_site_url(existing, sub_url):
+    n = normalize_url(sub_url)
+    for k in _url_keys_sorted(existing):
+        if normalize_url(existing.get(k, "") or "") == n:
+            return k                      # 只有完全相同的 URL 才复用
     url_keys = _url_keys_sorted(existing)
-    if not force_new:
-        for k in url_keys:
-            v = existing.get(k, "") or ""
-            if SITE_KEY in v or normalize_url(v) == normalize_url(sub_url):
-                return k
     max_num = 0
     for k in url_keys:
         m = re.match(r"^url(\d+)$", k)
@@ -1601,7 +1606,7 @@ def move_low_priority_lines_to_end(playlists):
 # ============== 芒果线路置顶 ==============
 MANGO_KEYWORD = "芒果"   # 线路名包含该关键字即视为芒果渠道
 
-def move_mango_within_site(playlist):
+def move_mango_within_site(playlist, sub_url=None):
     """
     只在本站线路内部把「芒果」线路置顶。
     - 本站线路占据的下标位置保持不变，只调整它们之间的先后顺序
@@ -1609,7 +1614,7 @@ def move_mango_within_site(playlist):
     - 同为芒果的多条线路保持原相对顺序
     原地修改 playlist，返回是否发生了变化。
     """
-    site_idx = [i for i, pl in enumerate(playlist) if is_site_playlist(pl)]
+    site_idx = site_playlist_indices(playlist, sub_url)
     if not site_idx:
         return False
 
@@ -1699,6 +1704,14 @@ def _normalize_name(s):
     s = s.translate(str.maketrans("：！？，（）【】", ":!?,()[]"))
     return re.sub(r"\s+", "", s).strip().lower()
 
+def _dedupe_key(s):
+    """去重专用：统一后去掉所有标点、符号、空白，只保留文字和数字"""
+    if not s:
+        return ""
+    s = _normalize_name(s)
+    # \W 匹配所有非字母数字字符（包括中英文标点、符号、空格），_ 也一并去掉
+    return re.sub(r"[\W_]+", "", s)
+
 def clean_season_one(s):
     return re.sub(r"(?:第[一1]季)$", "", s or "").strip()
 
@@ -1723,14 +1736,14 @@ def find_existing_global(data, name, sub_url, prefer_group=None, year="", log=pr
                         return g, item
 
     # 2. 名称匹配：先同分类，再其他分类；电影校验年份防止翻拍片误合并
-    norm = _normalize_name(name)
+    norm = _dedupe_key(name)
     if not norm:
         return None, None
     base = clean_season_one(norm)
     order = ([prefer_group] if prefer_group in groups_all else []) + [g for g in groups_all if g != prefer_group]
     for g in order:
         for item in data.get(g, []):
-            en = _normalize_name(item.get("name", ""))
+            en = _dedupe_key(item.get("name", ""))
             if not en:
                 continue
             eb = clean_season_one(en)
@@ -1775,7 +1788,7 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
     new_pls = rec.get("playlist", [])
     serial = group in SERIAL_GROUPS
     playlist = existing.setdefault("playlist", [])
-    site_idx = site_playlist_indices(playlist)
+    site_idx = site_playlist_indices(playlist, sub_url)
     site_set = set(site_idx)
     old_site = [playlist[i] for i in site_idx]
     # 【新增】合并前 jjztq 线路是否含枪版关键字
@@ -1813,7 +1826,7 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
             log(f"      [线路更新] {[p['name'] for p in old_site]} -> {[p['name'] for p in new_pls]}")
 
         if serial and status != "decreased":
-            cur = site_playlist_indices(playlist)
+            cur = site_playlist_indices(playlist, sub_url)
             if cur and cur[0] != 0 and new_max > other_max:
                 block = [playlist[i] for i in cur]
                 remove_indices(playlist, cur)
@@ -1868,7 +1881,7 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
             log(f"      [字段更新] 补充封面: {local}")
 
     # —— 【新增】枪版 → 高清：本站线路不再含 TC/TS/HC 等关键字时，更新 info 和 date ——
-    cur_site = [playlist[i] for i in site_playlist_indices(playlist)]
+    cur_site = [playlist[i] for i in site_playlist_indices(playlist, sub_url)]
     cur_site_has_tc = any(has_tc_keyword(ep) for pl in cur_site for ep in (pl.get("episodes") or {}))
     if old_site_has_tc and cur_site and not cur_site_has_tc:
         label = extract_quality_label(cur_site) or extract_quality_label(new_pls)
@@ -1887,7 +1900,7 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
             fields_changed = True
 
     # —— 本站线路内部芒果置顶（放在所有排序逻辑之后）——
-    if move_mango_within_site(playlist):
+    if move_mango_within_site(playlist, sub_url):
         playlist_changed = True
         log(f"      [排序调整] {SITE_KEY} 内「{MANGO_KEYWORD}」线路已置顶")
 
@@ -2001,7 +2014,7 @@ def process_detail(data, url, group, list_name="", list_info="", list_img="",
         # —— 7. 合并 / 新增 ——
         if existing:
             force_add = False
-            if not site_playlist_indices(existing.get("playlist") or []) and eff_group not in ADD_CHANNEL_GROUPS:
+            if not site_playlist_indices(existing.get("playlist") or [], url) and eff_group not in ADD_CHANNEL_GROUPS:
                 if blocked(f"项目已存在于「{eff_group}」但无 {SITE_KEY} 渠道，且该分类不允许追加渠道"):
                     return "skipped"
                 force_add = True
@@ -2032,7 +2045,7 @@ def process_detail(data, url, group, list_name="", list_info="", list_img="",
             if ep_cnt > 0:
                 best = max(new_pls, key=lambda p: len(p["episodes"]))["episodes"]
                 rec["info"] = make_episode_info(ep_cnt, get_episode_unit(group, best, rec.get("info", "")))
-        move_mango_within_site(rec["playlist"])
+        move_mango_within_site(rec["playlist"], url) 
         data.setdefault(group, []).append(rec)
         if not save_json(data):
             print("    ⚠️ 本条未能写盘（见上方提示）")

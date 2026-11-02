@@ -78,6 +78,12 @@ SLEEP_BETWEEN  = 1.0
 # False：恢复旧行为（已存在作品也会把 xb6v 作为新渠道追加）
 ONLY_UPDATE_OWN_CHANNEL = True
 
+# ============== 栏目开关 ==============
+ENABLE_TAB_MOVIE     = True    # 最新电影
+ENABLE_TAB_DRAMA     = False   # 最新剧集（临时关闭，需要时改为 True）
+ENABLE_TAB_RECOMMEND = False   # 小编推荐（临时关闭，需要时改为 True）
+ENABLE_HOMEPAGE_6VDY = True    # 6vdy 首页
+
 # 图片专用下载配置（禁止死循环，仅试2次，短超时）
 IMG_REQUEST_TIMEOUT = (5, 10)
 MAX_IMG_ATTEMPTS = 2
@@ -97,7 +103,7 @@ _LOAD_OK = False                 # 是否成功加载了初始数据（未成功
 _LAST_SIG = None                 # 上次读/写后主文件的 (mtime_ns, size)，用于检测外部并发修改
 _LOCK_FH = None
 
-BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版", "璀璨之城", "宠它", "爱的恋习生"]
+BLACKLIST_NAMES = ["乘风2026", "吞噬星空", "遮天 动画版", "璀璨之城", "宠它", "爱的恋习生", "沧元图 第三季"]
 WHITELIST_NAMES = [
     "镖人 第二季"
 ]
@@ -105,7 +111,7 @@ WHITELIST_NAMES = [
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "China"]
 
 MIN_RATING = 6.0
-MIN_RATING_7 = 7.0
+MIN_RATING_7 = 6.5
 
 # ============== 镜像站识别 ==============
 MIRROR_DOMAINS = ("xb6v", "6vdy", "66ss", "6v520", "66s.cc")
@@ -580,6 +586,92 @@ def should_update_date(old_date, new_date):
     # 无法提取年份：保守处理，已有旧值则不覆盖
     return False
 
+YEAR_ONLY_RE = re.compile(r"^(?:19|20)\d{2}$")   # 只包含年份，如 "2026"
+
+def _is_year_only(s):
+    """字段内容是否只有年份（如 '2026'）"""
+    return bool(YEAR_ONLY_RE.match(str(s or "").strip()))
+
+def _should_fill_date_field(old_val, new_val):
+    """
+    date / date_re 的补全条件：
+      1. 新值非空；
+      2. 旧值为空，或旧值只有年份；
+      3. 新旧值不相同。
+    其他情况（旧值已有内容，哪怕比新值短）一律不补全。
+    """
+    new_s = str(new_val or "").strip()
+    old_s = str(old_val or "").strip()
+    if not new_s or new_s == old_s:
+        return False
+    if not old_s:
+        return True
+    return _is_year_only(old_s)
+
+def _is_empty_score(v):
+    """评分为空：None、空字符串、0 都视为空"""
+    return str(v or "").strip() in ("", "0", "0.0")
+
+def set_key_after(d: dict, key: str, value, after: str):
+    """
+    设置 d[key] = value：
+      - key 已存在：原地修改，位置不变；
+      - key 不存在：插入到 after 键的后面（after 不存在则追加到末尾）。
+    """
+    if key in d:
+        d[key] = value
+        return
+    items = list(d.items())
+    d.clear()
+    inserted = False
+    for k, v in items:
+        d[k] = v
+        if k == after and not inserted:
+            d[key] = value
+            inserted = True
+    if not inserted:
+        d[key] = value
+
+def fill_date_and_rating(existing, rec):
+    """
+    date / date_re / 豆瓣 / IMDB 的统一补全规则：
+      - date、date_re：为空或只有年份时才补全
+      - 评分：为空（None、''、0）时才补全
+    返回是否有改动。
+    """
+    changed = False
+
+    # date
+    old_date = existing.get("date", "")
+    new_date = rec.get("date", "")
+    if _should_fill_date_field(old_date, new_date):
+        existing["date"] = new_date
+        changed = True
+        print(f"      ✅[字段更新] 更新「date」: 「{old_date}」 -> 「{new_date}」")
+
+    # date_re
+    old_date_re = existing.get("date_re", "")
+    new_date_re = rec.get("date_re") or rec.get("date", "")
+    if _should_fill_date_field(old_date_re, new_date_re):
+        set_key_after(existing, "date_re", new_date_re, after="date")
+        changed = True
+        print(f"      ✅[字段更新] 更新「date_re」: 「{old_date_re}」 -> 「{new_date_re}」")
+
+    # 评分
+    old_rating = existing.get("评分")
+    if not isinstance(old_rating, dict):
+        old_rating = existing["评分"] = {"豆瓣": "", "IMDB": ""}
+    new_rating = rec.get("评分") or {}
+    for k in ("豆瓣", "IMDB"):
+        old_v = old_rating.get(k, "")
+        new_v = new_rating.get(k, "")
+        if _is_empty_score(old_v) and not _is_empty_score(new_v):
+            old_rating[k] = new_v
+            changed = True
+            print(f"      ✅[字段更新] 补充评分「{k}」: {new_v}")
+
+    return changed
+
 # ============== 播放列表提取 ==============
 def extract_episodes(soup, base_url=BASE_URL, host_normalize_to=None):
     for widget in soup.select("div.widget.box.row"):
@@ -749,14 +841,34 @@ INTRO_STOP_RE = re.compile(
     re.I,
 )
 
+CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+REPEAT_RE = re.compile(r"^(.+?)\s+\1$")   # 匹配 "A A" 这种完全重复的写法
+
+def clean_person_name(seg):
+    """单个人名清洗：中英混写只留中文；原文重复只留一份"""
+    s = normalize_text(seg)
+    if not s:
+        return ""
+
+    # 1) 中英混写：只保留含中文的词
+    if CJK_RE.search(s):
+        s = " ".join(t for t in s.split() if CJK_RE.search(t))
+
+    # 2) 重复写两遍："A A" -> "A"（循环处理，防止多次重复）
+    m = REPEAT_RE.match(s)
+    while m:
+        s = m.group(1).strip()
+        m = REPEAT_RE.match(s)
+
+    return s.strip()
+
 def parse_people_line(value):
-    parts = re.split(r"[/、]", value)
     out, seen = [], set()
-    for p in parts:
-        p = normalize_text(p)
-        if p and p not in seen:
-            seen.add(p)
-            out.append(p)
+    for seg in re.split(r"[/、]", value):
+        name = clean_person_name(seg)
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
     return out
 
 def parse_new_format(lines, h1_name):
@@ -915,17 +1027,19 @@ def parse_subpage(sub_url, default_name, default_info):
 
     def collect_people(field_key):
         v, i, _ = match_field(lines, FIELD_PATTERNS[field_key])
-        people = []
+        raw = []
         if v:
-            people.append(normalize_text(v))
+            raw.append(v)
         if i >= 0:
-            for ex in collect_multi(lines, i):
-                ex = normalize_text(ex)
-                if ex:
-                    people.append(ex)
+            raw.extend(collect_multi(lines, i))
+
+        people = []
+        for r in raw:
+            people.extend(parse_people_line(r))   # 统一走清洗逻辑
+
         seen, out = set(), []
         for p in people:
-            if p and p not in seen:
+            if p not in seen:
                 seen.add(p)
                 out.append(p)
         return out
@@ -1484,25 +1598,8 @@ def process_existing_record(existing, new_6vdy_episodes, sub_url, rec, matched_g
             fields_updated = True
             print(f"      ✅[字段更新] 补充缺失字段「{field}」: {new_val}")
 
-    old_date = existing.get("date", "")
-    new_date = rec.get("date", "")
-    if should_update_date(old_date, new_date):
-        existing["date"] = new_date
+    if fill_date_and_rating(existing, rec):
         fields_updated = True
-        print(f"      ✅[字段更新] 更新「date」字段: 「{old_date}」 -> 「{new_date}」")
-
-    old_rating = existing.get("评分")
-    if not isinstance(old_rating, dict):
-        old_rating = existing["评分"] = {"豆瓣": "", "IMDB": ""}
-    new_rating = rec.get("评分", {})
-    if isinstance(new_rating, dict):
-        for rate_key in ["豆瓣", "IMDB"]:
-            old_rate_val = old_rating.get(rate_key, "")
-            new_rate_val = new_rating.get(rate_key, "")
-            if not old_rate_val and new_rate_val:
-                old_rating[rate_key] = new_rate_val
-                fields_updated = True
-                print(f"      ✅[字段更新] 补充评分「{rate_key}」: {new_rate_val}")
 
     # 【新增】已有记录缺封面时补下载
     if not existing.get("image") and rec.get("image"):
@@ -1689,30 +1786,22 @@ def get_homepage_list_6vdy():
 def fill_fields_only(existing, rec):
     """只补缺失元数据 + 封面，不碰 playlist / url / info / update"""
     changed = False
+
     for field in ["导演", "编剧", "主演", "类型", "地区", "alias", "intro"]:
         if not existing.get(field) and rec.get(field):
             existing[field] = rec[field]
             changed = True
             print(f"      ✅[字段更新] 补充缺失字段「{field}」: {rec[field]}")
 
-    if should_update_date(existing.get("date", ""), rec.get("date", "")):
-        existing["date"] = rec["date"]
+    if fill_date_and_rating(existing, rec):
         changed = True
-
-    old_rating = existing.get("评分")
-    if not isinstance(old_rating, dict):
-        old_rating = existing["评分"] = {"豆瓣": "", "IMDB": ""}
-    for k in ("豆瓣", "IMDB"):
-        v = (rec.get("评分") or {}).get(k, "")
-        if not old_rating.get(k) and v:
-            old_rating[k] = v
-            changed = True
 
     if not existing.get("image") and rec.get("image"):
         local = download_and_localize_image(rec["image"])
         if local:
             existing["image"] = local
             changed = True
+
     return changed
 
 def process_items(data, items, tab_name):
@@ -1753,7 +1842,7 @@ def process_items(data, items, tab_name):
                 if fill_fields_only(existing, rec):
                     save_json(data)
                     print(f"    ✓ 「{existing.get('name')}」({matched_group}) 无 {PLAYLIST_NAME} 渠道："
-                          f"playlist 不动，仅补全了缺失字段")
+                          f"playlist 不动，✅ 仅补全了缺失字段")
                 else:
                     print(f"    - 跳过：已存在于「{matched_group}」，无 {PLAYLIST_NAME} 渠道，且无可补字段")
                 ok += 1
@@ -2000,10 +2089,10 @@ def main():
             print(f"补全任务完成! 数据已保存在 {JSON_PATH}")
             return
 
-        m_ok, m_fail = process_tab_unified(data, 0, "最新电影")
-        d_ok, d_fail = process_tab_unified(data, 1, "最新剧集")
-        r_ok, r_fail = process_tab_unified(data, 2, "小编推荐")
-        h_ok, h_fail = process_homepage_6vdy(data)
+        m_ok, m_fail = process_tab_unified(data, 0, "最新电影") if ENABLE_TAB_MOVIE else (0, 0)
+        d_ok, d_fail = process_tab_unified(data, 1, "最新剧集") if ENABLE_TAB_DRAMA else (0, 0)
+        r_ok, r_fail = process_tab_unified(data, 2, "小编推荐") if ENABLE_TAB_RECOMMEND else (0, 0)
+        h_ok, h_fail = process_homepage_6vdy(data) if ENABLE_HOMEPAGE_6VDY else (0, 0)
 
         print("\n====================================")
         print(f"统计：电影 {m_ok}成功/{m_fail}失败 | 剧集 {d_ok}/{d_fail} | 推荐 {r_ok}/{r_fail} | 首页 {h_ok}/{h_fail}")
