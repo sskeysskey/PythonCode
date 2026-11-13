@@ -156,6 +156,16 @@ BLACKLIST_NAMES = [
     "人生赢家", "判决", "判决墨西哥剧", "后门", "校规101", "校规", "无人区",
     "第二盘",
 ]
+# 带这些后缀的片名直接跳过（预告片等）
+SKIP_NAME_SUFFIXES = ("预告片",)
+
+def is_skip_suffix_name(name):
+    """名称以 SKIP_NAME_SUFFIXES 中任一后缀结尾则返回 True（忽略空格和大小写）"""
+    if not name:
+        return False
+    n = _normalize_name(name)   # 已有函数：去空格、转小写、统一全半角符号
+    return any(n.endswith(_normalize_name(s)) for s in SKIP_NAME_SUFFIXES)
+
 BLACKLIST_URLS = []
 # 白名单：不分分类，跳过一切过滤规则（优先级高于黑名单）
 WHITELIST_NAMES = ["二十世纪电气目录", "茶啊二中 第六季", "猫与龙",
@@ -1712,6 +1722,26 @@ def _dedupe_key(s):
     # \W 匹配所有非字母数字字符（包括中英文标点、符号、空格），_ 也一并去掉
     return re.sub(r"[\W_]+", "", s)
 
+# 末尾年份后缀，如 "黄金时段2026"、"黄金时段 2026"、"黄金时段(2026)"、"黄金时段 [2026]"
+YEAR_SUFFIX_RE = re.compile(r"[\s\(（\[【·\-_]*(?:19|20)\d{2}[\s\)）\]】]*$")
+
+def strip_year_suffix(name):
+    """去掉名称末尾的年份；若去掉后为空（如名称本身就是 '1917'），则返回原名"""
+    if not name:
+        return ""
+    stripped = YEAR_SUFFIX_RE.sub("", name).strip()
+    return stripped or name
+
+def trailing_year(name):
+    """返回名称末尾的年份（如 '我最好的朋友2026' -> '2026'），没有则返回空串"""
+    if not name:
+        return ""
+    m = YEAR_SUFFIX_RE.search(name)
+    if not m:
+        return ""
+    y = re.search(r"(?:19|20)\d{2}", m.group(0))
+    return y.group(0) if y else ""
+
 def clean_season_one(s):
     return re.sub(r"(?:第[一1]季)$", "", s or "").strip()
 
@@ -1755,6 +1785,39 @@ def find_existing_global(data, name, sub_url, prefer_group=None, year="", log=pr
                 continue
             log(f"      [名称去重] 匹配成功：已有「{item.get('name')}」({g}) ↔ 抓取「{name}」")
             return g, item
+
+    # 3. 【新增】去掉末尾年份后再匹配，仅限 Movie 分类
+    if prefer_group == "Movie":
+        stripped_key = _dedupe_key(strip_year_suffix(name))
+        if stripped_key and stripped_key != norm:
+            for item in data.get("Movie", []):
+                en = _dedupe_key(strip_year_suffix(item.get("name", "")))
+                if not en or en != stripped_key:
+                    continue
+                # 年份仍然校验：已有记录年份与本次相差超过 1 年则视为翻拍/续作，不合并
+                if _year_conflict(item, year, "Movie"):
+                    log(f"      [去年份冲突] 「{item.get('name')}」年份 {item.get('date')} ≠ {year}，视为不同作品")
+                    continue
+                log(f"      [去年份去重] 匹配成功：已有「{item.get('name')}」(Movie) ↔ 抓取「{name}」")
+                return "Movie", item
+
+    # 4. 反向去年份匹配：新抓取名称无年份后缀，已有记录为「片名2026」时视为同一项目
+    #    仅当已有记录后缀为 2026 才生效；其他年份（如 2025、2027）不合并
+    #    合并时沿用已有记录的名称（「片名2026」），不会改名
+    if prefer_group == "Movie" and not trailing_year(name):
+        new_key = _dedupe_key(name)
+        if new_key:
+            for item in data.get("Movie", []):
+                iname = item.get("name", "")
+                if trailing_year(iname) != "2026":
+                    continue
+                stripped_old = strip_year_suffix(iname)
+                if stripped_old == iname:      # 防御：名称本身就是年份
+                    continue
+                if _dedupe_key(stripped_old) == new_key:
+                    log(f"      [反向去年份去重] 匹配成功：已有「{iname}」(Movie) ↔ 抓取「{name}」，沿用已有名称")
+                    return "Movie", item
+
     return None, None
 
 
@@ -1852,6 +1915,9 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
         if ENABLE_shangxidq_RULE:
             pos = resolve_insert_position_with_shangxidq(playlist, best_new_eps, pos, group, log)
         playlist[pos:pos] = copy.deepcopy(new_pls)
+        # 新增时：本站线路内部芒果置顶
+        if move_mango_within_site(playlist, sub_url):
+            log(f"      [排序调整] {SITE_KEY} 内「{MANGO_KEYWORD}」线路已置顶")
         # 【修复】已存在本站 url 键时复用，避免重复写出指向同一地址的 urlN
         key = _ensure_site_url(existing, sub_url)
         playlist_changed = True
@@ -1899,11 +1965,6 @@ def merge_into_existing(existing, rec, sub_url, group, log=print, force_add=Fals
             existing["date"] = new_date
             fields_changed = True
 
-    # —— 本站线路内部芒果置顶（放在所有排序逻辑之后）——
-    if move_mango_within_site(playlist, sub_url):
-        playlist_changed = True
-        log(f"      [排序调整] {SITE_KEY} 内「{MANGO_KEYWORD}」线路已置顶")
-
     changed = playlist_changed or info_changed or fields_changed or url_added
     if status == "decreased":
         return "decreased", changed
@@ -1941,10 +2002,15 @@ def process_detail(data, url, group, list_name="", list_info="", list_img="",
             print("    ✗ 无法解析片名，跳过")
             return "failed"
         rec["name"] = real_name
+        # 白名单变量提前定义
+        whitelisted = is_whitelisted_name(real_name) or is_whitelisted_name(list_name)
+        # 预告片检查：白名单放行
+        if not whitelisted and is_skip_suffix_name(real_name):
+            print(f"    - 跳过：片名「{real_name}」带后缀 {SKIP_NAME_SUFFIXES}")
+            return "skipped"
         year = meta["year"]
         filter_regions = FILTER_REGIONS_BY_GROUP.get(group, FILTER_REGIONS)
 
-        whitelisted = is_whitelisted_name(real_name) or is_whitelisted_name(list_name)
         if whitelisted:
             print(f"    ⭐ 白名单命中：「{real_name}」，跳过全部过滤规则")
 
@@ -2073,6 +2139,11 @@ def process_list_page(data, list_url, group, page_name, seen_urls):
 
     for idx, (name, info, url, img) in enumerate(items, 1):
         tag = f"  ({idx}/{len(items)}) {name}"
+        # —— 新增：预告片等后缀直接跳过 ——
+        if not is_whitelisted_name(name) and is_skip_suffix_name(name):
+            print(f"{tag} [后缀命中 {SKIP_NAME_SUFFIXES}，跳过]")
+            stats["skipped"] += 1
+            continue
         if url in seen_urls:
             print(f"{tag} [本次运行已处理过，跳过]")
             continue

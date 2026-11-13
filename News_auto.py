@@ -47,7 +47,7 @@ BROWSER_APP = "Google Chrome"
 
 SCROLL_AMOUNT = -120
 MAX_ATTEMPTS = 3
-TIMEOUT_DURATION = 120      # 总超时（秒）；处理完滑块验证后重新计时
+TIMEOUT_DURATION = 150      # 总超时（秒）；处理完滑块验证后重新计时
 CLIPBOARD_WAIT = 2.0
 
 SAVE_DEBUG_SHOT = True
@@ -57,8 +57,9 @@ DEBUG_SHOT_DIR = "/tmp"
 if MODULES_DIR not in sys.path:
     sys.path.append(MODULES_DIR)
 try:
-    from Slider_Verify import (SliderConfig, SliderSolver, reload_browser,
-                               STATUS_SOLVED, STATUS_MANUAL_OK, STATUS_NOT_FOUND)
+    from Slider_Verify import (SliderConfig, SliderSolver, SolveResult, reload_browser,
+                               STATUS_SOLVED, STATUS_MANUAL_OK, STATUS_NOT_FOUND, STATUS_FAILED,
+                               lognormal, rand_in, human_drag, interruptible_sleep)
     HAS_SLIDER_MODULE = True
 except Exception as _e:
     HAS_SLIDER_MODULE = False
@@ -87,6 +88,7 @@ PROVIDERS = {
             "forbidden":   ("qianwen_forbidden.png",    0.90, True),
             "forbidden2":  ("qianwen_forbidden2.png",   0.90, True),
             "forbidden3":  ("qianwen_forbidden3.png",   0.90, True),
+            "detailed": ("qianwen_detailed.png", 0.90, False),
             "retry":       ("qianwen_retry.png",        0.90, True),
             "timeout":     ("qianwen_timeout.png",      0.90, True),
             "upload_fail": ("qianwen_upload_fail.png",  0.92, False),
@@ -96,6 +98,10 @@ PROVIDERS = {
             # ---- 滑块验证后重新提交 ----
             "launch":         ("qianwen_launch.png",    0.90, False),
             "new":            ("qianwen_new.png",       0.90, False),   # 【v8】刷新后先开新对话
+            # ---- 【v9】拖拽失败弹窗处理 ----
+            "oops":        ("qianwen_oops.png",        0.90, False),
+            "ops_close":   ("qianwen_ops_close.png",   0.90, False),
+            "verify_fail": ("qianwen_verify_fail.png", 0.90, False),
         },
         "check_refusal_text": True,
         "check_offtask_text": True,
@@ -106,6 +112,12 @@ PROVIDERS = {
         "upload_fail_confirm_delay": 0.8,
         "upload_fail_transient_ok": True,
         "model_switch_enabled": True,
+        "detailed_click": {
+            "enabled": True,     # 关掉即恢复原逻辑
+            "offset": (0, 0),    # 若要点按钮的某个偏移位置，在此调整
+            "max_clicks": 5,     # 单次运行最多点击次数，防止死循环
+            "cooldown": 2.0,     # 两次点击之间的最短间隔（秒）
+        },
         "model_switch_steps": [
             ("click", "switch_open"),
             ("hover", "switch_hover"),
@@ -119,6 +131,8 @@ PROVIDERS = {
             "refresh_resubmit": False,    # 开关B 默认值（Engine 用 --slider-resubmit 覆盖）；A 关时无意义
             "manual_fallback": True,      # A 开但自动失败/被保护器暂停 -> 转人工等待
             "manual_timeout": 300,        # 人工等待最长秒数
+            "oops_recovery": True,        # 【新增】启用 oops 判定与多轮重试
+            "max_rounds": 3,              # 【新增】总共几次人机验证
             "template": "qianwen_verify.png",
             "threshold": 0.85,
             "distance": 257,              # 实测 768 -> 1025
@@ -182,6 +196,16 @@ PROVIDERS = {
         "anchor_key": "regenerate",                 # 先找到它才继续
         "anchor_follow_keys": ("related", "copy"),  # 找到锚点后，等待这两者中任意一个出现
         "anchor_follow_timeout": 3.0,               # 等待 related/copy 的最长秒数
+        # 新增：regenerate 与 copy 的配对规则（逻辑坐标）
+        "pair_copy": {
+            "anchor": "regenerate",
+            "target": "copy",
+            "dx": -104,          # copy.x - regenerate.x
+            "dy": 0,             # copy.y - regenerate.y
+            "tol_x": 30,
+            "tol_y": 25,
+            "row_fallback": False,   # 关闭同行兜底，避免误配到别的 copy
+        },
     },
 }
 
@@ -363,6 +387,98 @@ def find(templates, key, screen=None):
     img, threshold = templates[key]
     return match_template(img, threshold, screen=screen)
 
+def match_all(templates, key, screen, max_candidates=2000):
+    """返回模板的全部命中，格式 [(逻辑x, 逻辑y, score), ...]，已做 NMS 去重"""
+    if not template_available(templates, key):
+        return []
+    img, threshold = templates[key]
+    th, tw = img.shape[:2]
+    if th > screen.shape[0] or tw > screen.shape[1]:
+        return []
+
+    result = cv2.matchTemplate(screen, img, cv2.TM_CCOEFF_NORMED)
+    ys, xs = np.where(result >= threshold)
+    if len(xs) == 0:
+        return []
+
+    scores = result[ys, xs]
+    order = np.argsort(-scores)[:max_candidates]
+    half_w, half_h = max(1, tw // 2), max(1, th // 2)
+
+    picked = []
+    for i in order:
+        x, y, s = int(xs[i]), int(ys[i]), float(scores[i])
+        if all(abs(x - px) >= half_w or abs(y - py) >= half_h for px, py, _ in picked):
+            picked.append((x, y, s))
+
+    # 转为逻辑坐标（与 perform_click 的换算保持一致）
+    out = []
+    for x, y, s in picked:
+        cx = int((x + tw / 2) / SCALE_FACTOR)
+        cy = int((y + th / 2) / SCALE_FACTOR)
+        out.append((cx, cy, s))
+    return out
+
+
+def pick_pair_target(ax, ay, targets, dx, dy, tol_x, tol_y, row_fallback=False):
+    """严格模式：偏移落在 (dx±tol_x, dy±tol_y) 内，取误差最小者"""
+    best = None
+    for tx, ty, _ in targets:
+        ex = (tx - ax) - dx
+        ey = (ty - ay) - dy
+        if abs(ex) <= tol_x and abs(ey) <= tol_y:
+            d = ex * ex + ey * ey
+            if best is None or d < best[0]:
+                best = (d, tx, ty)
+    if best is None and row_fallback:
+        for tx, ty, _ in targets:
+            ey = (ty - ay) - dy
+            if abs(ey) <= tol_y and tx < ax:
+                d = abs(tx - ax)
+                if best is None or d < best[0]:
+                    best = (d, tx, ty)
+    return None if best is None else (best[1], best[2])
+
+
+def find_anchor_target_pair(templates, pair_cfg, screen=None):
+    """
+    找到 锚点 + 与之配对的目标。
+    返回 (ax, ay, tx, ty) 或 None（逻辑坐标）。
+    锚点按从上到下、从左到右排序，最上方的配不上时尝试下一个。
+    """
+    if screen is None:
+        screen = capture_screen()
+    anchors = match_all(templates, pair_cfg["anchor"], screen)
+    if not anchors:
+        return None
+    anchors.sort(key=lambda m: (m[1], m[0]))
+    targets = match_all(templates, pair_cfg["target"], screen)
+    if not targets:
+        return None
+
+    for rank, (ax, ay, _) in enumerate(anchors, 1):
+        pick = pick_pair_target(ax, ay, targets,
+                                pair_cfg["dx"], pair_cfg["dy"],
+                                pair_cfg["tol_x"], pair_cfg["tol_y"],
+                                pair_cfg.get("row_fallback", False))
+        if pick:
+            tx, ty = pick
+            print(f"配对成功(锚点#{rank})：锚点({ax},{ay}) -> 目标({tx},{ty})，"
+                  f"实际偏移({tx-ax},{ty-ay})，期望({pair_cfg['dx']},{pair_cfg['dy']})")
+            return ax, ay, tx, ty
+    return None
+
+
+def wait_for_pair(templates, pair_cfg, timeout, interval=0.4):
+    deadline = time.time() + timeout
+    while True:
+        res = find_anchor_target_pair(templates, pair_cfg)
+        if res:
+            return res
+        if time.time() >= deadline:
+            return None
+        sleep(interval)
+
 
 def wait_for(templates, key, timeout, interval=0.4):
     deadline = time.time() + timeout
@@ -537,7 +653,117 @@ def scroll_down(cfg, move_cursor=False):
 
 
 # ================= 【v8】滑块验证 =================
-def build_slider_solver(cfg):
+if HAS_SLIDER_MODULE:
+    class OopsAwareSliderSolver(SliderSolver):
+        """拖拽后用 qianwen_oops 判定是否失败；失败则关弹窗、重新验证，最多 max_rounds 轮"""
+
+        def __init__(self, config, templates, scale_factor=None, max_rounds=3, verdict_timeout=5.0):
+            super().__init__(config, scale_factor=scale_factor)
+            self.templates = templates
+            self.max_rounds = max(1, int(max_rounds))
+            self.verdict_timeout = float(verdict_timeout)
+
+        # ---------- 判定 ----------
+        def _oops_visible(self, screen=None) -> bool:
+            if not template_available(self.templates, "oops"):
+                return False
+            loc, _ = find(self.templates, "oops", screen=screen)
+            return loc is not None
+
+        def _verdict(self) -> str:
+            """'oops' = 拖拽失败；'stuck' = 滑块仍在；'ok' = 通过"""
+            deadline = time.time() + self.verdict_timeout
+            while True:
+                if self._oops_visible(capture_screen()):
+                    return "oops"
+                if time.time() >= deadline:
+                    break
+                sleep(0.3)
+            return "stuck" if self.locate() else "ok"
+
+        # ---------- 失败后的恢复 ----------
+        def _click_key(self, key, timeout=6.0) -> bool:
+            if not template_available(self.templates, key):
+                print(f"模板 {key} 不可用，无法点击")
+                return False
+            loc, shape = wait_for(self.templates, key, timeout)
+            if not loc:
+                print(f"{timeout:.0f} 秒内未找到 {key}")
+                return False
+            x, y = perform_click(loc, shape)
+            print(f"已点击 {key} ({x}, {y})")
+            return True
+
+        def _recover_after_oops(self) -> bool:
+            sleep(random.uniform(0.6, 1.2))
+            if not self._click_key("ops_close"):
+                return False
+            sleep(random.uniform(0.6, 1.2))
+            if not self._click_key("verify_fail"):
+                print("未找到 verify_fail，继续等待新的滑块")
+            sleep(random.uniform(1.0, 2.0))
+            return True
+
+        # ---------- 覆写 solve：多轮拖拽 ----------
+        def solve(self, hit=None) -> SolveResult:
+            if not self.available:
+                return SolveResult(STATUS_FAILED, 0, "模板不可用")
+            if hit is None:
+                hit = self.locate()
+            if hit is None:
+                return SolveResult(STATUS_NOT_FOUND, 0, "未发现滑块")
+
+            for r in range(1, self.max_rounds + 1):
+                if r == 1:
+                    wait = lognormal(*self.cfg.reaction)
+                    print(f"发现滑块，模拟人类反应 {wait:.2f}s 后开始第 1 轮")
+                else:
+                    wait = rand_in(self.cfg.retry_gap)
+                    print(f"{wait:.2f}s 后开始第 {r}/{self.max_rounds} 轮验证")
+                interruptible_sleep(wait)
+
+                fresh = self.locate()
+                if fresh is None:
+                    if r == 1:
+                        return SolveResult(STATUS_NOT_FOUND, 0, "反应等待期间滑块已消失")
+                    self._record(True)
+                    return SolveResult(STATUS_SOLVED, r - 1, "滑块已消失")
+
+                gx, gy = self._pick_grab_point(fresh)
+                jit = max(0, int(self.cfg.overshoot_jitter))
+                total = self.cfg.distance + self.cfg.overshoot + random.randint(-(jit // 3), jit)
+                total = max(total, self.cfg.distance + 5)
+                print(f"第 {r}/{self.max_rounds} 轮：按住({gx:.1f},{gy:.1f}) 向右拖 {total}px")
+                try:
+                    human_drag(gx, gy, total, self.cfg, target_w=fresh.w or 40)
+                except pyautogui.FailSafeException:
+                    raise
+                except Exception as e:
+                    print(f"拖拽异常：{e}")
+
+                verdict = self._verdict()
+                print(f"第 {r} 轮拖拽后判定：{verdict}")
+
+                if verdict == "ok":
+                    self._record(True)
+                    return SolveResult(STATUS_SOLVED, r, "ok")
+
+                if verdict == "stuck":
+                    continue  # 滑块仍在，进入下一轮
+
+                # verdict == "oops"：拖拽失败，关闭弹窗
+                if not self._recover_after_oops():
+                    break
+                if r < self.max_rounds:
+                    if self.wait_appear(15.0) is None:
+                        print("关闭弹窗后 15 秒内未再出现滑块，终止")
+                        break
+
+            self._record(False)
+            self._save_debug("fail")
+            return SolveResult(STATUS_FAILED, self.max_rounds, "多轮验证均失败")
+        
+def build_slider_solver(cfg, templates=None):
     sv = cfg.get("slider_verify") or {}
     if not sv.get("enabled"):
         return None
@@ -555,7 +781,12 @@ def build_slider_solver(cfg):
         vanish_timeout=float(sv.get("vanish_timeout", 4.0)),
         debug_dir=DEBUG_SHOT_DIR if SAVE_DEBUG_SHOT else None,
     )
-    solver = SliderSolver(conf, scale_factor=SCALE_FACTOR)
+    if sv.get("oops_recovery") and templates is not None:
+        solver = OopsAwareSliderSolver(conf, templates, scale_factor=SCALE_FACTOR,
+                                       max_rounds=int(sv.get("max_rounds", 3)))
+    else:
+        solver = SliderSolver(conf, scale_factor=SCALE_FACTOR)
+
     if not solver.available:
         print(f"警告：滑块模板不可用（{conf.template}），滑块检测自动关闭。")
         return None
@@ -703,6 +934,36 @@ def try_switch_model(cfg, templates) -> bool:
     print("模型切换流程执行完毕。")
     return True
 
+# ================= qianwen_detailed：出现即点击，然后继续等 Copy =================
+def handle_detailed(cfg, templates, state, screen) -> bool:
+    """
+    返回 True 表示 detailed 当前可见（已点击或仍在冷却），调用方应 continue 回到循环顶部；
+    返回 False 表示不需要处理（未出现，或已达到点击上限）。
+    """
+    dc = cfg.get("detailed_click") or {}
+    if not dc.get("enabled") or not template_available(templates, "detailed"):
+        return False
+
+    loc, shape = find(templates, "detailed", screen=screen)
+    if not loc:
+        return False
+
+    max_clicks = int(dc.get("max_clicks", 5))
+    if state["clicks"] >= max_clicks:
+        print(f"detailed 已点击 {state['clicks']} 次仍未出现 Copy，忽略 detailed 继续原流程。")
+        return False
+
+    cooldown = float(dc.get("cooldown", 2.0))
+    if time.time() - state["last"] < cooldown:
+        # 冷却期内 detailed 仍在屏幕上，不重复点击，等待页面变化
+        return True
+
+    x, y = perform_click(loc, shape, offset=tuple(dc.get("offset", (0, 0))))
+    state["clicks"] += 1
+    state["last"] = time.time()
+    print(f"检测到 detailed，已点击 ({x}, {y})（第 {state['clicks']}/{max_clicks} 次），继续等待 Copy...")
+    sleep(random.uniform(0.8, 1.5))
+    return True
 
 # ================= 上传/发送失败检测 =================
 def check_upload_fail_confirmed(cfg, templates, screen=None):
@@ -797,9 +1058,10 @@ def main():
     prompt_snapshot = snapshot_clipboard()
 
     templates = load_templates(cfg)
-    slider = build_slider_solver(cfg)
+    slider = build_slider_solver(cfg, templates) 
     sopt = resolve_slider_options(cfg, args)
     verify_state = {"count": 0}
+    detailed_state = {"clicks": 0, "last": 0.0}
 
     slider_desc = "关"
     if slider:
@@ -835,6 +1097,11 @@ def main():
 
         # ---- 0. 同帧先看 Copy ----
         copy_loc, copy_shape = find(templates, "copy", screen=screen)
+
+        # ---- 0.5 detailed：没有 Copy 时先点 detailed，然后回到循环顶部等 Copy ----
+        if not copy_loc and handle_detailed(cfg, templates, detailed_state, screen):
+            sleep(0.3)
+            continue
 
         # ---- 1. 上传/发送失败 ----
         if not copy_loc:
@@ -873,35 +1140,45 @@ def main():
                 sleep(5)
                 continue
 
-        # ---- 4. Copy 按钮 / 锚点 ----
-        anchor_key = cfg.get("anchor_key")
-        if anchor_key:
-            # 4a. 没有锚点 -> 继续滚屏
-            anchor_loc, _ = find(templates, anchor_key, screen=screen)
-            if not anchor_loc:
-                print(f"未找到 {anchor_key}，继续滚屏...")
-                scroll_down(cfg)
-                continue
+        # ---- 4. 定位 Copy 按钮 ----
+        pair_cfg = cfg.get("pair_copy")
+        click_pt = None   # 仅 pair 模式使用：逻辑坐标 (x, y)
 
-            # 4b. 找到锚点 -> 再找 related 或 copy
-            print(f"找到 {anchor_key}，开始查找 related/copy...")
-            hit_key, location, shape = wait_for_any(
-                templates,
-                cfg.get("anchor_follow_keys", ("related", "copy")),
-                float(cfg.get("anchor_follow_timeout", 3.0)),
-            )
-            if not hit_key:
-                print("找到锚点后未找到 related/copy，继续滚屏...")
+        if pair_cfg:
+            # 4P. regenerate + 与其配对的 copy 同时出现才继续
+            res = wait_for_pair(templates, pair_cfg,
+                                float(cfg.get("anchor_follow_timeout", 3.0)))
+            if not res:
+                print("未找到与 regenerate 配套的 copy，继续滚屏...")
                 scroll_down(cfg)
                 continue
+            click_pt = (res[2], res[3])
         else:
-            location, shape = copy_loc, copy_shape
+            anchor_key = cfg.get("anchor_key")
+            if anchor_key:
+                anchor_loc, _ = find(templates, anchor_key, screen=screen)
+                if not anchor_loc:
+                    print(f"未找到 {anchor_key}，继续滚屏...")
+                    scroll_down(cfg)
+                    continue
+                print(f"找到 {anchor_key}，开始查找 related/copy...")
+                hit_key, location, shape = wait_for_any(
+                    templates,
+                    cfg.get("anchor_follow_keys", ("related", "copy")),
+                    float(cfg.get("anchor_follow_timeout", 3.0)),
+                )
+                if not hit_key:
+                    print("找到锚点后未找到 related/copy，继续滚屏...")
+                    scroll_down(cfg)
+                    continue
+            else:
+                location, shape = copy_loc, copy_shape
 
-        if not location:
-            if check_wrong_confirmed(templates):
-                sys.exit(EXIT_HANDOFF)
-            scroll_down(cfg)
-            continue
+            if not location:
+                if check_wrong_confirmed(templates):
+                    sys.exit(EXIT_HANDOFF)
+                scroll_down(cfg)
+                continue
 
         # ---- 4.1 豆包：等 related 标识后重新定位 copy ----
         if cfg["related_gate"]:
@@ -918,19 +1195,35 @@ def main():
             if not found_related:
                 print("4 秒内未检测到 Related 标识，准备重新定位 Copy。")
 
-            location, shape = find(templates, "copy")
-            if not location:
-                print("等待后无法重新定位 Copy 按钮，检查是否回答异常...")
-                if check_wrong_confirmed(templates):
-                    sys.exit(EXIT_HANDOFF)
-                scroll_down(cfg)
-                continue
+            if pair_cfg:
+                # 关键：重新按配对关系定位，而不是 find("copy")
+                res = find_anchor_target_pair(templates, pair_cfg)
+                if not res:
+                    print("等待后无法重新配对 copy，检查是否回答异常...")
+                    if check_wrong_confirmed(templates):
+                        sys.exit(EXIT_HANDOFF)
+                    scroll_down(cfg)
+                    continue
+                click_pt = (res[2], res[3])
+            else:
+                location, shape = find(templates, "copy")
+                if not location:
+                    print("等待后无法重新定位 Copy 按钮，检查是否回答异常...")
+                    if check_wrong_confirmed(templates):
+                        sys.exit(EXIT_HANDOFF)
+                    scroll_down(cfg)
+                    continue
 
         # ---- 5. 点击复制并校验 ----
         clear_clipboard()
-        copy_offset = cfg.get("copy_offset", (0, 0))
-        lx, ly = perform_click(location, shape, offset=copy_offset)
-        print(f"第 {attempt} 次尝试 - 点击复制按钮: {lx}, {ly}")
+        if click_pt is not None:
+            lx, ly = click_pt
+            pyautogui.click(lx, ly)
+            print(f"第 {attempt} 次尝试 - 点击配对的复制按钮: {lx}, {ly}")
+        else:
+            copy_offset = cfg.get("copy_offset", (0, 0))
+            lx, ly = perform_click(location, shape, offset=copy_offset)
+            print(f"第 {attempt} 次尝试 - 点击复制按钮: {lx}, {ly}")
         sleep(0.3)
         content = read_clipboard_after_copy()
 

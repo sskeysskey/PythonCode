@@ -414,6 +414,26 @@ def render_document(soup, table, header_row, rows, output_path):
 
 # ================= 业务逻辑 =================
 
+HOOK_SCRIPT = "/Users/yanzhang/Coding/ScriptEditor/News_Batch_Auto.scpt"
+
+def run_post_hook():
+    """流程完成后异步触发 AppleScript（仅 macOS，不阻塞主程序）"""
+    if sys.platform != 'darwin':
+        return
+    if not os.path.exists(HOOK_SCRIPT):
+        print(f"未找到后续脚本：{HOOK_SCRIPT}")
+        return
+    try:
+        subprocess.Popen(
+            ["osascript", HOOK_SCRIPT, "--from-hook"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        print("已触发后续 AppleScript：News_Batch_Auto.scpt")
+    except Exception as e:
+        print(f"触发 AppleScript 失败：{e}")
+
 def load_translations():
     """读取 today_chn.txt，复制到剪贴板并返回行列表（保持你原来的行为）"""
     with open(TODAY_CHN_TXT, 'r', encoding='utf-8') as file:
@@ -588,6 +608,9 @@ def main():
     # ---------- 打开 ----------
     if os.path.exists(target_path):
         open_in_browser(target_path)
+
+    # ---------- 完成后触发 hook ----------
+    # run_post_hook()
 
 
 if __name__ == '__main__':

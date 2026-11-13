@@ -1,191 +1,280 @@
-// 保存 WSJ 页面待完成下载的图片下载ID，key 为 tabId
-let DownloadsPending = {};
+// =====================================================================
+// 图片下载跟踪（v1.4）
+//  - 每次点击扩展(Option+X)时，为该标签页建立一份“下载账本”
+//  - 账本存 chrome.storage.session，MV3 service worker 被回收也不丢
+//  - 状态实时写到页面 <html data-ac-dl="状态|剩余|总数|完成|暂停|失败">
+//    状态: scanning(正在提取) / downloading(有进行中的下载) / done(没有进行中的下载)
+//  - “进行中” = state==='in_progress' 且 !paused；暂停/取消/失败/被删 都不算进行中
+// =====================================================================
 
-// 点击扩展图标时触发
-chrome.action.onClicked.addListener(async (tab) => {
-  if (
-    tab.url.includes("ft.com") ||
-    tab.url.includes("bloomberg.com") ||
-    tab.url.includes("wsj.com") ||
-    tab.url.includes("economist.com") ||
-    tab.url.includes("technologyreview.com") ||
-    tab.url.includes("reuters.com") ||
-    tab.url.includes("nytimes.com") ||
-    tab.url.includes("washingtonpost.com") ||
-    tab.url.includes("asia.nikkei.com") ||
-    tab.url.includes("dw.com") ||
-    tab.url.includes("rfi.fr") ||
-    tab.url.includes("bbc.com")
-  ) {
+const SUPPORTED_SITES = [
+  "ft.com", "bloomberg.com", "wsj.com", "economist.com", "technologyreview.com",
+  "reuters.com", "nytimes.com", "washingtonpost.com", "asia.nikkei.com",
+  "dw.com", "rfi.fr", "bbc.com"
+];
+const SEAL_GRACE_MS = 700;          // 提取脚本结束后，等这么久让所有 downloadImage 消息落地再“封存”
+const CANCEL_ON_TAB_CLOSE = true;   // 标签页关闭时，取消该页还没完成(含已暂停)的下载，防止残留图片错配到下一篇
+const STATE_KEY = 'acDownloadTabs';
+const STATUS_ATTR = 'data-ac-dl';
+const RECONCILE_ALARM = 'ac-reconcile';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isSupported = (url) => !!url && SUPPORTED_SITES.some((h) => url.includes(h));
+
+// ---------- 串行化的状态读写（避免并发 read-modify-write 互相覆盖） ----------
+let stateChain = Promise.resolve();
+function withState(fn) {
+  const run = stateChain.then(async () => {
+    const data = await chrome.storage.session.get(STATE_KEY);
+    const state = data[STATE_KEY] || {};
+    const result = await fn(state);
+    await chrome.storage.session.set({ [STATE_KEY]: state });
+    return result;
+  });
+  stateChain = run.catch(() => { });
+  return run;
+}
+
+// ---------- 页面侧：写状态属性 / 弹通知 ----------
+async function pushStatus(tabId, text) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [STATUS_ATTR, text],
+      func: (attr, val) => { document.documentElement.setAttribute(attr, val); }
+    });
+  } catch (e) { /* 标签页正在跳转/已关闭，忽略 */ }
+}
+
+// ---------- 把本次复制结果写回页面，供 News_AutoScroll.py 读取 ----------
+async function pushCopyResult(tabId, ok) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [ok ? 'ok' : 'fail'],
+      func: (v) => {
+        document.documentElement.setAttribute('data-ac-copy', v + '|' + Date.now());
+      }
+    });
+  } catch (e) { /* 标签页已关闭等情况，忽略 */ }
+}
+
+async function notifyTab(tabId, message) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      function: showNotification,
+      args: [message]
+    });
+  } catch (e) { /* ignore */ }
+}
+
+// ---------- 统计：以 chrome.downloads.search 的真实状态为准 ----------
+async function countDownloads(entry) {
+  const c = { active: 0, paused: 0, complete: 0, failed: entry.reqFailed || 0 };
+  await Promise.all(entry.ids.map(async (id) => {
+    let item = null;
     try {
-      // 执行文本提取与复制操作
-      const [result] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        function: extractAndCopy
-      });
-
-      if (result && result.result) { // 检查 result 是否存在
-        // 显示文本复制成功通知
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          function: showNotification,
-          args: ['已成功复制到剪贴板']
-        });
-      } else {
-        // 显示复制失败通知
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          function: showNotification,
-          args: ['复制失败，未找到内容或提取出错']
-        });
-      }
-    } catch (err) {
-      console.error('Script execution failed:', err);
-      // 显示错误通知
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        function: showNotification,
-        args: ['发生错误，请重试']
-      });
+      const r = await chrome.downloads.search({ id });
+      item = r && r[0];
+    } catch (e) { /* ignore */ }
+    if (!item) { c.failed++; return; }                 // 已从列表删除
+    if (item.state === 'in_progress') {
+      if (item.paused) c.paused++; else c.active++;    // 暂停 => 不再算“进行中”
+    } else if (item.state === 'complete') {
+      c.complete++;
+    } else {
+      c.failed++;                                      // interrupted(含用户取消)
     }
+  }));
+  return c;
+}
+
+function buildStatus(entry, c) {
+  const total = entry.ids.length + (entry.reqFailed || 0);
+  let st;
+  if (entry.extracting) st = 'scanning';
+  else if (entry.inflight > 0 || c.active > 0) st = 'downloading';
+  else st = 'done';
+  const pending = c.active + entry.inflight;
+  return [st, pending, total, c.complete, c.paused, c.failed].join('|');
+}
+
+// 重新计算某个标签页的状态；变化时写属性；刚进入 done 时弹一次通知
+async function refreshTab(tabId, force = false) {
+  const res = await withState(async (state) => {
+    const entry = state[tabId];
+    if (!entry) return null;
+    const c = await countDownloads(entry);
+    const text = buildStatus(entry, c);
+    const st = text.split('|')[0];
+    const changed = force || entry.lastStatus !== text;
+    entry.lastStatus = text;
+
+    let msg = null;
+    if (st === 'done') {
+      if (!entry.notified) {
+        entry.notified = true;
+        const total = entry.ids.length + (entry.reqFailed || 0);
+        if (total === 0) msg = '没有找到可下载的图片';
+        else if (c.complete === total) msg = '所有图片下载完成';
+        else msg = `图片下载已结束：成功 ${c.complete}/${total}，暂停 ${c.paused}，中断/取消 ${c.failed}`;
+      }
+    } else {
+      entry.notified = false;
+    }
+    return { text, changed, msg };
+  });
+  if (!res) return;
+  if (res.changed) await pushStatus(tabId, res.text);
+  if (res.msg) await notifyTab(tabId, res.msg);
+}
+
+// ---------- 点击扩展图标 / Option+X ----------
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!isSupported(tab.url)) return;
+  const tabId = tab.id;
+
+  // 开始跟踪（重复触发时保留旧账本里的下载，避免漏掉）
+  await withState(async (state) => {
+    const old = state[tabId];
+    state[tabId] = {
+      extracting: true,
+      inflight: old ? old.inflight : 0,
+      ids: old ? old.ids : [],
+      reqFailed: old ? (old.reqFailed || 0) : 0,
+      notified: false,
+      lastStatus: ''
+    };
+  });
+  await pushStatus(tabId, 'scanning|0|0|0|0|0');
+
+  let copyOk = false;   // 本次复制是否成功
+  try {
+    // 执行文本提取与复制操作（同时触发图片下载消息）
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      function: extractAndCopy
+    });
+
+    copyOk = !!(result && result.result);
+    if (copyOk) {
+      await notifyTab(tabId, '已成功复制到剪贴板');
+    } else {
+      await notifyTab(tabId, '复制失败，未找到内容或提取出错');
+    }
+  } catch (err) {
+    console.error('Script execution failed:', err);
+    await notifyTab(tabId, '发生错误，请重试');
+  } finally {
+    // 新增：先把复制结果写回页面，Python 那边马上能读到
+    await pushCopyResult(tabId, copyOk);
+
+    // 封存：等 downloadImage 消息全部落地，再宣布“提取阶段结束”
+    await sleep(SEAL_GRACE_MS);
+    await withState(async (state) => {
+      if (state[tabId]) state[tabId].extracting = false;
+    });
+    await refreshTab(tabId, true);
   }
 });
 
-// 修改后的下载图片消息监听器，增加下载完成跟踪逻辑
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+// ---------- 图片下载请求（来自页面里的 extractAndCopy） ----------
+chrome.runtime.onMessage.addListener((request, sender) => {
   if (request.action === 'downloadImage') {
-    const tabId = sender.tab ? sender.tab.id : null;
-    if (tabId !== null) {
-      // 初始化该 tab 的数据结构
-      if (!DownloadsPending[tabId]) {
-        DownloadsPending[tabId] = {
-          downloads: [],
-          hasStartedImageProcess: true // 标记已开始处理图片下载
-        };
-      } else {
-        // 如果 tabId 已存在，确保 hasStartedImageProcess 也被设置
-        DownloadsPending[tabId].hasStartedImageProcess = true;
-      }
-    }
-    chrome.downloads.download({
-      url: request.url,
-      filename: request.filename,
-      saveAs: false // 直接下载，不显示保存对话框
-    }, (downloadId) => {
-      if (chrome.runtime.lastError) {
-        console.error(`Download failed for ${request.url}: ${chrome.runtime.lastError.message}`);
-        return;
-      }
-      if (downloadId && tabId !== null && DownloadsPending[tabId]) {
-        // 将下载任务ID加入跟踪队列中
-        DownloadsPending[tabId].downloads.push(downloadId);
-      }
-    });
-  } else if (request.action === 'noImages') {
-    // 处理无图片的情况
-    const tabId = sender.tab ? sender.tab.id : null;
-    if (tabId !== null) {
-      // 检查 DownloadsPending[tabId] 是否已初始化，以及是否真的没有图片开始下载
-      if (DownloadsPending[tabId] && DownloadsPending[tabId].downloads && DownloadsPending[tabId].downloads.length === 0 && DownloadsPending[tabId].hasStartedImageProcess) {
-        // 如果已经标记开始处理图片，但下载队列为空，并且收到了 noImages
-        // 这意味着确实没有图片被发送到下载流程
-        chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          function: showNotification,
-          args: ['没有找到可下载的图片']
-        });
-        delete DownloadsPending[tabId]; // 清理
-      } else if (!DownloadsPending[tabId] || !DownloadsPending[tabId].hasStartedImageProcess) {
-        // 如果从未开始图片处理流程（例如，文本提取失败导致根本没尝试图片）
-        // 或者，如果这是第一次收到 noImages 且尚未初始化 DownloadsPending
-        chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          function: showNotification,
-          args: ['没有找到可下载的图片']
-        });
-        // 确保清理，以防万一
-        if (DownloadsPending[tabId]) delete DownloadsPending[tabId];
-      }
-      // 如果有图片正在下载中，收到 noImages 消息（理论上不应发生），则不应显示“无图片”
-    }
+    handleDownloadRequest(request, sender).catch((e) => console.error(e));
+  }
+  // 'noImages' 不再单独处理：封存后若总数为 0，会统一提示“没有找到可下载的图片”
+  return false;
+});
+
+async function handleDownloadRequest(request, sender) {
+  const tabId = sender.tab ? sender.tab.id : null;
+  const opts = { url: request.url, filename: request.filename, saveAs: false };
+
+  const tracked = tabId !== null && await withState(async (state) => {
+    const e = state[tabId];
+    if (!e) return false;
+    e.inflight++;               // 请求已发出，但下载 ID 还没返回
+    return true;
+  });
+
+  if (!tracked) {               // 没有账本：保持旧行为，直接下载
+    try { await chrome.downloads.download(opts); } catch (e) { console.error(e); }
+    return;
+  }
+
+  let downloadId = null;
+  try {
+    downloadId = await chrome.downloads.download(opts);
+  } catch (e) {
+    console.error(`Download failed for ${request.url}: ${e && e.message}`);
+  }
+
+  const orphan = await withState(async (state) => {
+    const e = state[tabId];
+    if (!e) return true;        // 期间标签页已关闭
+    e.inflight = Math.max(0, e.inflight - 1);
+    if (downloadId == null) e.reqFailed = (e.reqFailed || 0) + 1;
+    else e.ids.push(downloadId);
+    return false;
+  });
+
+  if (orphan && downloadId != null) {
+    try { await chrome.downloads.cancel(downloadId); } catch (e) { /* ignore */ }
+    return;
+  }
+  await refreshTab(tabId);
+}
+
+// ---------- 下载状态变化：暂停/恢复/完成/中断/取消/删除 ----------
+async function onDownloadEvent(downloadId) {
+  const tabIds = await withState(async (state) =>
+    Object.keys(state).filter((t) => state[t].ids.includes(downloadId)).map(Number)
+  );
+  for (const t of tabIds) await refreshTab(t);
+}
+chrome.downloads.onChanged.addListener((delta) => {
+  onDownloadEvent(delta.id).catch((e) => console.error(e));
+});
+chrome.downloads.onErased.addListener((id) => {
+  onDownloadEvent(id).catch((e) => console.error(e));
+});
+
+// ---------- 页面跳转后属性会丢，重新写回 ----------
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === 'complete') refreshTab(tabId, true).catch(() => { });
+});
+
+// ---------- 标签页关闭：清账本，并取消残留(进行中/已暂停)的下载 ----------
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const ids = await withState(async (state) => {
+    const e = state[tabId];
+    if (!e) return [];
+    delete state[tabId];
+    return e.ids;
+  });
+  if (!CANCEL_ON_TAB_CLOSE) return;
+  for (const id of ids) {
+    try {
+      const r = await chrome.downloads.search({ id });
+      if (r && r[0] && r[0].state === 'in_progress') await chrome.downloads.cancel(id);
+    } catch (e) { /* ignore */ }
   }
 });
 
-// 监听下载完成后弹出通知
-chrome.downloads.onChanged.addListener((delta) => {
-  if (delta.state && delta.state.current === "complete") {
-    chrome.downloads.search({ id: delta.id }, (results) => {
-      if (results && results.length > 0) {
-        const downloadItem = results[0];
-        const downloadId = downloadItem.id;
-        // 遍历所有页面的 tabId
-        for (const tabIdStr in DownloadsPending) {
-          const tabId = parseInt(tabIdStr); // 确保 tabId 是数字
-          const tabData = DownloadsPending[tabIdStr];
-          if (tabData && tabData.downloads) { // 确保 tabData 和 downloads 存在
-            const index = tabData.downloads.indexOf(downloadId);
-            if (index !== -1) {
-              // 移除该下载任务ID
-              tabData.downloads.splice(index, 1);
-              // 如果该 tab 下所有图片都下载完成，并且我们确实为这个tab启动了图片处理流程
-              if (tabData.downloads.length === 0 && tabData.hasStartedImageProcess) {
-                chrome.tabs.get(tabId, (tab) => { // 检查tab是否存在
-                  if (chrome.runtime.lastError || !tab) {
-                    // Tab不存在或已关闭，清理并退出
-                    delete DownloadsPending[tabIdStr];
-                    return;
-                  }
-                  // Tab 存在，执行脚本
-                  chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    function: showNotification,
-                    args: ['所有图片下载完成']
-                  }).catch(err => console.error(`Error showing notification on tab ${tabId}:`, err));
-                  // 清理该 tab 对应的数据
-                  delete DownloadsPending[tabIdStr];
-                });
-              }
-              break; // 已找到并处理该下载项，跳出循环
-            }
-          }
-        }
-      }
-    });
-  } else if (delta.state && delta.state.current === "interrupted") {
-    // 处理下载中断的情况
-    chrome.downloads.search({ id: delta.id }, (results) => {
-      if (results && results.length > 0) {
-        const downloadItem = results[0];
-        const downloadId = downloadItem.id;
-        for (const tabIdStr in DownloadsPending) {
-          const tabId = parseInt(tabIdStr);
-          const tabData = DownloadsPending[tabIdStr];
-          if (tabData && tabData.downloads) {
-            const index = tabData.downloads.indexOf(downloadId);
-            if (index !== -1) {
-              tabData.downloads.splice(index, 1); // 从队列中移除
-              console.warn(`Download ${downloadId} for tab ${tabId} was interrupted.`);
-              // 检查是否所有剩余（或全部）下载都已处理完毕
-              if (tabData.downloads.length === 0 && tabData.hasStartedImageProcess) {
-                chrome.tabs.get(tabId, (tab) => {
-                  if (chrome.runtime.lastError || !tab) {
-                    delete DownloadsPending[tabIdStr];
-                    return;
-                  }
-                  chrome.scripting.executeScript({
-                    target: { tabId: tabId },
-                    function: showNotification,
-                    args: ['部分图片下载中断，其余已完成'] // 或者更通用的消息
-                  }).catch(err => console.error(`Error showing notification on tab ${tabId}:`, err));
-                  delete DownloadsPending[tabIdStr];
-                });
-              }
-              break;
-            }
-          }
-        }
-      }
-    });
+// ---------- 定时对账：防止 service worker 回收期间漏事件；顺便把属性重新写回页面 ----------
+chrome.alarms.get(RECONCILE_ALARM, (a) => {
+  if (!a) chrome.alarms.create(RECONCILE_ALARM, { periodInMinutes: 0.5 });
+});
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== RECONCILE_ALARM) return;
+  const tabIds = await withState(async (state) => Object.keys(state).map(Number));
+  for (const id of tabIds) {
+    let exists = true;
+    try { await chrome.tabs.get(id); } catch (e) { exists = false; }
+    if (!exists) { await withState(async (s) => { delete s[id]; }); continue; }
+    await refreshTab(id, true);
   }
 });
 

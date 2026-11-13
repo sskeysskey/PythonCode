@@ -52,6 +52,102 @@
                     }
                 }
             ]
+        },
+        {
+            "name": "野兽之心",
+            "url": "https://gdefud.com/voddetail/119929.html",
+            "url1": "https://shangxidq.com/voddetail/114224.html",
+            "url2": "https://www.pys2.com/mv/515395.html",
+            "url3": "http://jjztq.cn/zt/137166.html",
+            "info": "TC中字",
+            "update": "2026-11-06 13:19:25",
+            "image": "8f83c7f7105a42936d1b06a822061806.jpg",
+            "导演": "大卫·阿耶",
+            "编剧": [
+                "卡梅伦·亚历山大"
+            ],
+            "主演": [
+                "布拉德·皮特",
+                "Uber",
+                "J·K·西蒙斯",
+                "安娜·兰贝"
+            ],
+            "类型": [
+                "剧情",
+                "动作",
+                "冒险"
+            ],
+            "地区": "美国",
+            "date": "2026-09-22(圣塞巴斯蒂安电影节) / 2026-09-25(美国) / 2026-09-30(中国大陆)",
+            "date_re": "2026-09-22(圣塞巴斯蒂安电影节) / 2026-09-25(美国) / 2026-09-30(中国大陆)",
+            "alias": "狂野雄心(港)",
+            "intro": "野兽之心是大导演 大卫·阿耶 的一部优秀的 动作 类型影视作品，主演有 布拉德·皮特 Uber J·K·西蒙斯 安娜·兰贝 。影片的关键词是未知, 在一场惨烈的坠机事故后，特种部队军官詹姆斯·贝尔蒙特（布拉德·皮特 饰）与他的军犬奥丁绝处逢生，被困于极寒险恶的阿拉斯加荒野。面对严酷极端的自然天险，一人一犬陷入了一场生死一线的极限求生战。",
+            "评分": {
+                "豆瓣": "",
+                "IMDB": "7.5"
+            },
+            "playlist": [
+                {
+                    "name": "腾讯云",
+                    "episodes": {
+                        "HD中字": "http://jjztq.cn/q/137166-1-0.html"
+                    }
+                },
+                {
+                    "name": "阿里云",
+                    "episodes": {
+                        "TC中字": "http://jjztq.cn/q/137166-0-0.html"
+                    }
+                },
+                {
+                    "name": "shangxidq",
+                    "episodes": {
+                        "TC超清版": "https://shangxidq.com/vodplay/114224-1-1.html"
+                    }
+                },
+                {
+                    "name": "gdefud",
+                    "episodes": {
+                        "TC中字": "https://gdefud.com/vodplay/119929-1-1.html"
+                    }
+                },
+                {
+                    "name": "天堂",
+                    "episodes": {
+                        "TC中字v2": "https://www.pys2.com/py/515395-2-1.html"
+                    }
+                },
+                {
+                    "name": "暴风",
+                    "episodes": {
+                        "TC超清版": "https://www.pys2.com/py/515395-3-1.html"
+                    }
+                },
+                {
+                    "name": "如意",
+                    "episodes": {
+                        "TC中字": "https://www.pys2.com/py/515395-10-1.html"
+                    }
+                },
+                {
+                    "name": "量子",
+                    "episodes": {
+                        "TC中字": "https://www.pys2.com/py/515395-9-1.html"
+                    }
+                },
+                {
+                    "name": "光速",
+                    "episodes": {
+                        "抢先版": "https://www.pys2.com/py/515395-5-1.html"
+                    }
+                },
+                {
+                    "name": "红牛",
+                    "episodes": {
+                        "抢先版": "https://www.pys2.com/py/515395-6-1.html"
+                    }
+                }
+            ]
         }
     ],
     "Drama": [

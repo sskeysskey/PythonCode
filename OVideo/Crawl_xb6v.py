@@ -108,6 +108,31 @@ WHITELIST_NAMES = [
     "镖人 第二季"
 ]
 
+# 带这些后缀的片名直接跳过（预告片等）
+SKIP_NAME_SUFFIXES = ("预告片",)
+
+# 去掉清晰度/字幕等尾巴，如 "1080p.HD中字"、"4K.国粤双语.HD中字"
+_QUALITY_TAIL_RE = re.compile(
+    r"[\s.·]*(?:\d{3,4}[pP]|4K|8K|HD|BD|UHD|国语|粤语|国英|国粤|中字|中英|双字|双语|配音).*$",
+    re.IGNORECASE,
+)
+
+def _core_title(title):
+    """从 '2026剧情《魔法秘境预告片》1080p.HD中字' 中提取核心片名 '魔法秘境预告片'"""
+    if not title:
+        return ""
+    m = re.search(r"《([^》]+)》", title)
+    core = m.group(1) if m else title
+    core = _QUALITY_TAIL_RE.sub("", core)
+    return core.strip()
+
+def is_skip_suffix_name(name):
+    """核心片名以 SKIP_NAME_SUFFIXES 中任一后缀结尾则返回 True（忽略空格、大小写、全半角差异）"""
+    core = _normalize_name(_core_title(name))   # 复用已有的 _normalize_name
+    if not core:
+        return False
+    return any(core.endswith(_normalize_name(s)) for s in SKIP_NAME_SUFFIXES)
+
 FILTER_REGIONS = ["中国", "大陆", "内地", "中国大陆", "中国内地", "泰国", "China"]
 
 MIN_RATING = 6.0
@@ -1813,6 +1838,11 @@ def process_items(data, items, tab_name):
             print(f"  ({idx}/{total}) {name} [在黑名单中，跳过]")
             continue
 
+        # —— 新增：列表阶段，预告片后缀直接跳过（不请求详情页，省时间）——
+        if is_skip_suffix_name(name):
+            print(f"  ({idx}/{total}) {name} [后缀命中 {SKIP_NAME_SUFFIXES}，跳过]")
+            continue
+
         print(f"  ({idx}/{total}) {name}  [{info}]")
         try:
             rec = parse_subpage(url, name, info)
@@ -1823,6 +1853,12 @@ def process_items(data, items, tab_name):
                 time.sleep(SLEEP_BETWEEN)
                 continue
 
+            # —— 新增：详情阶段，真实片名带预告片后缀也跳过 ——
+            if is_skip_suffix_name(real_name):
+                print(f"    - 跳过：真实名称「{real_name}」带后缀 {SKIP_NAME_SUFFIXES}")
+                time.sleep(SLEEP_BETWEEN)
+                continue
+            
             new_6vdy_eps = {}
             for pl in rec.get("playlist", []):
                 if pl.get("name") == PLAYLIST_NAME:

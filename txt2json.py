@@ -79,7 +79,7 @@ def alert_and_exit(message):
             safe = message.replace('\\', '\\\\').replace('"', '\\"')
             subprocess.run([
                 "osascript", "-e",
-                f'display alert "缺少必要文件" message "{safe}" as critical'
+                f'display alert "缺少必要文件" message "{safe}" as critical giving up after 120'
             ], check=False)
         else:
             print("\n" + "!" * 50)

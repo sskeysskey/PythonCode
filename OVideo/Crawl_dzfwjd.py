@@ -130,7 +130,7 @@ ONLY_GROUPS = set()
 
 LIST_SOURCES = [
     (f"{DOMAIN}/cate-filter/oumeiju.html", "Drama", "欧美剧"),
-    (f"{DOMAIN}/cate-filter/hanju.html",   "Drama", "日韩剧"),
+    # (f"{DOMAIN}/cate-filter/hanju.html",   "Drama", "日韩剧"),
     # 以后要加别的分类页，照格式追加即可：
     # (f"{DOMAIN}/cate-filter/XXX.html", "Show",  "综艺"),
     # (f"{DOMAIN}/cate-filter/XXX.html", "Anime", "动漫"),
@@ -2115,7 +2115,7 @@ def merge_into_existing(existing, rec, sub_url, matched_group, log):
             cand = make_series_info(best_new, matched_group, old_info)
             if cand and cand != old_info:
                 existing["info"] = cand
-                log(f"      ✅[info更新] 本站最大集数 {new_max} > 历史最大 {old_max_all}：「{old_info}」 -> 「{cand}」")
+                log(f"      [info更新] 本站最大集数 {new_max} > 历史最大 {old_max_all}：「{old_info}」 -> 「{cand}」")
     elif not old_info and rec.get("info"):
         existing["info"] = rec["info"]
 

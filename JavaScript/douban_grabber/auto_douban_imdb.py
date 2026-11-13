@@ -54,7 +54,7 @@ DOWNLOADS_DIR = Path.home() / 'Downloads'
 TARGET_YEARS = ['2026']
 ACTIVE_YEARS = list(TARGET_YEARS)   # 运行时会被 main() 覆盖
 # —— 豆瓣年份容差：除目标年份外，也接受「目标年 + N」（0 = 关闭）——
-DOUBAN_YEAR_TOLERANCE_NEXT = 1      # 2026 时也接受 2027；设 2 则接受 2027、2028
+DOUBAN_YEAR_TOLERANCE_NEXT = 2      # 2026 时也接受 2027；设 2 则接受 2027、2028
 
 # —— 未来年份回退：JSON 年份晚于系统年份时（如 2027），主年份未命中则回退 ——
 FUTURE_YEAR_FALLBACK_ENABLED = True
@@ -62,14 +62,20 @@ FUTURE_YEAR_FALLBACK_OFFSETS = [0]   # 0 = 系统当年；-1 = 系统年份减�
 FALLBACK_LEVEL = 2                       # 回退年份的年份级别（数字越大优先级越低，主年份为 0/1）
 FALLBACK_YEARS = []                      # 运行时由 main() 计算
 
-# —— 日期规则：评分达标（或无评分）时，date 开头的日期改为系统当天 ——
+# —— 日期规则：总开关 ——
 DATE_RULE_ENABLED           = True     # 总开关；False = 完全沿用豆瓣日期
-DATE_RULE_MIN_RATING        = 5.6      # 豆瓣/IMDb 最高分 ≥ 该值 → date 改为今天
-DATE_RULE_NO_RATING_USE_TODAY = True   # 两边都没评分时是否也改为今天
 DATE_TODAY_FORMAT           = '%Y-%m-%d'
 
-# —— 日期规则适用的分类（JSON 里的顶层 key）——
-DATE_RULE_CATEGORIES = {'Movie', 'Drama'}   # Show / Anime 不在此集合中 → 沿用豆瓣原始日期
+# —— 按分类配置日期规则（JSON 顶层 key）——
+#   min_rating     : 豆瓣/IMDb 最高分 ≥ 该值 → date 改为今天
+#   no_rating_today: 两边都没评分时是否也改为今天
+#   未在此表中的分类（如其他分类）→ 一律沿用豆瓣原始日期
+DATE_RULES_BY_CATEGORY = {
+    'Movie': {'min_rating': 5.6, 'no_rating_today': True},
+    'Drama': {'min_rating': 5.6, 'no_rating_today': True},
+    'Show':  {'min_rating': 6.5, 'no_rating_today': False},
+    'Anime': {'min_rating': 6.5, 'no_rating_today': False},
+}
 
 # —— 站点首页（当前标签页没有搜索框时跳过去）——
 DOUBAN_HOME = 'https://movie.douban.com/'
@@ -454,6 +460,27 @@ def title_match_level(candidate, query, allow_reverse=False):
         return 2
     return None
 
+def name_variants(name: str):
+    """检索名变体：完整名在前，去掉括号地区标注后的基础名在后。
+       '犯罪都市(日本版)' -> ['犯罪都市(日本版)', '犯罪都市']"""
+    out = [name]
+    base = clean_candidate(name)          # 复用已有的 RE_REGION_TAG，会去掉 (…)/（…）
+    if base and norm_title(base) != norm_title(name):
+        out.append(base)
+    return out
+
+
+def match_name_any(title, name, allow_reverse=False):
+    """对所有变体取最优名字级别。完整名 +0，基础名 +0.2（同级时完整名优先）。"""
+    best = None
+    for i, v in enumerate(name_variants(name)):
+        lvl = title_match_level(title, v, allow_reverse=allow_reverse)
+        if lvl is None:
+            continue
+        lvl = lvl + 0.2 * i
+        best = lvl if best is None else min(best, lvl)
+    return best
+
 
 RE_YEAR_RANGE = re.compile(r'((?:19|20)\d{2})(\s*[\u2013\u2014\-]\s*((?:19|20)\d{2})?)?')
 
@@ -533,10 +560,10 @@ def pick_douban_suggestion(items, name, years):
     ylevels = douban_year_levels(years)
     cands, name_only = [], []
     for it in items:
-        lvl = title_match_level(it.get('title', ''), name)
+        lvl = match_name_any(it.get('title', ''), name) 
         if lvl is None:
             for s in it.get('sub') or []:
-                l2 = title_match_level(s, name)
+                l2 = match_name_any(s, name) 
                 if l2 is not None:
                     lvl = 2 + l2          # 外文副标题命中，优先级低于中文主标题
                     break
@@ -587,19 +614,18 @@ def parse_search_title(raw: str):
 
 
 def douban_search_match_level(title, name):
-    """
-    搜索结果页标题形如「中文名 外文原名」：
-      0 = 完全一致，或「name + 空格 + 拉丁字母开头的外文原名（不含汉字）」
-      1 = 以 name 开头 + 边界（如「暗流 第二季」「暗流2」）
-      None = 不匹配（如「暗流涌动」）
-    """
-    lvl = title_match_level(title, name)
-    if lvl == 1:
-        t, q = norm_title(title), norm_title(name)
-        rest = t[len(q):].strip()
-        if rest and RE_LATIN_START.match(rest) and not RE_HAN.search(rest):
-            lvl = 0
-    return lvl
+    best = None
+    for i, v in enumerate(name_variants(name)):
+        lvl = title_match_level(title, v)
+        if lvl == 1:
+            t, q = norm_title(title), norm_title(v)
+            rest = t[len(q):].strip()
+            if rest and RE_LATIN_START.match(rest) and not RE_HAN.search(rest):
+                lvl = 0
+        if lvl is not None:
+            lvl += 0.2 * i
+            best = lvl if best is None else min(best, lvl)
+    return best
 
 
 def pick_douban_search_result(items, name, years, page=0):
@@ -616,7 +642,7 @@ def pick_douban_search_result(items, name, years, page=0):
         lvl = douban_search_match_level(title, name)
         if lvl is None:
             for s in subs:
-                l2 = title_match_level(s, name)
+                l2 = match_name_any(s, name)
                 if l2 is not None:
                     lvl = 2 + l2
                     break
@@ -1028,31 +1054,13 @@ def replace_date_prefix(date_str, new_date):
     return new_date + s[m.end():]
 
 
-def apply_date_rule(item, douban_scraped, imdb_scraped=None, expected_imdb_id='', category='') -> bool:
+def apply_date_rule(item, douban_scraped, imdb_scraped=None, expected_imdb_id='', category=''):
     """
     在豆瓣、IMDb 两阶段都结束后调用，只修改 item['date']（不碰 date_re）。
-      · 最高分 ≥ DATE_RULE_MIN_RATING → 开头日期改为系统当天
-      · 两边都没评分且 DATE_RULE_NO_RATING_USE_TODAY → 同上
-      · 最高分 < 阈值 → 使用豆瓣原始日期
-    基准始终是「本次从豆瓣抓到的原始日期」，因此重复运行结果稳定。
+    阈值与无评分策略按 category 从 DATE_RULES_BY_CATEGORY 取值。
     返回 item['date'] 是否发生变化。
     """
     if not DATE_RULE_ENABLED:
-        return False
-
-    # ★ 分类门控：不在 DATE_RULE_CATEGORIES 内的分类（Show / Anime）不应用规则
-    if category not in DATE_RULE_CATEGORIES:
-        raw_date = str(douban_scraped.get('date', '')).strip()
-        old = str(item.get('date', '')).strip()
-        print("  ┌────────────── 日期规则 ──────────────")
-        print(f"  │ 分类 [{category}] 不在日期规则适用范围内，沿用豆瓣原始日期")
-        if is_valid_douban_date(raw_date) and old != raw_date:
-            item['date'] = raw_date      # 同时纠正之前可能被写成“今天”的旧值
-            print(f"  │ date : {old or '空'} -> {raw_date}")
-            print("  └──────────────────────────────────────")
-            return True
-        print(f"  │ date : {old or '空'}（无变化）")
-        print("  └──────────────────────────────────────")
         return False
 
     print("  ┌────────────── 日期规则 ──────────────")
@@ -1062,32 +1070,42 @@ def apply_date_rule(item, douban_scraped, imdb_scraped=None, expected_imdb_id=''
         print("  └──────────────────────────────────────")
         return False
 
-    d_rating = parse_rating(douban_scraped.get('douban_rating'))
+    rule = DATE_RULES_BY_CATEGORY.get(category)
 
-    # IMDb 评分只在「落地页是条目页且 ID 与期望一致」时才算数（与 update_imdb 的校验一致）
-    i_rating = None
-    if imdb_scraped:
-        got_id = normalize_imdb_id(imdb_scraped.get('imdb_id', '') or imdb_scraped.get('url', ''))
-        exp_id = normalize_imdb_id(expected_imdb_id)
-        if got_id and (not exp_id or exp_id == got_id):
-            i_rating = parse_rating(imdb_scraped.get('imdb_rating'))
-        else:
-            print("  │ IMDb 结果无效（非条目页或 ID 不匹配），不参与评分判断")
-
-    print(f"  │ 豆瓣评分: {d_rating if d_rating is not None else '无'}   "
-          f"IMDb评分: {i_rating if i_rating is not None else '无'}   "
-          f"阈值: {DATE_RULE_MIN_RATING}")
-
-    rated = [r for r in (d_rating, i_rating) if r is not None]
-    if rated:
-        top = max(rated)
-        use_today = top + 1e-9 >= float(DATE_RULE_MIN_RATING)
-        reason = (f"最高分 {top} ≥ {DATE_RULE_MIN_RATING}，date 改为今天" if use_today
-                  else f"最高分 {top} < {DATE_RULE_MIN_RATING}，保持豆瓣原始日期")
+    if rule is None:
+        # 分类未配置 → 沿用豆瓣原始日期（同时纠正之前可能被写成“今天”的旧值）
+        use_today = False
+        print(f"  │ 分类 [{category}] 未配置日期规则，沿用豆瓣原始日期")
     else:
-        use_today = bool(DATE_RULE_NO_RATING_USE_TODAY)
-        reason = "豆瓣与 IMDb 均无评分，" + ("date 改为今天" if use_today else "保持豆瓣原始日期")
-    print(f"  │ {reason}")
+        min_rating = float(rule['min_rating'])
+
+        d_rating = parse_rating(douban_scraped.get('douban_rating'))
+
+        # IMDb 评分只在「落地页是条目页且 ID 与期望一致」时才算数
+        i_rating = None
+        if imdb_scraped:
+            got_id = normalize_imdb_id(imdb_scraped.get('imdb_id', '') or imdb_scraped.get('url', ''))
+            exp_id = normalize_imdb_id(expected_imdb_id)
+            if got_id and (not exp_id or exp_id == got_id):
+                i_rating = parse_rating(imdb_scraped.get('imdb_rating'))
+            else:
+                print("  │ IMDb 结果无效（非条目页或 ID 不匹配），不参与评分判断")
+
+        print(f"  │ 分类 [{category}]  "
+              f"豆瓣评分: {d_rating if d_rating is not None else '无'}   "
+              f"IMDb评分: {i_rating if i_rating is not None else '无'}   "
+              f"阈值: {min_rating}")
+
+        rated = [r for r in (d_rating, i_rating) if r is not None]
+        if rated:
+            top = max(rated)
+            use_today = top + 1e-9 >= min_rating
+            reason = (f"最高分 {top} ≥ {min_rating}，date 改为今天" if use_today
+                      else f"最高分 {top} < {min_rating}，保持豆瓣原始日期")
+        else:
+            use_today = bool(rule['no_rating_today'])
+            reason = "豆瓣与 IMDb 均无评分，" + ("date 改为今天" if use_today else "保持豆瓣原始日期")
+        print(f"  │ {reason}")
 
     today = datetime.date.today().strftime(DATE_TODAY_FORMAT)
     target = replace_date_prefix(base, today) if use_today else base
@@ -2068,42 +2086,58 @@ def douban_search_page_pick(name):
 
 
 # ------------------ 豆瓣：DOM 路线 ------------------
-def douban_stage_dom(name):
-    print(f"\n----- 豆瓣（DOM 精准路线，年份要求 {ACTIVE_YEARS}）-----")
-    ensure_douban_movie_page()
-
+def douban_suggest_pick(name):
+    """只做『输入 → 等联想 → 挑选』，返回 pick 或 None。"""
     method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
     if method is None:
-        print("  当前豆瓣页没有搜索框，跳转电影首页重试")
         navigate_active_tab(DOUBAN_HOME)
         wait_page_ready('movie.douban.com')
         method = dom_fill_input(DOUBAN_INPUT_SELECTORS, name, '豆瓣')
-
-    pick = None
-    if method is not None:
-        items = wait_douban_suggestions(name)
-        if items is None and method == 'paste':
-            print("  联想未出现，改用 JS 写值重试一次")
-            dom_set_input(DOUBAN_INPUT_SELECTORS, name)
-            items = wait_douban_suggestions(name)
-
-        if items is None:
-            print("  ⚠️ 豆瓣联想列表未出现（确实无联想）")
-        elif not items:
-            print("  ⚠️ 豆瓣联想中没有影视条目")
-        else:
-            pick = pick_douban_suggestion(items, name, ACTIVE_YEARS)
-    else:
-        print("  ⚠️ 豆瓣搜索框仍未找到，直接走搜索结果页")
-
-    if pick:
-        return douban_open_subject_and_scrape(pick['link'])
-
-    # —— 需求2：联想无结果 / 无符合条目 → 回车进入搜索结果页再找 ——
-    pick = douban_search_page_pick(name)
-    if not pick:
+    if method is None:
+        print("  ⚠️ 豆瓣搜索框仍未找到，跳过联想")
         return None
-    return douban_open_subject_and_scrape(pick['link'])
+
+    items = wait_douban_suggestions(name)
+    if items is None and method == 'paste':
+        print("  联想未出现，改用 JS 写值重试一次")
+        dom_set_input(DOUBAN_INPUT_SELECTORS, name)
+        items = wait_douban_suggestions(name)
+    if items is None:
+        print("  ⚠️ 豆瓣联想列表未出现（确实无联想）")
+        return None
+    if not items:
+        print("  ⚠️ 豆瓣联想中没有影视条目")
+        return None
+    return pick_douban_suggestion(items, name, ACTIVE_YEARS)
+
+
+def douban_stage_dom_multi(names):
+    """
+    顺序：① 所有候选名依次走「联想」 → ② 全部没命中，再对所有候选名走「搜索结果页」。
+    返回 (scraped, 命中的检索名)。
+    """
+    print(f"\n----- 豆瓣（DOM 精准路线，年份要求 {ACTIVE_YEARS}）-----")
+    ensure_douban_movie_page()
+
+    for nm in names:
+        print(f"\n🔎 [联想] 检索豆瓣：「{nm}」")
+        pick = douban_suggest_pick(nm)
+        if pick:
+            return douban_open_subject_and_scrape(pick['link']), nm
+
+    for nm in names:
+        print(f"\n🔎 [搜索结果页] 检索豆瓣：「{nm}」")
+        pick = douban_search_page_pick(nm)
+        if pick:
+            return douban_open_subject_and_scrape(pick['link']), nm
+
+    return None, ''
+
+
+def douban_stage_dom(name):
+    """兼容包装：单个检索名。"""
+    scraped, _ = douban_stage_dom_multi([name])
+    return scraped
 
 
 # ------------------ 图片路线（兜底，保持原逻辑） ------------------
@@ -2265,9 +2299,10 @@ def strip_latin_part(name: str) -> str:
 
 def build_name_candidates(name: str):
     names = [name]
-    alt = strip_latin_part(name) if NAME_FALLBACK_ENABLED else ''
-    if alt and norm_title(alt) != norm_title(name):
-        names.append(alt)
+    if NAME_FALLBACK_ENABLED:
+        for alt in (clean_candidate(name), strip_latin_part(name)):   # 去括号 / 去英文
+            if alt and all(norm_title(alt) != norm_title(x) for x in names):
+                names.append(alt)
     return names
 
 
@@ -2284,16 +2319,22 @@ def douban_stage_once(name):
 
 
 def douban_stage_with_fallback(names):
-    """依次尝试候选名；返回 (scraped, 命中的检索名)。"""
-    for i, nm in enumerate(names):
-        if i > 0:
-            print(f"\n🔁 名字回退：「{names[0]}」无合格结果，改用「{nm}」再次检索豆瓣")
-            RUN_INFO['fallback_tried'] = True
-        RUN_INFO.setdefault('names_tried', []).append(nm)
-        scraped = douban_stage_once(nm)
-        if scraped:
-            return scraped, nm
-    return None, ''
+    """返回 (scraped, 命中的检索名)。"""
+    RUN_INFO['names_tried'] = list(names)
+    scraped, used = None, ''
+    if js_available():
+        scraped, used = douban_stage_dom_multi(names)
+    elif DOUBAN_IMAGE_FALLBACK:
+        for nm in names:
+            scraped = douban_stage_once(nm)      # 图片兜底路线
+            if scraped:
+                used = nm
+                break
+
+    if scraped and used != names[0]:
+        RUN_INFO['fallback_tried'] = True
+        print(f"\n🔁 名字回退生效：「{names[0]}」无合格结果，改用「{used}」命中")
+    return scraped, used
 
 
 def _notify_mac(title, msg):

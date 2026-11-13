@@ -169,6 +169,12 @@ NEWSLETTER_MAX_LEN = 20                           # 短行且含 Newsletter → 
 HEAD_PROMO_WINDOW = 4                             # 头部前 N 段内清理推广
 TAIL_PROMO_WINDOW = 15                            # 尾部最后 N 段内出现推广则从该处截断
 
+# ---- 网页噪声：文章页面自带的发布时间、音频播放器提示等（与模型无关）----
+PAGE_NOISE_PATTERNS = (
+    re.compile(r'^发布于\s*\d+\s*(?:秒|分钟|小时|天|周|个月|年)前$'),   # 发布于10小时前
+    re.compile(r'^您的浏览器不支持播放此文件'),                       # 音频播放器提示
+)
+
 # ---- 全局过滤 ----
 GLOBAL_DROP_EXACT = {"广告"}
 GLOBAL_DROP_PREFIXES = ("AdChoices", "拓展阅读")
@@ -304,6 +310,16 @@ def preprocess(content: str):
         lines = [ln for ln in lines if not CODE_FENCE_RE.fullmatch(ln)]
     return [ln for ln in lines if ln]
 
+def strip_page_noise(lines, deleted):
+    """删除网页自带的噪声行（发布时间、播放器提示等），匹配整行或行首"""
+    kept = []
+    for ln in lines:
+        s = ln.strip()
+        if any(p.search(s) for p in PAGE_NOISE_PATTERNS):
+            deleted.append(ln)
+            continue
+        kept.append(ln)
+    return kept
 
 def strip_head_promo(lines, deleted):
     """头部前 N 段内的来源推广（Newsletter / Odd Lots ...）"""
@@ -562,6 +578,7 @@ def clean_content(profile: str, content: str):
 
     lines = preprocess(content)
     deleted = []
+    lines = strip_page_noise(lines, deleted)   # ★新增：所有 provider（含 raw）都生效
     cfg = PROFILES.get(profile)
 
     if cfg:
