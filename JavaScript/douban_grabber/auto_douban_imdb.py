@@ -2284,6 +2284,25 @@ RE_LATIN_CHUNK = re.compile(r"[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F0-9'\u201
 
 RUN_INFO = {}   # 本次运行的关键信息，结束时用于写日志
 
+# —— 语言版本后缀（XXX国语 / XXX普通话 / XXX粤语 → 完整名失败后去掉后缀再试）——
+LANG_SUFFIX_ENABLED = True
+LANG_SUFFIX_WORDS   = ['国语', '普通话', '粤语', '国配', '粤配', '中配', '台配']
+RE_LANG_SUFFIX = re.compile(
+    r'[\s\-－—_·:：]*(?:'
+    + '|'.join(sorted(map(re.escape, LANG_SUFFIX_WORDS), key=len, reverse=True))
+    + r')(?:版|译制)?$'
+)
+
+
+def strip_lang_suffix(name: str) -> str:
+    """'XXX国语' -> 'XXX'；'XXX 粤语' -> 'XXX'；无后缀或去后为空时返回 ''"""
+    if not LANG_SUFFIX_ENABLED:
+        return ''
+    s = unicodedata.normalize('NFKC', str(name or '')).strip()
+    t = RE_LANG_SUFFIX.sub('', s).strip(_STRIP_CHARS).strip()
+    if not t or t == s or not any(c.isalnum() for c in t):
+        return ''
+    return t
 
 def strip_latin_part(name: str) -> str:
     """'黑帮生存战TheMob' -> '黑帮生存战'；'绝命毒师 Breaking Bad' -> '绝命毒师'；无需去除时返回 ''"""
@@ -2300,7 +2319,8 @@ def strip_latin_part(name: str) -> str:
 def build_name_candidates(name: str):
     names = [name]
     if NAME_FALLBACK_ENABLED:
-        for alt in (clean_candidate(name), strip_latin_part(name)):   # 去括号 / 去英文
+        # 顺序：去括号地区标注 → 去语言后缀 → 去英文部分
+        for alt in (clean_candidate(name), strip_lang_suffix(name), strip_latin_part(name)):
             if alt and all(norm_title(alt) != norm_title(x) for x in names):
                 names.append(alt)
     return names

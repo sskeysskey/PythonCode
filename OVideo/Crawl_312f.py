@@ -1903,7 +1903,7 @@ def merge_into_existing(existing, rec, sub_url, matched_group, log):
             cand = make_series_info(best_new, matched_group, old_info)
             if cand and cand != old_info:
                 existing["info"] = cand
-                log(f"      ✅[info更新] 本站最大集数 {new_max} > 历史最大 {old_max_all}：「{old_info}」 -> 「{cand}」")
+                log(f"      [info更新] 本站最大集数 {new_max} > 历史最大 {old_max_all}：「{old_info}」 -> 「{cand}」")
     elif not old_info and rec.get("info"):
         existing["info"] = rec["info"]
 

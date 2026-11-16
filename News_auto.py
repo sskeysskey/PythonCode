@@ -98,6 +98,7 @@ PROVIDERS = {
             # ---- 滑块验证后重新提交 ----
             "launch":         ("qianwen_launch.png",    0.90, False),
             "new":            ("qianwen_new.png",       0.90, False),   # 【v8】刷新后先开新对话
+            "queue":       ("qianwen_queue.png",       0.90, False),   # 排队检测，可选模板
             # ---- 【v9】拖拽失败弹窗处理 ----
             "oops":        ("qianwen_oops.png",        0.90, False),
             "ops_close":   ("qianwen_ops_close.png",   0.90, False),
@@ -117,6 +118,12 @@ PROVIDERS = {
             "offset": (0, 0),    # 若要点按钮的某个偏移位置，在此调整
             "max_clicks": 5,     # 单次运行最多点击次数，防止死循环
             "cooldown": 2.0,     # 两次点击之间的最短间隔（秒）
+        },
+        # 【新增】排队延长配置（放在 qianwen 配置里，与 slider_verify 同级）
+        "queue_extend": {
+            "enabled": True,
+            "seconds": 120,         # 每次检测到排队延长的秒数
+            "max_extensions": 3,    # 单次运行最多延长几次，防止无限等待（我的默认假设，可自行调整）
         },
         "model_switch_steps": [
             ("click", "switch_open"),
@@ -343,6 +350,33 @@ def save_debug_shot(tag: str):
         print(f"已保存调试截图: {path}")
     except Exception as e:
         print(f"保存调试截图失败: {e}")
+
+# ================= 通知弹窗（调用 Modules/notification.py，异步不阻塞） =================
+NOTIFY_SCRIPT = os.path.join(MODULES_DIR, "notification.py")
+NOTIFY_ENABLED = True   # 调试完可改为 False 关闭弹窗
+NOTIFY_STYLE = {
+    "info":  ("green", "white"),
+    "step":  ("#1565c0", "white"),
+    "queue": ("#6a1b9a", "white"),
+    "warn":  ("#ef6c00", "white"),
+    "error": ("#c62828", "white"),
+}
+
+
+def notify(msg, level="info", duration=2500):
+    """同时打印日志并弹出 toast；弹窗失败不影响主流程"""
+    print(f"[通知] {msg}")
+    if not NOTIFY_ENABLED or not os.path.exists(NOTIFY_SCRIPT):
+        return
+    bg, fg = NOTIFY_STYLE.get(level, NOTIFY_STYLE["info"])
+    try:
+        subprocess.Popen(
+            [sys.executable, NOTIFY_SCRIPT, msg,
+             "-d", str(duration), "--bg", bg, "--fg", fg,
+             "--font", "PingFang SC 18"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"弹窗失败（忽略）: {e}")
 
 
 def match_template(template, threshold, screen=None):
@@ -852,6 +886,7 @@ def handle_slider_event(cfg, templates, solver, hit, prompt_text, state, sopt) -
     """True = 处理完毕，回到等待 Copy 的循环；False = 失败，应退出码 10"""
     sv = cfg["slider_verify"]
     state["count"] += 1
+    notify(f"检测到滑块验证（第 {state['count']} 次）", level="warn")
     max_per_run = int(sv.get("max_per_run", 3))
     print(f"检测到滑块验证（本次运行第 {state['count']}/{max_per_run} 次），"
           f"模式={'自动' if sopt['auto'] else '人工'}，刷新重填={'开' if sopt['resubmit'] else '关'}")
@@ -960,6 +995,7 @@ def handle_detailed(cfg, templates, state, screen) -> bool:
 
     x, y = perform_click(loc, shape, offset=tuple(dc.get("offset", (0, 0))))
     state["clicks"] += 1
+    notify(f"检测到 detailed，已点击（{state['clicks']}/{max_clicks}）", level="step", duration=1800)
     state["last"] = time.time()
     print(f"检测到 detailed，已点击 ({x}, {y})（第 {state['clicks']}/{max_clicks} 次），继续等待 Copy...")
     sleep(random.uniform(0.8, 1.5))
@@ -1010,6 +1046,35 @@ def check_upload_fail_confirmed(cfg, templates, screen=None):
     print("上传失败提示已消失，且未开启瞬时判定，继续正常流程。")
     return False, True
 
+# ================= 排队检测：出现时延长超时上限 =================
+def check_queue_extend(cfg, templates, screen, qstate) -> bool:
+    qc = cfg.get("queue_extend") or {}
+    if not qc.get("enabled") or not template_available(templates, "queue"):
+        qstate["visible"] = False
+        return False
+
+    visible = find(templates, "queue", screen=screen)[0] is not None
+    was_visible = qstate["visible"]
+    qstate["visible"] = visible
+
+    if was_visible and not visible:
+        notify("排队结束：queue 图片已消失", level="step", duration=2000)
+        return False
+    if not (visible and not was_visible):      # 只处理上升沿
+        return False
+
+    max_ext = int(qc.get("max_extensions", 3))
+    if qstate["count"] >= max_ext:
+        notify(f"检测到排队，但已达延长上限 {max_ext} 次", level="warn")
+        return False
+
+    add = float(qc.get("seconds", 120))
+    qstate["count"] += 1
+    qstate["extra"] += add
+    notify(f"检测到排队：超时上限 +{add:.0f}s（第 {qstate['count']}/{max_ext} 次），"
+           f"当前上限 {TIMEOUT_DURATION + qstate['extra']:.0f}s", level="queue", duration=3000)
+    return True
+
 
 # ================= 豆包专用：回答异常二次确认 =================
 def check_wrong_confirmed(templates):
@@ -1036,6 +1101,15 @@ def check_wrong_confirmed(templates):
     print("二次确认不成立（wrong 已消失），继续正常流程。")
     return False
 
+def queue_best_score(templates, key="queue"):
+    if not template_available(templates, key):
+        return None
+    img, _ = templates[key]
+    screen = capture_screen()
+    if img.shape[0] > screen.shape[0] or img.shape[1] > screen.shape[1]:
+        return None
+    res = cv2.matchTemplate(screen, img, cv2.TM_CCOEFF_NORMED)
+    return float(res.max())
 
 # ================= 主流程 =================
 def main():
@@ -1062,6 +1136,10 @@ def main():
     sopt = resolve_slider_options(cfg, args)
     verify_state = {"count": 0}
     detailed_state = {"clicks": 0, "last": 0.0}
+    queue_state = {"visible": False, "count": 0, "extra": 0.0}
+    queue_ok = template_available(templates, "queue") and bool((cfg.get("queue_extend") or {}).get("enabled"))
+    notify(f"{cfg['label']} 启动：排队检测{'已生效' if queue_ok else '未生效（模板或配置缺失）'}，"
+           f"基础超时 {TIMEOUT_DURATION}s", level="step")
 
     slider_desc = "关"
     if slider:
@@ -1073,18 +1151,24 @@ def main():
     start_time = time.time()
 
     while attempt <= MAX_ATTEMPTS:
-        if time.time() - start_time > TIMEOUT_DURATION:
+        screen = capture_screen()
+        # ---- -1. 【新增】排队检测：作为第一个探测项，先于滑块和其它图片 ----
+        check_queue_extend(cfg, templates, screen, queue_state)   # 先检测排队
+
+        limit = TIMEOUT_DURATION + queue_state["extra"]
+        if time.time() - start_time > limit:
             if verify_state["count"] > 0:
                 # 处理过滑块后仍拿不到结果：多半是验证打断了生成 -> 本篇 API 兜底，而不是让 Engine 终止整个程序
                 print("处理过滑块验证后仍超时 -> 请求 Engine 本篇改用 API 兜底（退出码 10）。")
                 save_debug_shot("verify_then_timeout")
                 sys.exit(EXIT_VERIFY_FAIL)
-            print("寻找超时：未能在规定时间内完成任务")
+            score = queue_best_score(templates)
+            s = f"{score:.3f}" if score is not None else "模板未加载"
+            msg = f"寻找超时：上限 {limit:.0f}s，排队延长 {queue_state['extra']:.0f}s，queue 最高分 {s}"
+            print(msg)
             sys.exit(EXIT_TIMEOUT)
 
-        screen = capture_screen()
-
-        # ---- -1. 滑块验证：遮罩出现时其它检测都无意义，最优先 ----
+        # ---- -2. 滑块验证：遮罩出现时其它检测都无意义，最优先 ----
         if slider is not None:
             hit = slider.locate(screen)
             if hit:
@@ -1216,6 +1300,7 @@ def main():
 
         # ---- 5. 点击复制并校验 ----
         clear_clipboard()
+        notify(f"第 {attempt}/{MAX_ATTEMPTS} 次：找到 Copy，执行点击", level="step", duration=1800)
         if click_pt is not None:
             lx, ly = click_pt
             pyautogui.click(lx, ly)
@@ -1267,15 +1352,37 @@ def main():
     sys.exit(EXIT_UNQUALIFIED)
 
 
+EXIT_MESSAGES = {
+    EXIT_OK: ("成功：内容校验通过", "step"),
+    EXIT_UNQUALIFIED: ("内容不合格，已达最大尝试次数", "error"),
+    EXIT_TIMEOUT: ("寻找超时", "error"),
+    EXIT_TEMPLATE_MISSING: ("参数或模板错误", "error"),
+    EXIT_HANDOFF: ("需要人工交接", "warn"),
+    EXIT_USER_ABORT: ("用户中止", "warn"),
+    EXIT_UPLOAD_FAIL: ("网页上传失败，转 API 兜底", "warn"),
+    EXIT_MODEL_SWITCHED: ("额度用完已切换模型，需重跑", "warn"),
+    EXIT_OFFTASK: ("AI 未执行总结，需重跑", "warn"),
+    EXIT_VERIFY_FAIL: ("滑块验证失败，转 API 兜底", "error"),
+}
+
+
+def _exit_notify(code):
+    msg, level = EXIT_MESSAGES.get(code, (f"退出码 {code}", "info"))
+    notify(f"结束：{msg}（exit {code}）", level=level, duration=4000)
+
 if __name__ == '__main__':
     try:
         main()
-    except SystemExit:
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        _exit_notify(code)
         raise
     except pyautogui.FailSafeException:
         print("检测到鼠标甩到屏幕角落（pyautogui fail-safe），视为用户中止。")
+        _exit_notify(EXIT_USER_ABORT)
         sys.exit(EXIT_USER_ABORT)
     except Exception as e:
         traceback.print_exc()
         print(f"News_auto 未预期异常：{e}")
+        _exit_notify(EXIT_TEMPLATE_MISSING)
         sys.exit(EXIT_TEMPLATE_MISSING)

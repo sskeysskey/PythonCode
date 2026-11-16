@@ -102,9 +102,11 @@ AI_INTRO_TAIL_KEYWORDS = ("如下", "梳理", "总结", "整理", "要点", "速
 SHORT_TAG_KEYWORDS = ("总结", "分模块", "简报", "主旨", "导读", "速览", "概览", "要点", "核心事件", "中文")
 
 # ---- ★新增：AI「对话式开场白」识别（与品牌无关，头部前 N 段生效）----
-# 强对话特征：新闻译文里几乎不会出现「您」「请告诉我」
+# 强对话特征：「您」必须后接对话动词，单独出现的「您」不算
 PREAMBLE_ADDRESS_STRONG_RE = re.compile(
-    r'您|(?:为|帮|给|替)你|你(?:已)?(?:粘贴|贴出|提供|发送|发来|上传|输入|给出|分享)'
+    r'您(?:已|刚|刚刚)?(?:粘贴|贴出|提供|发送|发来|上传|输入|给出|分享)'
+    r'|(?:为|帮|给|替)你(?:总结|梳理|翻译|整理|概括)'
+    r'|你(?:已)?(?:粘贴|贴出|提供|发送|发来|上传|输入|给出|分享)'
     r'|请告诉我|请告知|让我知道'
 )
 # 弱对话特征：应答词 / 第一人称开头
@@ -138,11 +140,23 @@ AI_ASK_KEYWORDS = (
     "每个工作日", "每工作日", "每周一到周五", "每天早上", "这个总结是", "如果您想要",
     "告诉我即可", "请告诉我", "随时告诉我", "工作日每天", "几处处理说明", "哪个部分",
 )
+# 泛用词：正文里很常见，不参与中间的包含匹配
+AI_ASK_GENERIC = frozenset({
+    "我可以", "你是否", "要不要", "如需", "如需我", "你觉得", "您觉得",
+    "如果需要", "或者需要", "希望我", "需要吗", "需要的话", "这个总结是",
+})
+
+# 只用于包含匹配的特定短语（由上面派生，不需要手动维护）
+AI_ASK_CONTAINS = tuple(k for k in AI_ASK_KEYWORDS if k not in AI_ASK_GENERIC)
+
 AI_ASK_MAX_LEN = 150
+AI_QUESTION_MAX_LEN = 60
 
 # ---- AI 「征求反馈」：行内同时包含 触发词 + 目标词 → AI 尾巴 ----
 AI_FEEDBACK_TRIGGERS = ("你觉得", "您觉得")
 AI_FEEDBACK_TARGETS = ("总结", "以上就是", "符合你的预期", "符合您的预期", "摘要", "梳理")
+
+AI_FEEDBACK_MAX_LEN = 80   # 征求反馈的句子超过这个长度，视为正文，不删
 
 # ---- AI 声明 / 免责：行内包含即视为 AI 尾巴 ----
 AI_STATEMENT_KEYWORDS = (
@@ -196,6 +210,12 @@ HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s*')   # ★修复：只去行首的 ma
 # =========================================================
 #   公共判定函数
 # =========================================================
+NUMBERED_HEADING_RE = re.compile(r'^(?:[一二三四五六七八九十百]+|\d+)\s*[、.．]')
+
+def is_numbered_heading(s: str) -> bool:
+    """『一、开篇场景』『2. 背景』这类编号小标题，不应按长度删除"""
+    return bool(NUMBERED_HEADING_RE.match(s.strip()))
+
 def is_ai_intro_line(s: str) -> bool:
     """识别如：'这段是一则英文财经新闻...以下是中文要点梳理：' 这一类 AI 开场白"""
     s = s.strip()
@@ -259,22 +279,27 @@ def has_question_mark(s: str) -> bool:
 
 def is_ai_tail_line(s: str) -> bool:
     """是否为 AI 的追问 / 邀约 / 征求反馈 / 免责声明"""
-    # 1. 强特征词：只要在短句中包含即视为 AI 尾巴（无需问号）
+    # 1. 强特征词：短句内命中即视为 AI 尾巴（无需问号）
     if len(s) <= AI_ASK_MAX_LEN and any(k in s for k in AI_STRONG_TAIL_WORDS):
         return True
 
-    # 2. 以邀约词开头
-    if s.startswith(AI_ASK_KEYWORDS):
+    # 2. 行首匹配：长度受限，防止长正文段被误判
+    if len(s) <= AI_ASK_MAX_LEN and s.startswith(AI_ASK_KEYWORDS):
         return True
 
-    # 3. 带问号的常规追问
-    if len(s) <= AI_ASK_MAX_LEN and has_question_mark(s) and any(k in s for k in AI_ASK_KEYWORDS):
+    # 3. 带问号的包含匹配：只用特定短语，且必须是短句
+    if (len(s) <= AI_QUESTION_MAX_LEN
+            and has_question_mark(s)
+            and any(k in s for k in AI_ASK_CONTAINS)):
         return True
 
-    # 4. 反馈与声明
-    if any(t in s for t in AI_FEEDBACK_TRIGGERS) and any(w in s for w in AI_FEEDBACK_TARGETS):
+    # 4. 反馈（限定短句）
+    if (len(s) <= AI_FEEDBACK_MAX_LEN
+            and any(t in s for t in AI_FEEDBACK_TRIGGERS)
+            and any(w in s for w in AI_FEEDBACK_TARGETS)):
         return True
-    # 声明词加上短句限制（例如不超过 40 字）
+
+    # 5. 声明（限定短句）
     if len(s) <= 40 and any(k in s for k in AI_STATEMENT_KEYWORDS):
         return True
 
@@ -356,8 +381,8 @@ def strip_module_prefix(lines):
 
 
 def strip_tail(lines, deleted):
-    """尾部：来源推广截断 → AI 尾巴截断 / 尾部分隔线，循环到稳定"""
-    # 1) 来源推广：最后 N 段内首次出现即从该处截断
+    """尾部：来源推广截断 → 从末尾逐行回收 AI 尾巴 / 分隔线，遇到正文即停"""
+    # 1) 来源推广：保持原逻辑
     start = max(0, len(lines) - TAIL_PROMO_WINDOW)
     for i in range(start, len(lines)):
         if is_promo_line(lines[i]):
@@ -365,15 +390,10 @@ def strip_tail(lines, deleted):
             lines = lines[:i]
             break
 
-    # 2) AI 尾巴（从窗口内最早命中处整段截断）+ 尾部分隔线
+    # 2) 只回收末尾连续的 AI 尾巴行和分隔线
     while lines:
-        start = max(0, len(lines) - TAIL_SCAN_WINDOW)
-        cut = next((i for i in range(start, len(lines)) if is_ai_tail_line(lines[i])), None)
-        if cut is not None:
-            deleted.extend(lines[cut:])
-            lines = lines[:cut]
-            continue
-        if is_separator_line(lines[-1]):
+        last = lines[-1]
+        if is_separator_line(last) or is_ai_tail_line(last):
             deleted.append(lines.pop())
             continue
         break
@@ -430,10 +450,11 @@ def clean_head_qianwen(lines, deleted):
             changed = True
             continue
 
-    # 清理前部的超短引导标签
+    # 清理前部的超短引导标签（只删带引导关键词的短行，编号标题保留）
     while lines and (
-        (len(lines[0]) <= 12 and any(k in lines[0] for k in SHORT_TAG_KEYWORDS))
-        or len(lines[0]) <= 6
+        len(lines[0]) <= 12
+        and any(k in lines[0] for k in SHORT_TAG_KEYWORDS)
+        and not is_numbered_heading(lines[0])
     ):
         deleted.append(lines.pop(0))
 
@@ -522,8 +543,8 @@ def clean_head_doubao(lines, deleted):
         if is_separator_line(lines[0]):
             deleted.append(lines.pop(0)); changed = True; continue
 
-    # 第一段字符数 <= 22 则移除
-    if lines and len(lines[0].strip()) <= 22:
+    # 第一段字符数 <= 22 则移除（编号标题保留）
+    if lines and len(lines[0].strip()) <= 22 and not is_numbered_heading(lines[0]):
         deleted.append(lines.pop(0))
     return lines
 
@@ -536,10 +557,11 @@ def clean_head_deepseek(lines, deleted):
     while lines and is_ai_intro_line(lines[0]):
         deleted.append(lines.pop(0))
 
-    # 剥离短标题/元标签
+    # 剥离短标题/元标签（编号标题保留）
     while lines and (
-        (len(lines[0].strip()) < 22 and any(k in lines[0] for k in SHORT_TAG_KEYWORDS))
-        or len(lines[0].strip()) <= 6
+        len(lines[0].strip()) < 22
+        and any(k in lines[0] for k in SHORT_TAG_KEYWORDS)
+        and not is_numbered_heading(lines[0])
     ):
         deleted.append(lines.pop(0))
 

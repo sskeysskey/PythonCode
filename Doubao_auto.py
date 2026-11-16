@@ -22,6 +22,18 @@ COPY_THRESHOLD    = 0.9
 RELATED_THRESHOLD = 0.8
 WRONG_THRESHOLD   = 0.88   # 【新增】可按实际命中率微调
 
+REGEN_TEMPLATE_NAME = "doubao_regenerate.png"   # 锚点模板（必须存在于 Resource 目录）
+REGEN_THRESHOLD     = 0.88
+
+# copy 相对 regenerate 的固定偏移（逻辑坐标）
+PAIR_CFG = {
+    "dx": -104,            # copy.x - regenerate.x
+    "dy": 0,               # copy.y - regenerate.y
+    "tol_x": 30,
+    "tol_y": 25,
+    "row_fallback": False, # 关闭同行兜底，防止误配到别的 copy
+}
+
 # ================= 退出码约定 =================
 EXIT_OK               = 0  # 成功，剪贴板内容合格
 EXIT_CONTENT_FAIL     = 1  # 3 次点击复制，内容均不合格
@@ -119,6 +131,75 @@ def perform_click(location, shape):
     pyautogui.click(logic_center_x, logic_center_y)
     return logic_center_x, logic_center_y
 
+def match_all(template, threshold, screen=None, max_candidates=2000):
+    """返回模板的全部命中，格式 [(逻辑x, 逻辑y), ...]，已做 NMS 去重（中心点，逻辑坐标）"""
+    if template is None:
+        return []
+    if screen is None:
+        screen = capture_screen()
+
+    th, tw = template.shape[:2]
+    if th > screen.shape[0] or tw > screen.shape[1]:
+        return []
+
+    result = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
+    ys, xs = np.where(result >= threshold)
+    if len(xs) == 0:
+        return []
+
+    scores = result[ys, xs]
+    order = np.argsort(-scores)[:max_candidates]
+    half_w, half_h = max(1, tw // 2), max(1, th // 2)
+
+    picked = []
+    for i in order:
+        x, y = int(xs[i]), int(ys[i])
+        if all(abs(x - px) >= half_w or abs(y - py) >= half_h for px, py in picked):
+            picked.append((x, y))
+
+    out = []
+    for x, y in picked:
+        cx = int((x + tw / 2) / SCALE_FACTOR)
+        cy = int((y + th / 2) / SCALE_FACTOR)
+        out.append((cx, cy))
+    return out
+
+
+def find_regen_copy_pair(regen_tpl, copy_tpl, screen=None):
+    """
+    找到「regenerate + 与之配对的 copy」。
+    返回 (copy_x, copy_y)（逻辑坐标）或 None。
+    锚点按从上到下、从左到右排序，最上方配不上时尝试下一个。
+    """
+    if screen is None:
+        screen = capture_screen()
+
+    anchors = match_all(regen_tpl, REGEN_THRESHOLD, screen)
+    if not anchors:
+        return None
+    anchors.sort(key=lambda p: (p[1], p[0]))
+
+    targets = match_all(copy_tpl, COPY_THRESHOLD, screen)
+    if not targets:
+        return None
+
+    for rank, (ax, ay) in enumerate(anchors, 1):
+        best = None
+        for tx, ty in targets:
+            ex = (tx - ax) - PAIR_CFG["dx"]
+            ey = (ty - ay) - PAIR_CFG["dy"]
+            if abs(ex) <= PAIR_CFG["tol_x"] and abs(ey) <= PAIR_CFG["tol_y"]:
+                d = ex * ex + ey * ey
+                if best is None or d < best[0]:
+                    best = (d, tx, ty)
+
+        if best:
+            _, tx, ty = best
+            print(f"配对成功(锚点#{rank})：锚点({ax},{ay}) -> 复制({tx},{ty})，"
+                  f"实际偏移({tx - ax},{ty - ay})，期望({PAIR_CFG['dx']},{PAIR_CFG['dy']})")
+            return tx, ty
+
+    return None
 
 def check_wrong_confirmed(copy_template, wrong_template):
     """
@@ -162,9 +243,10 @@ def main():
             print("参数格式错误，使用默认阈值 50")
 
     # ==== 加载模板 ====
-    template         = load_template(COPY_TEMPLATE_NAME, required=True)
+    copy_template    = load_template(COPY_TEMPLATE_NAME, required=True)
     related_template = load_template(RELATED_TEMPLATE_NAME, required=True)
-    wrong_template   = load_template(WRONG_TEMPLATE_NAME, required=False)  # 可选
+    wrong_template   = load_template(WRONG_TEMPLATE_NAME, required=False)
+    regen_template   = load_template(REGEN_TEMPLATE_NAME, required=True)
 
     max_attempts = 3
     current_attempt = 1
@@ -174,73 +256,74 @@ def main():
     print(f"开始监控豆包内容（最多尝试3次，汉字阈值：{target_threshold}）...")
 
     while current_attempt <= max_attempts:
-        # 总时间超时检查
         if time.time() - start_time > timeout_duration:
             print("寻找超时：未能在规定时间内找到复制按钮")
             sys.exit(EXIT_TIMEOUT)
 
-        # ==== 1. 优先寻找 Copy 按钮（copy 优先级永远高于 wrong）====
-        location, shape = find_image_on_screen(template)
+        # ==== 1. 寻找 regenerate + 配对的 copy ====
+        pair = find_regen_copy_pair(regen_template, copy_template)
 
-        if location:
-            print("初次定位到 Copy 按钮，开始检测 Related 标识...")
-
-            # ==== 2. 寻找 Related 图片（最多 4 秒）====
-            check_start_time = time.time()
-            found_related = False
-            while time.time() - check_start_time < 4:
-                rel_loc, _ = find_image_on_screen(related_template, threshold=RELATED_THRESHOLD)
-                if rel_loc:
-                    print("检测到 Related 标识 (布局已变化)，立即进行下一步。")
-                    found_related = True
-                    break
-                sleep(0.5)
-
-            if not found_related:
-                print("4秒内未检测到 Related 标识 (超时)，准备重新定位 Copy。")
-
-            # ==== 3. 重新定位 Copy 按钮（布局可能被挤压）====
-            final_loc, final_shape = find_image_on_screen(template)
-
-            if final_loc:
-                lx, ly = perform_click(final_loc, final_shape)
-                print(f"第 {current_attempt} 次尝试 - 点击重新定位后的按钮: {lx}, {ly}")
-
-                sleep(0.5)
-                content = pyperclip.paste()
-
-                if is_content_qualified(content, min_chinese=target_threshold):
-                    print(f"第 {current_attempt} 次尝试成功：内容校验通过。")
-                    sys.exit(EXIT_OK)
-
-                print(f"第 {current_attempt} 次尝试失败：内容不合格。")
-
-                # 【新增】内容不合格时，也顺手看一眼是不是回答异常
-                if check_wrong_confirmed(template, wrong_template):
-                    sys.exit(EXIT_WRONG)
-
-                current_attempt += 1
-                if current_attempt <= max_attempts:
-                    pyautogui.scroll(SCROLL_AMOUNT)
-                    sleep(1)
-                else:
-                    print("已达到最大尝试次数，内容均不合格。")
-                    sys.exit(EXIT_CONTENT_FAIL)
-            else:
-                # 等待后 Copy 按钮消失（可能被挤出屏幕）
-                print("错误：等待后无法重新定位 Copy 按钮，检查是否回答异常...")
-                if check_wrong_confirmed(template, wrong_template):
-                    sys.exit(EXIT_WRONG)
-                pyautogui.scroll(SCROLL_AMOUNT)
-                sleep(1)
-                continue  # 未实际点击，不消耗 attempt
-        else:
-            # ==== 连 Copy 按钮都没找到 -> 检查 doubao_wrong ====
-            if check_wrong_confirmed(template, wrong_template):
+        if not pair:
+            # 连配对都没有 -> 检查 wrong
+            if check_wrong_confirmed(copy_template, wrong_template):
                 sys.exit(EXIT_WRONG)
-
             pyautogui.scroll(SCROLL_AMOUNT)
             sleep(1)
+            continue
+
+        print("初次配对到 Copy 按钮，开始检测 Related 标识...")
+
+        # ==== 2. 等待 Related 标识（最多 4 秒，布局可能变化）====
+        gate_start = time.time()
+        found_related = False
+        while time.time() - gate_start < 4:
+            rel_loc, _ = find_image_on_screen(related_template, threshold=RELATED_THRESHOLD)
+            if rel_loc:
+                print("检测到 Related 标识（布局已变化）。")
+                found_related = True
+                break
+            sleep(0.5)
+        if not found_related:
+            print("4 秒内未检测到 Related 标识，重新配对 Copy。")
+
+        # ==== 3. 重新配对（布局可能已变，必须再配一次）====
+        pair = find_regen_copy_pair(regen_template, copy_template)
+        if not pair:
+            print("等待后无法重新配对 Copy，检查是否回答异常...")
+            if check_wrong_confirmed(copy_template, wrong_template):
+                sys.exit(EXIT_WRONG)
+            pyautogui.scroll(SCROLL_AMOUNT)
+            sleep(1)
+            continue  # 未实际点击，不消耗 attempt
+
+        # ==== 4. 点击配对的 copy 并校验剪贴板 ====
+        lx, ly = pair
+        try:
+            pyperclip.copy("")          # 先清空，避免旧内容误判为合格
+        except Exception as e:
+            print(f"清空剪贴板失败（忽略）: {e}")
+
+        pyautogui.click(lx, ly)
+        print(f"第 {current_attempt} 次尝试 - 点击配对的复制按钮: {lx}, {ly}")
+        sleep(0.5)
+        content = pyperclip.paste()
+
+        if is_content_qualified(content, min_chinese=target_threshold):
+            print(f"第 {current_attempt} 次尝试成功：内容校验通过。")
+            sys.exit(EXIT_OK)
+
+        print(f"第 {current_attempt} 次尝试失败：内容不合格。")
+
+        if check_wrong_confirmed(copy_template, wrong_template):
+            sys.exit(EXIT_WRONG)
+
+        current_attempt += 1
+        if current_attempt <= max_attempts:
+            pyautogui.scroll(SCROLL_AMOUNT)
+            sleep(1)
+        else:
+            print("已达到最大尝试次数，内容均不合格。")
+            sys.exit(EXIT_CONTENT_FAIL)
 
     sys.exit(EXIT_CONTENT_FAIL)
 
