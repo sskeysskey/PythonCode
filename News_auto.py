@@ -1138,8 +1138,8 @@ def main():
     detailed_state = {"clicks": 0, "last": 0.0}
     queue_state = {"visible": False, "count": 0, "extra": 0.0}
     queue_ok = template_available(templates, "queue") and bool((cfg.get("queue_extend") or {}).get("enabled"))
-    notify(f"{cfg['label']} 启动：排队检测{'已生效' if queue_ok else '未生效（模板或配置缺失）'}，"
-           f"基础超时 {TIMEOUT_DURATION}s", level="step")
+    # notify(f"{cfg['label']} 启动：排队检测{'已生效' if queue_ok else '未生效（模板或配置缺失）'}，"
+    #        f"基础超时 {TIMEOUT_DURATION}s", level="step")
 
     slider_desc = "关"
     if slider:
@@ -1300,7 +1300,7 @@ def main():
 
         # ---- 5. 点击复制并校验 ----
         clear_clipboard()
-        notify(f"第 {attempt}/{MAX_ATTEMPTS} 次：找到 Copy，执行点击", level="step", duration=1800)
+        # notify(f"第 {attempt}/{MAX_ATTEMPTS} 次：找到 Copy，执行点击", level="step", duration=1800)
         if click_pt is not None:
             lx, ly = click_pt
             pyautogui.click(lx, ly)
@@ -1368,7 +1368,7 @@ EXIT_MESSAGES = {
 
 def _exit_notify(code):
     msg, level = EXIT_MESSAGES.get(code, (f"退出码 {code}", "info"))
-    notify(f"结束：{msg}（exit {code}）", level=level, duration=4000)
+    # notify(f"结束：{msg}（exit {code}）", level=level, duration=4000)
 
 if __name__ == '__main__':
     try:
